@@ -229,7 +229,7 @@ def ensure_paragraph_reading_skill(config: Dict[str, Any]) -> str:
     skill_text = skill_file.read_text(encoding="utf-8", errors="ignore")
     required_markers = (
         "Mode A",
-        "full-text",
+        "full-text-paragraph-pairs",
         "ready_to_merge",
         "MinerU",
         "crop_pdf_region.py",
@@ -237,7 +237,7 @@ def ensure_paragraph_reading_skill(config: Dict[str, Any]) -> str:
     )
     if any(marker not in skill_text for marker in required_markers):
         raise RuntimeError(
-            f"Local skill {name} does not declare the required PDF-crop Mode A workflow"
+            f"Local skill {name} does not declare the required paragraph-pair Mode A workflow"
         )
     crop_script = skill_file.parent / "scripts" / "crop_pdf_region.py"
     if not crop_script.is_file():
@@ -315,7 +315,7 @@ def paper_images_dir(config: Dict[str, Any], task: Dict[str, Any], create: bool 
 def paper_intensive_images_dir(
     config: Dict[str, Any], task: Dict[str, Any], create: bool = False
 ) -> Path:
-    """Resolve the dedicated direct-PDF crop directory for intensive reading."""
+    """Resolve the dedicated direct-PDF visual-crop directory for intensive reading."""
 
     paper_root = paper_images_dir(config, task, create=create)
     expected_relative = Path(str(task["images_dir"])) / PAPER_INTENSIVE_IMAGES_SUBDIR
@@ -1659,7 +1659,7 @@ def intensive_unit_sections(note_text: str, current_unit: str) -> Dict[str, str]
     if not unit_match:
         raise RuntimeError(f"Intensive-reading log is missing exact heading ### {current_unit}")
     unit = unit_match.group(1)
-    names = ("原文", "翻译", "配图", "原文位置", "交互")
+    names = ("原文与翻译", "原文位置", "交互")
     headings = []
     for name in names:
         match = re.search(rf"(?m)^#### {re.escape(name)}\s*$", unit)
@@ -1668,7 +1668,7 @@ def intensive_unit_sections(note_text: str, current_unit: str) -> Dict[str, str]
         headings.append((name, match))
     if [match.start() for _, match in headings] != sorted(match.start() for _, match in headings):
         raise RuntimeError(
-            f"Intensive-reading unit {current_unit} must order 原文、翻译、配图、原文位置、交互"
+            f"Intensive-reading unit {current_unit} must order 原文与翻译、原文位置、交互"
         )
     sections: Dict[str, str] = {"unit": unit}
     for index, (name, match) in enumerate(headings):
@@ -1687,37 +1687,77 @@ def validate_intensive_unit_display(
     if any(label in unit_text for label in forbidden):
         raise RuntimeError("Intensive-reading unit contains a removed AI role/relationship field")
     if re.search(r"(?m)^>\s*\S", unit_text):
-        raise RuntimeError("Intensive-reading original must use direct PDF crops, not blockquotes")
+        raise RuntimeError("Intensive-reading source paragraphs must be searchable text, not blockquotes")
+    if re.search(r"(?m)^#### (?:原文|翻译|配图)\s*$", unit_text):
+        raise RuntimeError(
+            "Intensive-reading unit must interleave source and translation inside 原文与翻译"
+        )
 
-    source_targets = note_image_targets(sections["原文"])
-    if not source_targets:
-        raise RuntimeError("Intensive-reading 原文 must contain direct PDF crop images")
-    figure_targets = note_image_targets(sections["配图"])
-    if not figure_targets and "本单元无独立配图。" not in sections["配图"]:
-        raise RuntimeError("Intensive-reading 配图 must contain PDF crops or state none")
-    if not re.search(r"[A-Za-z0-9\u3400-\u9fff]", sections["翻译"]):
-        raise RuntimeError("Intensive-reading 翻译 cannot be empty")
+    pair_section = sections["原文与翻译"]
+    pair_matches = list(re.finditer(r"(?m)^##### (P\d{2,})\s*$", pair_section))
+    if not pair_matches:
+        raise RuntimeError(
+            f"Intensive-reading unit {current_unit} must contain sequential P01 paragraph pairs"
+        )
+    if pair_section[: pair_matches[0].start()].strip():
+        raise RuntimeError("Intensive-reading 原文与翻译 must begin with ##### P01")
+    expected_ids = [f"P{index:02d}" for index in range(1, len(pair_matches) + 1)]
+    actual_ids = [match.group(1) for match in pair_matches]
+    if actual_ids != expected_ids:
+        raise RuntimeError("Intensive-reading paragraph pair IDs must be sequential from P01")
 
     expected_prefix = (
         f"{str(task['paragraph_reading_images_dir']).rstrip('/')}/{current_unit}/"
     )
-    for target in source_targets:
-        if not target.startswith(expected_prefix) or not Path(target).name.startswith("source-"):
-            raise RuntimeError(
-                f"Intensive-reading source crop must use {expected_prefix}source-*.png"
-            )
-        if Path(target).suffix.casefold() != ".png":
-            raise RuntimeError("Intensive-reading source crops must be PNG files")
     visual_prefixes = ("figure-", "table-", "equation-")
-    for target in figure_targets:
-        if not target.startswith(expected_prefix) or not Path(target).name.startswith(visual_prefixes):
+    visual_targets: List[str] = []
+    image_embed = re.compile(r"!\[\[[^\]]+\]\]|!\[[^\]]*\]\((?:<[^>]+>|[^\s)]+)\)")
+    for index, pair_match in enumerate(pair_matches):
+        end = pair_matches[index + 1].start() if index + 1 < len(pair_matches) else len(pair_section)
+        pair_body = pair_section[pair_match.end() : end]
+        all_subheadings = re.findall(r"(?m)^###### (.+?)\s*$", pair_body)
+        if all_subheadings != ["原文", "翻译"]:
             raise RuntimeError(
-                f"Intensive-reading visual crop must use {expected_prefix}figure/table/equation-*.png"
+                f"Intensive-reading {pair_match.group(1)} must contain only 原文 then 翻译"
             )
-        if Path(target).suffix.casefold() != ".png":
-            raise RuntimeError("Intensive-reading visual crops must be PNG files")
-    if sorted(note_image_targets(unit_text)) != sorted(source_targets + figure_targets):
-        raise RuntimeError("Intensive-reading unit embeds images outside 原文 or 配图")
+        subheadings = list(re.finditer(r"(?m)^###### (原文|翻译)\s*$", pair_body))
+        source_text = pair_body[subheadings[0].end() : subheadings[1].start()].strip()
+        translated_text = pair_body[subheadings[1].end() :].strip()
+        if not re.search(r"[A-Za-z0-9\u3400-\u9fff]", source_text):
+            raise RuntimeError(f"Intensive-reading {pair_match.group(1)} 原文 cannot be empty")
+        if note_image_targets(source_text):
+            raise RuntimeError("Intensive-reading source text cannot embed images")
+
+        first_image = image_embed.search(translated_text)
+        translated_before_images = (
+            translated_text[: first_image.start()] if first_image else translated_text
+        )
+        if not re.search(r"[A-Za-z0-9\u3400-\u9fff]", translated_before_images):
+            raise RuntimeError(
+                f"Intensive-reading {pair_match.group(1)} 翻译 must precede any visual crop"
+            )
+        pair_targets = note_image_targets(translated_text)
+        if first_image:
+            after_first_image = image_embed.sub("", translated_text[first_image.start() :])
+            if re.search(r"[A-Za-z0-9\u3400-\u9fff]", after_first_image):
+                raise RuntimeError(
+                    f"Intensive-reading {pair_match.group(1)} visual crops must follow the paragraph translation"
+                )
+        for target in pair_targets:
+            if not target.startswith(expected_prefix) or not Path(target).name.startswith(
+                visual_prefixes
+            ):
+                raise RuntimeError(
+                    f"Intensive-reading visual crop must use {expected_prefix}figure/table/equation-*.png"
+                )
+            if Path(target).suffix.casefold() != ".png":
+                raise RuntimeError("Intensive-reading visual crops must be PNG files")
+        visual_targets.extend(pair_targets)
+
+    if sorted(note_image_targets(unit_text)) != sorted(visual_targets):
+        raise RuntimeError(
+            "Intensive-reading unit embeds images outside their matching paragraph pair"
+        )
 
     pdf_link = re.compile(
         rf"\[\[{re.escape(str(task['source_path']))}#page=\d+\|PDF p\.\d+\]\]"
@@ -1735,7 +1775,7 @@ def validate_paragraph_reading_note(
     task: Dict[str, Any],
     note_text: str,
 ) -> Dict[str, Any]:
-    """Validate the durable PDF-crop intensive-reading log."""
+    """Validate the durable paragraph-pair intensive-reading log."""
 
     state = parse_intensive_reading_state(note_text)
     values = state.pop("values")
@@ -1743,7 +1783,7 @@ def validate_paragraph_reading_note(
         "type": "paper-intensive-reading-log",
         "status": "draft",
         "reading_mode": "A",
-        "workflow": "full-text-continuous-pdf-units",
+        "workflow": "full-text-paragraph-pairs",
         "integration_role": "auxiliary",
         "primary_source_id": str(task["id"]),
         "source_note": f"[[{task['note_path']}]]",
@@ -1752,7 +1792,7 @@ def validate_paragraph_reading_note(
         "pdf_extractor": str(task["pdf_extractor_used"]),
         "images_dir": str(task["images_dir"]),
         "intensive_images_dir": str(task["paragraph_reading_images_dir"]),
-        "source_display": "pdf-crops",
+        "source_display": "extracted-paragraph-pairs",
     }
     for key, expected_value in expected.items():
         actual = unquote_yaml_scalar(values.get(key, ""))
@@ -1762,7 +1802,7 @@ def validate_paragraph_reading_note(
             )
 
     if not yaml_boolean(values.get("allow_image_crops", "false")):
-        raise RuntimeError("Intensive-reading required PDF crops must be enabled")
+        raise RuntimeError("Intensive-reading relevant visual PDF crops must be enabled")
     optional_crops = yaml_boolean(values.get("allow_optional_image_crops", "false"))
     if optional_crops != bool(task["paragraph_reading_figures"]):
         raise RuntimeError(
@@ -2188,7 +2228,7 @@ def paragraph_read_paper(
             existing_workflow = unquote_yaml_scalar(
                 existing_state["values"].get("workflow", "")
             )
-            legacy_log = existing_workflow != "full-text-continuous-pdf-units"
+            legacy_log = existing_workflow != "full-text-paragraph-pairs"
             if action == "submit-initial":
                 if existing_state["stage"] != "awaiting_initial_analysis":
                     raise RuntimeError("当前精读单元不处于等待提交初始理解的阶段")
@@ -2206,7 +2246,7 @@ def paragraph_read_paper(
                     raise RuntimeError(
                         "请先填写当前单元的用户初始理解，并点击“提交初始理解”按钮"
                     )
-        emit_progress(16, "正在准备 PDF 裁图目录与阅读工具")
+        emit_progress(16, "正在准备提取文本与配图裁切工具")
 
         extract_path = extract_pdf(config, task)
         task["extract_path"] = str(extract_path.relative_to(config["vault"]))
@@ -2223,7 +2263,7 @@ def paragraph_read_paper(
         task["paragraph_reading_images_absolute"] = str(
             paper_intensive_images_dir(config, task, create=True)
         )
-        emit_progress(30, "MinerU 导航层与原始 PDF 已就绪")
+        emit_progress(30, "提取文本与原始 PDF 已就绪")
         update_frontmatter_scalars(
             note,
             {
@@ -2246,10 +2286,11 @@ def paragraph_read_paper(
             f"本次 action 是 {action}；只推进一个交互阶段后停止。不要提出阅读契约，"
             "不要生成第二份论文总结。主论文笔记是基线且正文只读；只可写 "
             "paragraph_reading_note_path 与 paragraph_reading_images_dir，不得写队列、索引或规范知识页。"
-            "把全文划为少量连续、互不重叠的 U 单元；每个单元只显示原文 PDF 连续裁图、对应翻译、"
-            "直接从 PDF 裁出的相关配图、一次原文位置和交互内容。不得写单元作用、关系或语义标题。"
-            "必须调用 paragraph_reading_crop_script 从 source_pdf_absolute 直接生成所有展示图片；"
-            "MinerU 的 extract_path 只用于导航和翻译，不得把 MinerU 图片当作展示原图。"
+            "把全文划为少量连续、互不重叠的 U 单元；每个单元从 extract_path 按原顺序提取可搜索原文，"
+            "严格按一段原文紧跟一段翻译的 Pxx 对交替展示，不得先堆积整片英文再统一翻译。"
+            "若某段有直接相关的图、表或公式，必须调用 paragraph_reading_crop_script 从 "
+            "source_pdf_absolute 直接裁切，并把图片紧接在该段翻译后；普通原文不得裁成图片，"
+            "不得使用 MinerU 图片。单元末尾只保留一次原文位置和交互内容，不得写单元作用、关系或语义标题。"
             "awaiting_initial_analysis 只能由 submit-initial 推进。若现有日志是旧格式，"
             "当 intensive_reading_migration_only 为 true 时，只迁移当前单元与地图、逐字保留人工输入，"
             "并保持 awaiting_initial_analysis，不执行任何交互状态转换。\n\n"
@@ -2303,7 +2344,8 @@ def paragraph_read_paper(
                 f"- Reading log: `[[{task['paragraph_reading_note_path']}]]`\n"
                 f"- Current unit: `{reading['current_unit']}`\n"
                 f"- Stage: `{reading['stage']}`\n"
-                f"- Direct PDF crops: `required`\n"
+                f"- Extracted source display: `interleaved paragraph pairs`\n"
+                f"- Relevant visual PDF crops: `required when present`\n"
                 f"- Optional supplemental crops: `{str(task['paragraph_reading_figures']).lower()}`",
             )
             log(

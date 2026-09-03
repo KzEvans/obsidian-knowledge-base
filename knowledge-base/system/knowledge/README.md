@@ -96,16 +96,17 @@ reuse the previous plan when the paper identity and source hash are unchanged.
 
 Every primary paper note exposes two human-owned Obsidian checkboxes:
 `paragraph_reading` and `paragraph_reading_figures`. The first opts a valuable paper
-into interactive full-text reading and authorizes required original/visual PDF crops.
+into interactive full-text reading and authorizes directly relevant visual PDF crops.
 The second is retained for optional supplemental crops. Changing the first checkbox
 from false to true in the active note starts the workflow automatically.
 
 The Obsidian command `开始或继续当前论文的交互式全文精读` remains available as a
 manual entry point. The runner invokes the repository-bundled,
 locally installed `paper-intensive-reading` skill. It uses the MinerU page-delimited
-Markdown only for navigation and translation, consolidates the whole main text into
-a few continuous non-overlapping units, and renders every displayed source passage
-and relevant figure directly from the PDF. Crops live under
+Markdown as searchable source text and for translation, consolidates the whole main
+text into a few continuous non-overlapping units, and interleaves each source paragraph
+with its translation. Relevant figures, tables, and equations are rendered directly
+from the PDF immediately after the matching paragraph pair. Visual crops live under
 `wiki/papers/images/<exact-note-stem>/intensive-reading/<Uxx>/`; the separate process
 log lives at `wiki/papers/close-reading/<exact-primary-note-filename>`.
 

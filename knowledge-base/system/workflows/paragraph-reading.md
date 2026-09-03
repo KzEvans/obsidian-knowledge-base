@@ -8,7 +8,7 @@ The human has checked `paragraph_reading` in the primary paper note. Use the ins
 - Language: Chinese.
 - Baseline: the automatic paper note at `note_path`.
 - Authority: the primary PDF at `source_path`.
-- Displayed source: direct PDF crops, never copied MinerU assets or blockquoted OCR text.
+- Displayed source: searchable paragraphs from the cached extraction, checked against the PDF when ambiguous; never source-text screenshots, blockquotes, or copied MinerU images.
 - Action: exactly `TASK_JSON.intensive_reading_action`.
 - One call advances at most one interaction stage.
 
@@ -18,21 +18,20 @@ Do not ask for a reading contract, section range, or summary format. Do not crea
 
 Use a neutral heading such as `### U01`, then exactly:
 
-1. `#### 原文`: ordered crops that form one continuous passage;
-2. `#### 翻译`: continuous corresponding Chinese translation;
-3. `#### 配图`: relevant figure/table/equation crops or `本单元无独立配图。`;
-4. `#### 原文位置`: exact primary-PDF page link(s), stated once;
-5. `#### 交互`: the human/AI interaction state.
+1. `#### 原文与翻译`: sequential `P01`, `P02`, … blocks, each containing `###### 原文` with one extracted paragraph followed immediately by `###### 翻译` for that paragraph;
+2. an optional relevant figure/table/equation crop immediately after the matching paragraph's translation;
+3. `#### 原文位置`: exact primary-PDF page link(s), stated once after all paragraph pairs;
+4. `#### 交互`: the human/AI interaction state.
 
-Do not display an AI-authored unit title, purpose, role, covered-content list, or relationship to the automatic note. Do not repeat PDF page links elsewhere inside the unit.
+Do not collect a large source block followed by a large translation block. Do not create separate `#### 原文`, `#### 翻译`, or `#### 配图` sections. Do not display an AI-authored unit title, purpose, role, covered-content list, or relationship to the automatic note. Do not repeat PDF page links elsewhere inside the unit.
 
-## MinerU navigation and direct PDF crops
+## Extracted text and direct PDF visual crops
 
-Use `extract_path` to navigate extracted text, equations, captions, and page boundaries. Use `source_pdf_absolute` as the visual authority. For every displayed original-text or visual crop, call `paragraph_reading_crop_script` and write the PNG under `paragraph_reading_images_absolute/<unit>/`.
+Use `extract_path` for the searchable source paragraphs, reading order, equations, captions, and page boundaries. Prefer MinerU and honor the recorded `pdftotext` fallback when applicable. Preserve source wording and paragraph boundaries wherever possible; correct only obvious extraction defects verified against `source_pdf_absolute`.
 
-Crop multi-column text in reading order. The ordered original crops within each unit must be continuous; all mapped units together cover the full main text, excluding only page furniture, references, and non-substantive administrative text.
+Use `source_pdf_absolute` as the visual authority. For every relevant figure, table, or equation, call `paragraph_reading_crop_script`, write the PNG under `paragraph_reading_images_absolute/<unit>/`, and embed it immediately after the matching translation. Do not crop ordinary source text or copy MinerU-generated images.
 
-`paragraph_reading_figures` controls only extra supplemental crops retained for backward compatibility. Required original and directly relevant visual crops are authorized by the human's selection of intensive reading.
+All mapped units together must cover the full main text in reading order, excluding only page furniture, references, and non-substantive administrative text. `paragraph_reading_figures` controls only extra supplemental crops retained for backward compatibility. Directly relevant visual crops are authorized by the human's selection of intensive reading.
 
 Use supporting information only when the primary paper points to it for evidence needed by the current unit. Cite SI separately.
 
@@ -56,6 +55,6 @@ Preserve user-authored text verbatim. The log remains `integration_role: auxilia
 - filled reconstruction + `continue` → score 0–8; request one retry or create the stable verified-unit block and set `ready_to_merge`; stop;
 - `ready_to_merge` → do not edit the primary note; wait for the separate merge command.
 
-When continuing a legacy log, migrate its map and current unit to the direct-PDF-crop layout while preserving all user text exactly. Never fill a user field.
+When continuing a legacy log, migrate its map and current unit to the interleaved paragraph-pair layout while preserving all user text exactly. Replace source-text crops with extracted text, retain or recrop only relevant visuals, and do not advance the interaction stage. Never fill a user field.
 
 Finish with result JSON using `operation: paragraph-reading`, `status: drafted`, and only files actually updated.

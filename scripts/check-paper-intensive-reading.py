@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the device-local continuous Mode A intensive-reading skill."""
+"""Validate the device-local paragraph-pair Mode A intensive-reading skill."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def main() -> int:
         "verified-unit",
         "intensive-reading",
         "submit-initial",
-        "full-text-continuous-pdf-units",
+        "full-text-paragraph-pairs",
         "crop_pdf_region.py",
     )
     missing = [marker for marker in required if marker not in combined]

@@ -57,8 +57,10 @@ class PipelineParagraphReadingTest(unittest.TestCase):
         verified_units="",
         merged_units="",
         initial_answer="",
+        visual_path=None,
     ):
         score_value = "null" if score is None else str(score)
+        visual_block = f"\n![[{visual_path}]]\n" if visual_path else ""
         verified_block = ""
         if stage == "ready_to_merge":
             verified_block = (
@@ -73,7 +75,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "type: paper-intensive-reading-log\n"
             "status: draft\n"
             "reading_mode: A\n"
-            "workflow: full-text-continuous-pdf-units\n"
+            "workflow: full-text-paragraph-pairs\n"
             "integration_role: auxiliary\n"
             f'primary_source_id: "{task["id"]}"\n'
             f'source_note: "[[{task["note_path"]}]]"\n'
@@ -82,7 +84,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "pdf_extractor: mineru\n"
             f'images_dir: "{task["images_dir"]}"\n'
             f'intensive_images_dir: "{task["paragraph_reading_images_dir"]}"\n'
-            "source_display: pdf-crops\n"
+            "source_display: extracted-paragraph-pairs\n"
             "allow_image_crops: true\n"
             "allow_optional_image_crops: false\n"
             f"paragraph_reading_progress: {progress}\n"
@@ -98,10 +100,11 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             f"# {task['display_title']}：逐段精读验证日志\n\n"
             "## 全文推理单元地图\n\n- [ ] U01 · 当前：awaiting_initial_analysis\n\n"
             "## 交互精读\n\n### U01\n\n"
-            "#### 原文\n\n"
-            f"![[{task['paragraph_reading_images_dir']}/U01/source-p001-01.png]]\n\n"
-            "#### 翻译\n\n连续中文翻译。\n\n"
-            "#### 配图\n\n本单元无独立配图。\n\n"
+            "#### 原文与翻译\n\n"
+            "##### P01\n\n"
+            "###### 原文\n\nSource evidence paragraph.\n\n"
+            "###### 翻译\n\n来源证据段落。\n"
+            f"{visual_block}\n"
             "#### 原文位置\n\n"
             f"[[{task['source_path']}#page=1|PDF p.1]]\n\n"
             "#### 交互\n\n##### 用户初始理解（请填写）\n\n"
@@ -146,7 +149,6 @@ class PipelineParagraphReadingTest(unittest.TestCase):
         )
         unit_dir = image_dir / "U01"
         unit_dir.mkdir(parents=True)
-        (unit_dir / "source-p001-01.png").write_bytes(b"png")
         return source, extract, main_note, queue_file
 
     def test_log_uses_separate_directory_and_same_filename(self):
@@ -184,24 +186,30 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not checked"):
                 PIPELINE.paragraph_reading_preferences(note)
 
-    def test_continuous_mode_log_validates_with_direct_pdf_crops(self):
+    def test_paragraph_pair_log_validates_without_unneeded_visual_crop(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
             task["pdf_extractor_used"] = "mineru"
-            image_dir = PIPELINE.paper_intensive_images_dir(
-                {"vault": vault}, task, create=True
-            )
-            unit_dir = image_dir / "U01"
-            unit_dir.mkdir(parents=True)
-            (unit_dir / "source-p001-01.png").write_bytes(b"png")
+            PIPELINE.paper_intensive_images_dir({"vault": vault}, task, create=True)
             state = PIPELINE.validate_paragraph_reading_note(
                 {"vault": vault}, task, self.make_log(task)
             )
             self.assertEqual(state["stage"], "awaiting_initial_analysis")
             self.assertEqual(state["covered_units"], 0)
 
-    def test_log_rejects_mineru_or_other_non_pdf_crop_paths(self):
+    def test_log_rejects_mineru_or_other_non_pdf_visual_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            task["pdf_extractor_used"] = "mineru"
+            PIPELINE.paper_intensive_images_dir({"vault": vault}, task, create=True)
+            foreign = Path(task["images_dir"]) / "mineru-figure.png"
+            text = self.make_log(task, visual_path=foreign.as_posix())
+            with self.assertRaisesRegex(RuntimeError, "visual crop must use"):
+                PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, text)
+
+    def test_visual_crop_is_embedded_after_matching_translation(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
@@ -211,13 +219,42 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             )
             unit_dir = image_dir / "U01"
             unit_dir.mkdir(parents=True)
-            (unit_dir / "source-p001-01.png").write_bytes(b"png")
-            foreign = Path(task["images_dir"]) / "mineru-figure.png"
-            text = self.make_log(task).replace(
-                f"{task['paragraph_reading_images_dir']}/U01/source-p001-01.png",
-                foreign.as_posix(),
+            visual = f"{task['paragraph_reading_images_dir']}/U01/figure-p001-fig01.png"
+            (unit_dir / "figure-p001-fig01.png").write_bytes(b"png")
+            state = PIPELINE.validate_paragraph_reading_note(
+                {"vault": vault}, task, self.make_log(task, visual_path=visual)
             )
-            with self.assertRaisesRegex(RuntimeError, "source crop must use"):
+            self.assertEqual(state["current_unit"], "U01")
+
+    def test_log_rejects_old_separate_source_and_translation_blocks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            task["pdf_extractor_used"] = "mineru"
+            PIPELINE.paper_intensive_images_dir({"vault": vault}, task, create=True)
+            old_layout = self.make_log(task).replace(
+                "#### 原文与翻译\n\n##### P01\n\n###### 原文\n\n"
+                "Source evidence paragraph.\n\n###### 翻译\n\n来源证据段落。",
+                "#### 原文\n\nSource evidence paragraph.\n\n"
+                "#### 翻译\n\n来源证据段落。\n\n#### 配图\n\n本单元无独立配图。",
+            )
+            with self.assertRaisesRegex(RuntimeError, "missing #### 原文与翻译"):
+                PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, old_layout)
+
+    def test_source_paragraph_cannot_be_replaced_with_an_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            task["pdf_extractor_used"] = "mineru"
+            PIPELINE.paper_intensive_images_dir({"vault": vault}, task, create=True)
+            source_crop = (
+                f"{task['paragraph_reading_images_dir']}/U01/figure-p001-fig01.png"
+            )
+            text = self.make_log(task).replace(
+                "Source evidence paragraph.",
+                f"Source evidence paragraph.\n\n![[{source_crop}]]",
+            )
+            with self.assertRaisesRegex(RuntimeError, "source text cannot embed images"):
                 PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, text)
 
     def test_continue_creates_log_without_changing_primary_body(self):
@@ -292,7 +329,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             log_note = vault / task["paragraph_reading_note_path"]
             log_note.parent.mkdir(parents=True)
             legacy = self.make_log(task).replace(
-                "workflow: full-text-continuous-pdf-units",
+                "workflow: full-text-paragraph-pairs",
                 "workflow: full-text-reasoning-units",
             )
             log_note.write_text(legacy, encoding="utf-8")
@@ -334,7 +371,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             legacy = self.make_log(
                 task, initial_answer="我已经完成了旧版初始理解。"
             ).replace(
-                "workflow: full-text-continuous-pdf-units",
+                "workflow: full-text-paragraph-pairs",
                 "workflow: full-text-reasoning-units",
             )
             log_note.write_text(legacy, encoding="utf-8")

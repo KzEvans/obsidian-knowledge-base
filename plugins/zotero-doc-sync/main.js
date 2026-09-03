@@ -177,7 +177,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     if (!waiting) return;
     const unit = String(frontmatter.current_unit || "当前单元");
     const legacy =
-      String(frontmatter.workflow || "") !== "full-text-continuous-pdf-units";
+      String(frontmatter.workflow || "") !== "full-text-paragraph-pairs";
     this.submitButton.dataset.action = legacy ? "continue" : "submit-initial";
     this.submitButton.textContent = this.busy
       ? "处理中…"
@@ -188,7 +188,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     this.submitButton.setAttribute("aria-busy", this.busy ? "true" : "false");
     this.submitButton.setAttribute(
       "aria-label",
-      legacy ? `将 ${unit} 更新为连续 PDF 裁图格式` : `提交 ${unit} 的初始理解`
+      legacy ? `将 ${unit} 更新为逐段原文与翻译格式` : `提交 ${unit} 的初始理解`
     );
   }
 

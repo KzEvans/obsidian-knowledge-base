@@ -1,4 +1,19 @@
-# Continuous PDF-crop Mode A workflow
+# Interleaved paragraph-pair Mode A workflow
+
+## Contents
+
+1. Non-negotiable model
+2. Frontmatter contract
+3. Document structure
+4. Build the coverage map
+5. Extracted-text and direct-PDF visual contract
+6. Unit stage A
+7. Explicit initial-understanding submission
+8. Graded hints
+9. Expert explanation and reconstruction
+10. Scoring and verification
+11. Explicit merge
+12. Completion and knowledge growth
 
 ## 1. Non-negotiable model
 
@@ -15,7 +30,7 @@ Use scalar frontmatter:
 type: paper-intensive-reading-log
 status: draft
 reading_mode: A
-workflow: full-text-continuous-pdf-units
+workflow: full-text-paragraph-pairs
 integration_role: auxiliary
 primary_source_id: "paper:example"
 source_note: "[[wiki/papers/example.md]]"
@@ -24,7 +39,7 @@ extract: "[[extracts/papers/example.md]]"
 pdf_extractor: mineru
 images_dir: "wiki/papers/images/example"
 intensive_images_dir: "wiki/papers/images/example/intensive-reading"
-source_display: pdf-crops
+source_display: extracted-paragraph-pairs
 allow_image_crops: true
 allow_optional_image_crops: false
 paragraph_reading_progress: partial
@@ -41,7 +56,7 @@ updated_at: "ISO timestamp"
 ---
 ```
 
-`allow_image_crops: true` records that selecting intensive reading authorizes the required direct-PDF crops. `allow_optional_image_crops` mirrors the legacy `paragraph_reading_figures` checkbox and controls only additional supplemental crops.
+`allow_image_crops: true` records that selecting intensive reading authorizes relevant direct-PDF visual crops. `allow_optional_image_crops` mirrors the legacy `paragraph_reading_figures` checkbox and controls only additional supplemental crops.
 
 Allowed `interaction_stage` values:
 
@@ -97,11 +112,13 @@ Rules:
 - include relevant SI only under the unit whose claim points to it;
 - do not display AI-inferred unit names, roles, functions, or relationships.
 
-## 5. Direct PDF crop contract
+## 5. Extracted-text and direct-PDF visual contract
 
-Use MinerU only to navigate text, captions, equations, and page boundaries. Displayed source evidence must come from `source_path` itself.
+Use the cached `extract_path` for source paragraphs, document order, equations, captions, and page boundaries. Prefer MinerU output. If the cache records the `pdftotext` fallback, use that extracted text and retain `pdf_extractor: pdftotext`. Ordinary source paragraphs must be searchable Markdown text, not screenshots or blockquotes.
 
-For every crop, call:
+Preserve the paper's reading order and paragraph boundaries wherever the extraction permits. Correct only obvious extraction artifacts that can be verified against `source_path`; do not paraphrase, summarize, or silently reconstruct missing source text. Use `source_path` as the authority for every displayed visual and for resolving ambiguous extraction.
+
+For every relevant figure, table, or equation crop, call:
 
 ```bash
 python3 "<TASK_JSON.paragraph_reading_crop_script>" \
@@ -109,36 +126,44 @@ python3 "<TASK_JSON.paragraph_reading_crop_script>" \
   --page 1 \
   --bbox 120,180,980,1420 \
   --dpi 180 \
-  --output "<absolute paragraph_reading_images_dir>/U01/source-p001-01.png" \
+  --output "<absolute paragraph_reading_images_dir>/U01/figure-p002-fig01.png" \
   --allowed-root "<absolute paragraph_reading_images_dir>"
 ```
 
-`--bbox` is `left,top,width,height` in pixels at the selected DPI. Crop text columns in reading order. Use filenames:
+`--bbox` is `left,top,width,height` in pixels at the selected DPI. Use filenames `U01/figure-p002-fig01.png`, `table-p003-table01.png`, or `equation-p003-eq01.png`. Do not create or embed `source-*` text crops, and do not copy MinerU-generated image assets into this directory.
 
-- original text: `U01/source-p001-01.png`, `source-p001-02.png`, …;
-- relevant visuals: `U01/figure-p002-fig01.png`, `table-p003-table01.png`, or `equation-p003-eq01.png`.
+Place a visual once, immediately after the translation of the first source paragraph that invokes, defines, or materially interprets it. If one visual supports several adjacent paragraphs, do not repeat it. A paragraph without a relevant visual has no placeholder or empty-image statement.
 
-Original-text crops within one unit must form one continuous reading sequence. Collectively, all units must cover the full main text without cherry-picked gaps, excluding only page furniture, references, and non-substantive administrative text. Do not copy MinerU-generated image assets into this directory.
-
-## 6. Unit stage A — source, translation, figure, location, interaction
+## 6. Unit stage A — interleaved paragraph pairs, location, interaction
 
 Use this exact order and heading depth:
 
 ```markdown
 ### U01
 
-#### 原文
+#### 原文与翻译
 
-![[wiki/papers/images/example/intensive-reading/U01/source-p001-01.png]]
-![[wiki/papers/images/example/intensive-reading/U01/source-p001-02.png]]
+##### P01
 
-#### 翻译
+###### 原文
 
-<按原文阅读顺序给出连续中文翻译；保留公式、符号和术语边界。>
+<从 extract_path 提取的一个完整、连续、可搜索原文段落。>
 
-#### 配图
+###### 翻译
+
+<只翻译上面的 P01 原文；保留公式、符号和术语边界。>
 
 ![[wiki/papers/images/example/intensive-reading/U01/figure-p002-fig01.png]]
+
+##### P02
+
+###### 原文
+
+<紧接 P01 的下一个原文段落。>
+
+###### 翻译
+
+<只翻译上面的 P02 原文。>
 
 #### 原文位置
 
@@ -154,9 +179,16 @@ Use this exact order and heading depth:
 <!-- initial-understanding:U01:end -->
 ```
 
-If no independent visual belongs to the unit, write `本单元无独立配图。` under `#### 配图`. The original crop sequence still exists.
+Rules for paragraph pairs:
 
-Do not use blockquoted excerpts or OCR text as the displayed original. Do not add a semantic subtitle to `### U01`. Do not add “证据包”, “涵盖内容”, “在全文论证中的作用”, or “与自动笔记的关系”. Put PDF links only under `#### 原文位置`, once per unit.
+- number blocks sequentially as `P01`, `P02`, … within the unit;
+- include exactly one `###### 原文` followed immediately by one `###### 翻译` in every block;
+- keep each extracted source paragraph intact when possible; split only when the PDF itself has a paragraph break or when an unusually long paragraph needs a natural sentence-boundary split for readability;
+- translate only the source paragraph directly above, so the reader never has to match a large English block to a later translation block;
+- place any relevant direct-PDF visual crop after that pair's translation and before the next `Pxx` heading;
+- omit images entirely when the paragraph has no relevant visual.
+
+Do not create separate `#### 原文`, `#### 翻译`, or `#### 配图` sections. Do not use blockquotes or crop ordinary source text into images. Do not add a semantic subtitle to `### U01`, or add “证据包”, “涵盖内容”, “在全文论证中的作用”, or “与自动笔记的关系”. Put PDF links only under `#### 原文位置`, once per unit.
 
 Set `interaction_stage: awaiting_initial_analysis` and stop. Never write inside the user marker block.
 
@@ -187,7 +219,7 @@ On `submit-initial`, preserve the marker content verbatim and add under `#### �
 
 Do not add the unit's role or relationship. Do not repeat the PDF location link; all unit-specific discussion refers to the single `原文位置` block. Set stage `awaiting_supervisor_answer` and stop.
 
-When continuing an older log, migrate its map and current unit to the new crop template while preserving every user-written character. Create the required direct-PDF crops before advancing.
+When continuing an older log, migrate its map and current unit to the interleaved paragraph-pair template while preserving every user-written character. Replace old source-text crops with extracted paragraphs and their immediately following translations. Keep or recrop only relevant direct-PDF visuals and place them after the matching paragraph pair. Do not advance the interaction stage during migration.
 
 ## 8. Graded hints
 
@@ -278,7 +310,7 @@ In the primary note maintain:
 <!-- intensive-reading:U01:end -->
 ```
 
-Do not copy the source crops, dialogue, or user answer into the primary note. Update an existing marker in place. After merge, check the unit, add it once to `merged_units`, increment coverage once, and advance to `ready_for_next_unit` or `complete`.
+Do not copy source paragraphs, visual crops, dialogue, or user answers into the primary note. Update an existing marker in place. After merge, check the unit, add it once to `merged_units`, increment coverage once, and advance to `ready_for_next_unit` or `complete`.
 
 ## 12. Completion and knowledge growth
 

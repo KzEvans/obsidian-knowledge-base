@@ -1,6 +1,6 @@
 ---
 name: paper-intensive-reading
-description: Interactively deep-read one academic paper in Chinese as a continuous full-text sequence of a few non-overlapping units, displaying original text and relevant figures as direct PDF crops, requiring explicit submission of user understanding, and keeping results as a separate verification/increment layer until merge. Use when the user starts, continues, submits, hints, explains, reconstructs, scores, shows progress, or merges an opt-in intensive/paragraph reading; when TASK_JSON contains paragraph_reading_note_path; or when an Obsidian paper is marked paragraph_reading. Do not use for automatic paper-note generation, bulk summaries, or unreviewed canonical knowledge integration.
+description: Interactively deep-read one academic paper in Chinese as a continuous full-text sequence of a few non-overlapping units, interleaving each extracted source paragraph with its translation and placing relevant direct-PDF visual crops immediately after the matching paragraph pair. Requires explicit submission of user understanding and keeps results as a separate verification/increment layer until merge. Use when the user starts, continues, submits, hints, explains, reconstructs, scores, shows progress, or merges an opt-in intensive/paragraph reading; when TASK_JSON contains paragraph_reading_note_path; or when an Obsidian paper is marked paragraph_reading. Do not use for automatic paper-note generation, bulk summaries, or unreviewed canonical knowledge integration.
 ---
 
 # Paper Intensive Reading
@@ -9,13 +9,13 @@ description: Interactively deep-read one academic paper in Chinese as a continuo
 
 Run interactive Mode A reading without creating a competing paper summary. Treat the automatic Forge paper note as a fallible baseline and the primary PDF as authority. Keep the intensive-reading log auxiliary. Modify the primary note only during explicit merge, adding only verified corrections or genuinely new evidence-backed detail.
 
-This workflow adapts Mode A from `paper-reading`, but replaces scattered paragraph excerpts with continuous full-text units, direct PDF crops, explicit user submission, reconstruction, scoring, and gated merge semantics.
+This workflow adapts Mode A from `paper-reading`, but replaces scattered excerpts with continuous full-text units whose extracted source paragraphs and translations alternate in reading order. Keep relevant visuals as direct PDF crops. Retain explicit user submission, reconstruction, scoring, and gated merge semantics.
 
 ## Required resources
 
 Read [references/workflow.md](references/workflow.md) completely before acting. It defines the state machine, exact unit template, crop rules, write boundaries, and merge contract.
 
-Use [scripts/crop_pdf_region.py](scripts/crop_pdf_region.py) for every original-text or figure image shown in a unit. The script renders the selected region directly from the primary PDF; MinerU assets are navigation aids and must not be embedded as the displayed source.
+Use [scripts/crop_pdf_region.py](scripts/crop_pdf_region.py) for every figure, table, or equation image shown in a unit. The script renders the selected region directly from the primary PDF; never embed MinerU-generated images as displayed visuals.
 
 ## Select the operation
 
@@ -56,13 +56,11 @@ Use neutral IDs only (`U01`, `U02`, …) in the displayed map and headings. Do n
 
 For each unit, show exactly this content order:
 
-1. `原文`: one continuous reading sequence rendered as ordered PDF crops;
-2. `翻译`: a continuous Chinese translation aligned to that sequence;
-3. `配图`: relevant figure/table/equation crops taken directly from the PDF, or a plain statement that none exists;
-4. `原文位置`: the unit's PDF location, stated once at the end of the source content;
-5. `交互`: user understanding, AI diagnosis/question, hints, explanation, reconstruction, scoring, and verified conclusion as the state advances.
+1. `原文与翻译`: sequential `P01`, `P02`, … blocks. Each block contains one searchable extracted source paragraph followed immediately by its Chinese translation. If that paragraph has a relevant figure, table, or equation, place its direct-PDF crop immediately after the translation in the same `Pxx` block;
+2. `原文位置`: the unit's PDF location, stated once after all paragraph pairs;
+3. `交互`: user understanding, AI diagnosis/question, hints, explanation, reconstruction, scoring, and verified conclusion as the state advances.
 
-Do not use blockquoted text excerpts. Do not scatter source snippets. Do not repeat PDF location links elsewhere inside the same unit. Do not add fields such as “在全文论证中的作用” or “与自动笔记的关系”.
+Preserve paragraph order and boundaries wherever the extraction permits. Never collect all source paragraphs before all translations. Do not use blockquotes, crop ordinary text into images, create a separate `配图` section, repeat PDF location links elsewhere inside the same unit, or add fields such as “在全文论证中的作用” or “与自动笔记的关系”.
 
 ## Explicit submission and stage discipline
 
@@ -70,7 +68,7 @@ Advance only one stage per invocation and stop. Never infer that initial underst
 
 Normal cycle:
 
-1. show PDF crops, translation, figures, one location, and an empty initial-understanding block; stop;
+1. show interleaved source/translation paragraph pairs, paragraph-local visual crops when relevant, one location, and an empty initial-understanding block; stop;
 2. after explicit `submit-initial`, diagnose and ask one supervisor question; stop;
 3. give one graded hint only when requested;
 4. after an answer or explicit `explain`, teach the unit and open an empty reconstruction block; stop;
@@ -80,20 +78,20 @@ Normal cycle:
 
 A score of at least 6/8 is necessary but not sufficient; any major factual error blocks verification.
 
-## MinerU and PDF crops
+## Extracted text and PDF visual crops
 
-Use `TASK_JSON.extract_path` as the cached navigation and translation layer when it matches the source hash. Use `TASK_JSON.source_path` as the visual authority. Every displayed original passage and figure must be rendered from that PDF with `TASK_JSON.paragraph_reading_crop_script` into `TASK_JSON.paragraph_reading_images_dir/<unit>/`.
+Use `TASK_JSON.extract_path` as the cached source-text, structure, equation, caption, page-navigation, and translation layer when it matches the source hash. Prefer MinerU output; if extraction falls back to `pdftotext`, use its text and record that limitation. Do not rerun MinerU when the cached extraction is valid.
 
-Crop multi-column text in reading order. Consecutive crop files must cover the full unit span without cherry-picking or gaps, apart from page furniture such as headers, footers, and unrelated marginalia. Do not rerun MinerU when the cached extraction is valid. If extraction falls back to `pdftotext`, record that limitation.
+Use `TASK_JSON.source_path` as the authority for checking extracted text and for every displayed visual. Correct only obvious extraction artifacts that can be verified against the PDF; do not silently paraphrase the source paragraph. Crop only relevant figures, tables, or equations with `TASK_JSON.paragraph_reading_crop_script` into `TASK_JSON.paragraph_reading_images_dir/<unit>/`, then embed each crop after the paragraph pair that invokes or explains it.
 
-`paragraph_reading_figures` is retained only as a backward-compatible opt-in for extra supplemental crops. Required original-text crops and directly relevant figure/table/equation crops are part of the selected intensive-reading workflow and are always permitted in the dedicated intensive-reading directory.
+`paragraph_reading_figures` is retained only as a backward-compatible opt-in for extra supplemental crops. Directly relevant figure/table/equation crops are always permitted in the dedicated intensive-reading directory. Ordinary source text remains searchable Markdown and is never stored as a crop.
 
 ## Write boundary
 
 For `continue`, `submit-initial`, `hint`, and `explain`, write only:
 
 - exact `TASK_JSON.paragraph_reading_note_path`;
-- required PDF crops under exact `TASK_JSON.paragraph_reading_images_dir`.
+- required relevant-visual PDF crops under exact `TASK_JSON.paragraph_reading_images_dir`.
 
 Do not modify the automatic note body, PDF, extraction cache, queue, index, or canonical knowledge pages. The deterministic runner alone updates managed status properties.
 
