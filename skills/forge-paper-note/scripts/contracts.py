@@ -59,6 +59,33 @@ NOTE_PLAN_FIELD_TYPES: dict[str, str] = {
     **dict.fromkeys(NOTE_PLAN_STRING_FIELDS, "string"),
     **dict.fromkeys(NOTE_PLAN_LIST_FIELDS, "array"),
 }
+
+# The Forge pipeline builds the research-audit plan described in
+# references/research-audit.md.  It is intentionally different from the
+# canonical DeepPaperNote planning artifact above, so pipeline validation must
+# not require both schemas at once.  The dedicated research and technical
+# linters validate the remaining Forge-only ledgers and structured objects.
+PIPELINE_NOTE_PLAN_STRING_FIELDS: tuple[str, ...] = (
+    "central_claim",
+    "strongest_comparison",
+    "core_intuition",
+)
+PIPELINE_NOTE_PLAN_LIST_FIELDS: tuple[str, ...] = (
+    "decisive_evidence",
+    "prior_work_matrix",
+    "reasoning_path",
+    "inference_ledger",
+    "question_answer_map",
+    "candidate_entity_inventory",
+    "review_items",
+)
+PIPELINE_NOTE_PLAN_REQUIRED_FIELDS: tuple[str, ...] = (
+    PIPELINE_NOTE_PLAN_STRING_FIELDS + PIPELINE_NOTE_PLAN_LIST_FIELDS
+)
+PIPELINE_NOTE_PLAN_FIELD_TYPES: dict[str, str] = {
+    **dict.fromkeys(PIPELINE_NOTE_PLAN_STRING_FIELDS, "string"),
+    **dict.fromkeys(PIPELINE_NOTE_PLAN_LIST_FIELDS, "array"),
+}
 REQUIRED_FIELD_CHECKS: dict[str, dict[str, bool]] = {
     "string": {"non_empty": True},
     "array": {"non_empty": True},

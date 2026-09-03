@@ -14,6 +14,8 @@ from contracts import (
     NOTE_PLAN_REQUIRED_FIELDS,
     NOTE_REQUIRED_SECTIONS,
     PAPER_TYPE_VALUES,
+    PIPELINE_NOTE_PLAN_FIELD_TYPES,
+    PIPELINE_NOTE_PLAN_REQUIRED_FIELDS,
     WRITING_CONTRACT_RULES,
     required_field_value_error,
 )
@@ -39,6 +41,7 @@ CORE_INFO_FIELD_ALIASES: dict[str, str] = {}
 FIGURE_TARGET_SECTIONS: set[str] = set()
 FIGURE_LABELS: dict[str, str] = {}
 MECHANISM_FLOW_HEADING = "机制流程"
+MATERIAL_PREPARATION_HEADING = "材料制备步骤"
 
 PIPELINE_PAPERFORGE_SECTIONS = {
     "zh-CN": (
@@ -80,7 +83,8 @@ PIPELINE_PAPERFORGE_SECTIONS = {
 def configure_output_language(language: str | None = None, profile: str = "canonical") -> str:
     global ACTIVE_PROFILE
     global ACTIVE_LANGUAGE, SCHEMA, SECTIONS, REQUIRED_SECTIONS, CORE_INFO_FIELDS
-    global CORE_INFO_FIELD_INDEX, CORE_INFO_FIELD_ALIASES, FIGURE_TARGET_SECTIONS, FIGURE_LABELS, MECHANISM_FLOW_HEADING
+    global CORE_INFO_FIELD_INDEX, CORE_INFO_FIELD_ALIASES, FIGURE_TARGET_SECTIONS, FIGURE_LABELS
+    global MECHANISM_FLOW_HEADING, MATERIAL_PREPARATION_HEADING
     ACTIVE_LANGUAGE = normalize_output_language(language)
     ACTIVE_PROFILE = profile
     SCHEMA = note_schema(ACTIVE_LANGUAGE)
@@ -111,6 +115,9 @@ def configure_output_language(language: str | None = None, profile: str = "canon
     FIGURE_TARGET_SECTIONS = {SECTIONS[key] for key in ("research_questions", "data_and_task", "method", "key_results", "deep_analysis", "limitations", "my_notes")}
     FIGURE_LABELS = dict(SCHEMA["figure_labels"])
     MECHANISM_FLOW_HEADING = str(SCHEMA["mechanism_flow"])
+    MATERIAL_PREPARATION_HEADING = (
+        "Material Preparation Steps" if ACTIVE_LANGUAGE == "en" else "材料制备步骤"
+    )
     return ACTIVE_LANGUAGE
 
 def section(key: str) -> str:
@@ -358,28 +365,39 @@ def inspect_note_plan(
         )
     except ValueError as exc:
         issues.append(f"planning_output_language_contract_failed: {exc}")
-    missing_fields = [field for field in NOTE_PLAN_REQUIRED_FIELDS if field not in plan]
+    required_fields = (
+        PIPELINE_NOTE_PLAN_REQUIRED_FIELDS
+        if ACTIVE_PROFILE == "pipeline-paperforge"
+        else NOTE_PLAN_REQUIRED_FIELDS
+    )
+    field_types = (
+        PIPELINE_NOTE_PLAN_FIELD_TYPES
+        if ACTIVE_PROFILE == "pipeline-paperforge"
+        else NOTE_PLAN_FIELD_TYPES
+    )
+    missing_fields = [field for field in required_fields if field not in plan]
     if missing_fields:
         issues.append("planning_required_fields_missing")
 
     required_checks = WRITING_CONTRACT_RULES["note_plan_required_field_checks"]
     has_invalid_fields = False
-    for field in NOTE_PLAN_REQUIRED_FIELDS:
+    for field in required_fields:
         if field not in plan:
             continue
         validation_error = required_field_value_error(
-            plan[field], NOTE_PLAN_FIELD_TYPES[field], required_checks
+            plan[field], field_types[field], required_checks
         )
         if validation_error == "invalid":
             has_invalid_fields = True
         elif validation_error == "empty":
             issues.append(f"planning_{field}_empty")
-    if isinstance(plan.get("paper_type"), str) and plan["paper_type"].strip():
+    if ACTIVE_PROFILE != "pipeline-paperforge" and isinstance(plan.get("paper_type"), str) and plan["paper_type"].strip():
         if plan["paper_type"].strip() not in PAPER_TYPE_VALUES:
             issues.append("planning_paper_type_invalid")
     if has_invalid_fields:
         issues.append("planning_required_fields_invalid")
-    issues.extend(inspect_central_claims_plan(plan.get("central_claims")))
+    if ACTIVE_PROFILE != "pipeline-paperforge":
+        issues.extend(inspect_central_claims_plan(plan.get("central_claims")))
 
     return True, issues
 
@@ -710,11 +728,17 @@ def mixed_language_issues(text: str) -> list[dict[str, object]]:
             fence_start = None
     for idx, line in enumerate(lines, start=1):
         stripped = line.strip()
+        section_name = section_name_for_line(lines, idx - 1)
+        reference_sections = {
+            section("references"),
+            "References" if ACTIVE_LANGUAGE == "en" else "引用",
+        }
+        if section_name in reference_sections:
+            continue
         if ACTIVE_LANGUAGE == "en":
             if idx in fenced_code_lines:
                 continue
             checked = stripped
-            section_name = section_name_for_line(lines, idx - 1)
             if section_name in {section("core_information"), section("references")}:
                 for pattern in ENGLISH_METADATA_SOURCE_SPAN_PATTERNS:
                     checked = pattern.sub("", checked)
@@ -736,7 +760,6 @@ def mixed_language_issues(text: str) -> list[dict[str, object]]:
         # hidden target path, when checking Chinese prose style.
         checked = OBSIDIAN_LINK_RE.sub(lambda match: match.group(2) or "", stripped)
         checked = ENGLISH_MATH_SPAN_RE.sub("", checked)
-        section_name = section_name_for_line(lines, idx - 1)
         subsection_name = subsection_name_for_line(lines, idx - 1)
         if section_name in {section("core_information"), section("references")}:
             continue
@@ -1180,6 +1203,8 @@ def is_prose_line(line: str) -> bool:
     if not stripped:
         return False
     if stripped.startswith(("#", "-", "*", "> ", "```", "![[", f"*{FIGURE_LABELS['original_caption']}")):
+        return False
+    if re.match(r"^\d+[.)、]\s+", stripped):
         return False
     if stripped.startswith("`") and stripped.endswith("`"):
         return False
@@ -1711,6 +1736,11 @@ def mechanism_flow_warnings(text: str) -> list[str]:
                 warnings.append("mechanism_flow_heading_invalid")
                 break
     if not method_section_requires_mechanism_flow(text):
+        return warnings
+    # A stepwise preparation protocol is the domain-native method flow for
+    # materials, chemistry, fabrication, and wet-lab papers.  Requiring an
+    # additional generic mechanism-flow subsection duplicates that content.
+    if subsection_body(text, section("method"), MATERIAL_PREPARATION_HEADING):
         return warnings
     heading_pattern = rf"^###\s+{re.escape(MECHANISM_FLOW_HEADING)}\s*$"
     if not re.search(heading_pattern, text, flags=re.MULTILINE):

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,19 @@ def normalize_heading(value: str) -> str:
     value = re.sub(r"\s+", " ", value.strip()).replace("`", "")
     value = re.sub(r"^\d{1,2}\s*[.)、]\s*", "", value)
     return value.casefold()
+
+
+def normalize_reported_form(value: str) -> str:
+    """Normalize equivalent Markdown/Unicode unit notation for comparison."""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    normalized = normalized.replace("−", "-").replace("–", "-").replace("—", "-")
+    normalized = re.sub(r"\^(?=[+-]?\d)", "", normalized)
+    return re.sub(r"[\s`$\\{}]", "", normalized)
+
+
+def reported_form_present(reported_form: str, human_review: str) -> bool:
+    needle = normalize_reported_form(reported_form)
+    return bool(needle) and needle in normalize_reported_form(human_review)
 
 
 def heading_blocks(text: str) -> dict[str, str]:
@@ -288,7 +302,7 @@ def main() -> int:
     human_review = blocks.get(normalize_heading("人工复核" if args.language == "zh-CN" else "Human Review"), "")
     for item in warnings if isinstance(warnings, list) else []:
         reported_form = str(item.get("reported_form", "")).strip()
-        if reported_form and reported_form not in human_review:
+        if reported_form and not reported_form_present(reported_form, human_review):
             issues.append("reported_unit_warning_missing_from_human_review")
             break
 
