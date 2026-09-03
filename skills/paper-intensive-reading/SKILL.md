@@ -11,6 +11,8 @@ Run interactive Mode A reading without creating a competing paper summary. Treat
 
 This workflow adapts Mode A from `paper-reading`, but replaces scattered excerpts with continuous full-text units whose extracted source paragraphs and translations alternate in reading order. Keep relevant visuals as direct PDF crops. Retain explicit user submission, reconstruction, scoring, and gated merge semantics.
 
+Write the durable log with workflow identifier `full-text-paragraph-pairs`.
+
 ## Required resources
 
 Read [references/workflow.md](references/workflow.md) completely before acting. It defines the state machine, exact unit template, crop rules, write boundaries, and merge contract.
