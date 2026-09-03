@@ -2,6 +2,11 @@
 
 Integrate exactly the supplied `NOTE_PATH`. The note must already have `status: reviewed`.
 
+`wiki/papers/close-reading/` contains auxiliary Mode A companions. Never integrate
+those files directly. Reviewed, non-duplicative findings from a companion must first
+be merged into its linked primary paper note; that primary note remains the paper's
+only integration source.
+
 ## Safety boundary
 
 - Never modify `sources/`, `extracts/`, `笔记/实验笔记/`, or `system/queue/pending.json`.

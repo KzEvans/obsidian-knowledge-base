@@ -8,6 +8,8 @@ Check for:
 - orphan pages without meaningful inbound links;
 - integrated claims missing a source or PDF page;
 - duplicate or near-duplicate concept pages;
+- auxiliary `wiki/papers/close-reading/` notes referenced as independent canonical
+  evidence, or the same `primary_source_id` integrated more than once;
 - contradictions that are being presented as a single settled claim;
 - stale draft or reviewed notes not integrated;
 - important recurring concepts that lack a canonical page;

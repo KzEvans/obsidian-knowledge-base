@@ -89,6 +89,10 @@ python3 scripts/check-forge-paper-note.py
 精确续读点；重复执行同一命令即可继续。若允许图表，伴随笔记仍只使用主论文的
 `wiki/papers/images/<论文笔记名>/`，不建立重复图片目录。
 
+主论文笔记是该论文唯一允许进入自生长知识库的来源；逐段精读笔记标记为
+`integration_role: auxiliary`，不能单独审核整合。人工复核后，只把主笔记尚未覆盖的
+洞见连同原 PDF 页码合并回主笔记，再整合主笔记一次，从流程上避免同一论文重复入库。
+
 本功能使用 [Kingslayer-bot/paper-reading-skill](https://github.com/Kingslayer-bot/paper-reading-skill)
 的 MODE A。设备本地 skill 位于 `$CODEX_HOME/skills/paper-reading/`，不会打包进公开仓库。
 可用 `python3 scripts/check-paper-reading.py` 验证。

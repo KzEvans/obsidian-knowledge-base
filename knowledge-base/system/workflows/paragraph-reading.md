@@ -41,6 +41,8 @@ Create or continue exactly `paragraph_reading_note_path`. Use this frontmatter:
 type: paper-paragraph-reading
 status: draft
 reading_mode: A
+integration_role: auxiliary
+primary_source_id: "paper:example"
 source_note: "[[wiki/papers/example.md]]"
 source_pdf: "[[sources/literature/pdf/example.pdf]]"
 extract: "[[extracts/papers/key.md]]"
@@ -53,8 +55,14 @@ updated_at: "ISO timestamp"
 ---
 ```
 
-Copy `source_note`, `source_pdf`, `extract`, `images_dir`, and `include_figures`
-exactly from `TASK_JSON` and its paths. Use `paragraph_reading_progress: complete`
+Set `integration_role` to `auxiliary` and copy `TASK_JSON.id` exactly into
+`primary_source_id`. Copy `source_note`, `source_pdf`, `extract`, `images_dir`, and
+`include_figures` exactly from `TASK_JSON` and its paths. This companion note is not
+an independent knowledge source: never submit it to the integration workflow. After
+human review, merge only non-duplicative insights into the primary paper note with
+the same PDF-page evidence, then integrate that primary note once.
+
+Use `paragraph_reading_progress: complete`
 only after every substantive paragraph in the primary paper has been covered.
 Otherwise use `partial` and record the exact next-safe continuation point in
 `last_completed_locator`. Never claim completion because of time or output limits.

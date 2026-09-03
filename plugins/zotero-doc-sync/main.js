@@ -169,6 +169,10 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
 
   async approveAndIntegrateCurrent() {
     const file = this.app.workspace.getActiveFile();
+    if (file?.path.startsWith("wiki/papers/close-reading/")) {
+      new Notice("逐段精读笔记仅作辅助证据；请将复核后的新增洞见合并到主论文笔记，再审核整合主笔记");
+      return;
+    }
     if (!file || !(file.path.startsWith("wiki/papers/") || file.path.startsWith("wiki/experiments/"))) {
       new Notice("请先打开 wiki/papers 或 wiki/experiments 中的草稿笔记");
       return;

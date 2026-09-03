@@ -27,6 +27,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "2026-09-02",
         )
         task.update(PIPELINE.paper_paragraph_reading_identity(task["note_path"]))
+        task["id"] = "paper:ATTACH:0123456789abcdef"
         task["paragraph_reading_figures"] = False
         return task
 
@@ -79,6 +80,8 @@ class PipelineParagraphReadingTest(unittest.TestCase):
                 "type: paper-paragraph-reading\n"
                 "status: draft\n"
                 "reading_mode: A\n"
+                "integration_role: auxiliary\n"
+                f'primary_source_id: "{task["id"]}"\n'
                 f'source_note: "[[{task["note_path"]}]]"\n'
                 f'images_dir: "{task["images_dir"]}"\n'
                 "include_figures: false\n"
@@ -101,6 +104,8 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             text = (
                 "---\n"
                 "type: paper-paragraph-reading\nstatus: draft\nreading_mode: A\n"
+                "integration_role: auxiliary\n"
+                f'primary_source_id: "{task["id"]}"\n'
                 f'source_note: "[[{task["note_path"]}]]"\n'
                 f'images_dir: "{task["images_dir"]}"\n'
                 "include_figures: false\nparagraph_reading_progress: complete\n---\n\n"
@@ -151,6 +156,8 @@ class PipelineParagraphReadingTest(unittest.TestCase):
                 companion.parent.mkdir(parents=True)
                 companion.write_text(
                     "---\ntype: paper-paragraph-reading\nstatus: draft\nreading_mode: A\n"
+                    "integration_role: auxiliary\n"
+                    f'primary_source_id: "{task["id"]}"\n'
                     f'source_note: "[[{task["note_path"]}]]"\n'
                     f'images_dir: "{task["images_dir"]}"\n'
                     "include_figures: false\nparagraph_reading_progress: complete\n---\n\n"
@@ -178,6 +185,21 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             saved_task = json.loads(queue_file.read_text(encoding="utf-8"))["items"][0]
             self.assertEqual(saved_task["status"], "drafted")
             self.assertEqual(saved_task["paragraph_reading_status"], "completed")
+
+    def test_auxiliary_companion_cannot_be_integrated_directly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            companion = vault / "wiki/papers/close-reading/paper.md"
+            companion.parent.mkdir(parents=True)
+            companion.write_text(
+                "---\ntype: paper-paragraph-reading\nstatus: reviewed\n---\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "auxiliary"):
+                PIPELINE.integrate_note(
+                    {"vault": vault},
+                    "wiki/papers/close-reading/paper.md",
+                )
 
     def test_redraft_requeues_only_the_exact_existing_paper_note(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -23,3 +23,6 @@ SI 首次发现可能需要下载较大的 Supporting Information PDF，因此�
 （Mode A）”。插件调用本地 `paper-reading` skill 的 MODE A，将伴随笔记写到
 `wiki/papers/close-reading/`；若一次未读完，属性显示 `partial`，再次运行同一命令
 会从保存的定位点续读。逐段笔记与主笔记共用该论文自己的 `images_dir`。
+
+逐段精读笔记仅是辅助证据，不能直接执行“审核并整合”。人工确认其中确有主笔记
+未覆盖的洞见后，应连同原 PDF 页码合并回主论文笔记，再对主笔记执行一次整合。

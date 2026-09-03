@@ -86,6 +86,11 @@ After checking `paragraph_reading`, open that primary note and run the Obsidian 
 precise checkpoint and can be continued with the same command. Both notes share the
 paper's existing `wiki/papers/images/<exact-note-stem>/` asset directory.
 
+The primary paper note is the paper's sole integration source. Mode A companions carry
+`integration_role: auxiliary` and `primary_source_id`, and the runner rejects attempts
+to integrate them directly. Merge only reviewed, non-duplicate insights back into the
+primary note with its PDF-page evidence, then integrate the primary note once.
+
 Verify the optional local skill before first use:
 
 ```bash

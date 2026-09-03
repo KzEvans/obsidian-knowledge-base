@@ -1194,6 +1194,8 @@ def validate_paragraph_reading_note(
         "type": "paper-paragraph-reading",
         "status": "draft",
         "reading_mode": "A",
+        "integration_role": "auxiliary",
+        "primary_source_id": str(task["id"]),
         "source_note": f"[[{task['note_path']}]]",
         "images_dir": str(task["images_dir"]),
     }
@@ -1492,10 +1494,17 @@ def note_status(path: Path) -> str:
 def integrate_note(config: Dict[str, Any], note_rel: str) -> int:
     with pipeline_lock(config):
         vault = config["vault"]
+        vault_resolved = vault.resolve()
         note = (vault / note_rel).resolve()
-        if not note.is_relative_to(vault.resolve()):
+        if not note.is_relative_to(vault_resolved):
             raise RuntimeError("Note must be inside the vault")
-        relative = str(note.relative_to(vault))
+        relative_path = note.relative_to(vault_resolved)
+        if relative_path.is_relative_to(PAPER_PARAGRAPH_READING_ROOT):
+            raise RuntimeError(
+                "Paragraph-reading companion notes are auxiliary and cannot be integrated "
+                "independently; merge reviewed insights into the primary paper note first"
+            )
+        relative = relative_path.as_posix()
         if not (relative.startswith("wiki/papers/") or relative.startswith("wiki/experiments/")):
             raise RuntimeError("Only paper or experiment draft notes can be integrated")
         if not note.is_file() or note_status(note) != "reviewed":
