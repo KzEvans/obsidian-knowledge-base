@@ -2,7 +2,7 @@
 
 一套将 Zotero 文献、Obsidian 实验笔记与 Codex 串联起来的本地、自生长知识库工具。
 
-本仓库只包含插件与自动化脚本，不包含任何 PDF、笔记正文、对话记录、运行日志、Zotero 条目或本机配置。
+本仓库只包含插件、自动化脚本及流水线所需 Codex Skills，不包含任何 PDF、笔记正文、对话记录、运行日志、Zotero 条目或本机配置。
 
 ## 目录
 
@@ -11,15 +11,18 @@
 - `knowledge-base/system/zotero-sync/`：自动发现、校验并缓存 PDF Supporting Information，供 Forge Paper Note 按需核对。
 - `plugins/pdf-selection-translator/`：在 Obsidian PDF 阅读器中翻译选中文本；包含 TypeScript 源码和构建产物。
 - `knowledge-base/`：Zotero PDF 镜像、PDF 文本提取、草稿生成、人工审核、知识整合和健康检查脚本。
+- `skills/forge-paper-note/`：常规论文笔记生成 Skill，以及确定性的提取、图片、审计与保存脚本。
+- `skills/paper-reading/`：人工勾选后使用的 Mode A 逐段精读 Skill。
 - 可选逐段精读：人工在主论文笔记勾选后，调用本地 `paper-reading` skill 的 MODE A，并把长篇伴随笔记隔离到 `wiki/papers/close-reading/`。
 
 ## 安装
 
 1. 将需要的插件目录复制到 `<vault>/.obsidian/plugins/`，并在 Obsidian 中启用。
 2. 将 `knowledge-base/` 内的内容复制到 vault 根目录。
-3. 分别复制两个 `config.example.json` 为 `config.json`，填写本机路径和 Zotero collection 名称。
-4. 确保 Zotero 已开启本地 API，并安装 MinerU、`pdftotext` 与 Codex CLI。MinerU 是主解析器，`pdftotext` 是自动回退。
-5. 在 vault 中创建 `sources/literature/`、`笔记/实验笔记/`、`extracts/papers/`、`wiki/papers/images/` 和其他 `wiki/` 所需目录。
+3. 运行 `python3 scripts/install-bundled-skills.py`，把仓库内的两个 Skill 安装到 `$CODEX_HOME/skills/`；安装器遇到已有同名目录会停止，不会覆盖。
+4. 分别复制两个 `config.example.json` 为 `config.json`，填写本机路径和 Zotero collection 名称。
+5. 确保 Zotero 已开启本地 API，并安装 MinerU、`pdftotext` 与 Codex CLI。MinerU 是主解析器，`pdftotext` 是自动回退。
+6. 在 vault 中创建 `sources/literature/`、`笔记/实验笔记/`、`extracts/papers/`、`wiki/papers/images/` 和其他 `wiki/` 所需目录。
 
 推荐使用独立 Python 3.12 环境安装 MinerU，避免影响系统 Python：
 
@@ -63,13 +66,13 @@ Markdown，供 Forge Paper Note 保留可核查的 PDF 页码引用；MinerU 的
 
 ## Forge Paper Note 论文阅读
 
-论文摄取只调用设备本地的 `forge-paper-note` skill，并继续遵守本知识库的来源链接、草稿审核、图片隔离和整合规则。首次处理论文前验证 skill：
+论文摄取只调用本仓库随附的 `forge-paper-note` skill，并继续遵守本知识库的来源链接、草稿审核、图片隔离和整合规则。安装后、首次处理论文前验证 skill：
 
 ```bash
 python3 scripts/check-forge-paper-note.py
 ```
 
-`forge-paper-note` 保存在 `$CODEX_HOME/skills/forge-paper-note/`，不会打包进本仓库。
+仓库源文件位于 `skills/forge-paper-note/`，运行安装器后生效副本位于 `$CODEX_HOME/skills/forge-paper-note/`。
 在 `system/knowledge/config.json` 中把 `forge_python_path` 设为 Python 3.10+ 的绝对路径。
 该 skill 复用了 DeepPaperNote 的确定性单论文流水线，并吸收了 PaperForge 的研究推理思想；两者均在下方保留来源说明。
 
@@ -94,7 +97,7 @@ python3 scripts/check-forge-paper-note.py
 洞见连同原 PDF 页码合并回主笔记，再整合主笔记一次，从流程上避免同一论文重复入库。
 
 本功能使用 [Kingslayer-bot/paper-reading-skill](https://github.com/Kingslayer-bot/paper-reading-skill)
-的 MODE A。设备本地 skill 位于 `$CODEX_HOME/skills/paper-reading/`，不会打包进公开仓库。
+的 MODE A。仓库源文件位于 `skills/paper-reading/`，安装后的生效副本位于 `$CODEX_HOME/skills/paper-reading/`。
 可用 `python3 scripts/check-paper-reading.py` 验证。
 
 ## 致谢与引用
@@ -104,6 +107,9 @@ python3 scripts/check-forge-paper-note.py
 的 MODE A。Forge 的研究审计方法参考了 Feijiang Han 维护的
 [PaperForge](https://github.com/FeijiangHan/PaperForge)，确定性论文与图片流水线源自
 [DeepPaperNote](https://github.com/917Dhj/DeepPaperNote)。如果在研究或项目中使用该流程，请保留相应上游引用：
+
+两个 Skill 的固定上游版本、MIT 许可证位置和完整 BibTeX 见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 > Han, Feijiang. *PaperForge*. GitHub repository. <https://github.com/FeijiangHan/PaperForge>.
 

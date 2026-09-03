@@ -55,17 +55,18 @@ unavailable values remain explicit YAML `null` values.
 
 ## Forge Paper Note paper reading
 
-The automated paper task uses the local `forge-paper-note` skill exclusively. Verify the
-local installation before processing papers:
+The automated paper task uses the repository-bundled `forge-paper-note` skill
+exclusively. Install the bundled skills from the repository root, then verify the
+active local installation before processing papers:
 
 ```bash
 python3 scripts/check-forge-paper-note.py
 ```
 
-The check requires `$CODEX_HOME/skills/forge-paper-note/SKILL.md` plus its deterministic
-figure, lint, and save scripts. The skill itself is device-local and is not vendored in this
-repository. Set `forge_python_path` in `config.json` to a Python 3.10+ interpreter; the
-runner passes that exact interpreter to unattended Forge tasks.
+The versioned source is `skills/forge-paper-note/`. The check requires its installed
+copy at `$CODEX_HOME/skills/forge-paper-note/`, including the deterministic figure,
+lint, and save scripts. Set `forge_python_path` in `config.json` to a Python 3.10+
+interpreter; the runner passes that exact interpreter to unattended Forge tasks.
 
 Forge literature context is intentionally local-only: the prior-work section may
 summarize only how the current paper describes its cited works. It does not search the
@@ -80,7 +81,8 @@ into full-text paragraph reading; the second separately authorizes figure/table
 analysis. Neither option runs automatically.
 
 After checking `paragraph_reading`, open that primary note and run the Obsidian command
-`开始或继续当前论文的逐段精读（Mode A）`. The runner invokes the device-local
+`开始或继续当前论文的逐段精读（Mode A）`. The runner invokes the repository-bundled,
+locally installed
 `paper-reading` skill in Mode A and writes a separate companion note at
 `wiki/papers/close-reading/<exact-primary-note-filename>`. Partial work records a
 precise checkpoint and can be continued with the same command. Both notes share the

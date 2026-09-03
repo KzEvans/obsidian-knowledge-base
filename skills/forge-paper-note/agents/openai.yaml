@@ -1,0 +1,4 @@
+interface:
+  display_name: "Forge Paper Note"
+  short_description: "Evidence-grounded paper notes for durable knowledge bases"
+  default_prompt: "Use $forge-paper-note to turn this paper into an evidence-grounded Obsidian knowledge note."
