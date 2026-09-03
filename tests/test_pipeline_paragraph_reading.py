@@ -27,11 +27,103 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "2026-09-02",
         )
         task.update(PIPELINE.paper_paragraph_reading_identity(task["note_path"]))
-        task["id"] = "paper:ATTACH:0123456789abcdef"
-        task["paragraph_reading_figures"] = False
+        task.update(
+            {
+                "id": "paper:ATTACH:0123456789abcdef",
+                "kind": "paper",
+                "status": "drafted",
+                "source_path": "sources/literature/pdf/paper.pdf",
+                "extract_path": "extracts/papers/ATTACH.md",
+                "title": "A valuable paper",
+                "paragraph_reading_figures": False,
+            }
+        )
         return task
 
-    def test_companion_uses_separate_directory_and_same_filename(self):
+    def make_log(
+        self,
+        task,
+        *,
+        stage="awaiting_initial_analysis",
+        covered=0,
+        total=2,
+        score=None,
+        progress="partial",
+        verified_units="",
+        merged_units="",
+    ):
+        score_value = "null" if score is None else str(score)
+        verified_block = ""
+        if stage == "ready_to_merge":
+            verified_block = (
+                "\n<!-- verified-unit:U01:start -->\n"
+                "#### 已验证共同结论（U01）\n\n"
+                "- 核心结论：Verified [[sources/literature/pdf/paper.pdf#page=1|PDF p.1]]\n"
+                "<!-- verified-unit:U01:end -->\n"
+            )
+        return (
+            "---\n"
+            "type: paper-intensive-reading-log\n"
+            "status: draft\n"
+            "reading_mode: A\n"
+            "workflow: full-text-reasoning-units\n"
+            "integration_role: auxiliary\n"
+            f'primary_source_id: "{task["id"]}"\n'
+            f'source_note: "[[{task["note_path"]}]]"\n'
+            f'source_pdf: "[[{task["source_path"]}]]"\n'
+            f'extract: "[[{task["extract_path"]}]]"\n'
+            "pdf_extractor: mineru\n"
+            f'images_dir: "{task["images_dir"]}"\n'
+            "allow_image_crops: false\n"
+            f"paragraph_reading_progress: {progress}\n"
+            f"interaction_stage: {stage}\n"
+            "current_unit: U01\n"
+            f"current_unit_score: {score_value}\n"
+            f"covered_units: {covered}\n"
+            f"total_units: {total}\n"
+            f'verified_units: "{verified_units}"\n'
+            f'merged_units: "{merged_units}"\n'
+            "last_completed_locator: null\n"
+            "---\n\n"
+            f"# {task['display_title']}：逐段精读验证日志\n\n"
+            "## 全文推理单元地图\n\n- [ ] U01 · Claim · PDF p.1\n\n"
+            "## 交互精读\n\n### U01 · Claim · PDF p.1\n\n"
+            "> Source evidence\n"
+            f"{verified_block}\n"
+            "## Agentic Q&A\n\n## 完成检查\n\n## 知识增长候选\n\n"
+            "## 人工笔记\n<!-- user-notes:start -->\n<!-- user-notes:end -->\n"
+        )
+
+    def prepare_vault(self, vault, task):
+        source = vault / task["source_path"]
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"paper pdf")
+        task["sha256"] = PIPELINE.file_sha256(source)
+        extract = vault / task["extract_path"]
+        extract.parent.mkdir(parents=True)
+        extract.write_text(
+            "---\ntype: extracted-paper\nextractor: mineru\n---\n\n"
+            "## Page 1\n\nSource evidence",
+            encoding="utf-8",
+        )
+        main_note = vault / task["note_path"]
+        main_note.parent.mkdir(parents=True)
+        main_note.write_text(
+            "---\ntype: paper\nstatus: draft\nparagraph_reading: true\n"
+            "paragraph_reading_figures: false\n"
+            "paragraph_reading_status: not_requested\n"
+            "paragraph_reading_note: null\n---\n\n# Main\n\nOriginal body.\n",
+            encoding="utf-8",
+        )
+        queue_file = vault / "system/queue/pending.json"
+        queue_file.parent.mkdir(parents=True)
+        queue_file.write_text(
+            json.dumps({"schema_version": 1, "items": [task]}),
+            encoding="utf-8",
+        )
+        return source, extract, main_note, queue_file
+
+    def test_log_uses_separate_directory_and_same_filename(self):
         task = self.make_task()
         self.assertEqual(
             task["paragraph_reading_note_path"],
@@ -42,19 +134,15 @@ class PipelineParagraphReadingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             note = Path(directory) / "paper.md"
             note.write_text(
-                "---\n"
-                "type: paper\n"
-                "paragraph_reading: true\n"
-                "paragraph_reading_status: partial\n"
-                "---\n\n# Paper\n",
+                "---\ntype: paper\nparagraph_reading: true\n"
+                "paragraph_reading_status: partial\n---\n\n# Paper\n",
                 encoding="utf-8",
             )
             self.assertTrue(PIPELINE.ensure_paper_reading_controls(note))
             values = PIPELINE.yaml_frontmatter_scalars(note.read_text(encoding="utf-8"))
             self.assertTrue(PIPELINE.yaml_boolean(values["paragraph_reading"]))
             self.assertEqual(
-                PIPELINE.unquote_yaml_scalar(values["paragraph_reading_status"]),
-                "partial",
+                PIPELINE.unquote_yaml_scalar(values["paragraph_reading_status"]), "partial"
             )
             self.assertIn("paragraph_reading_figures", values)
             self.assertIn("paragraph_reading_note", values)
@@ -70,162 +158,182 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not checked"):
                 PIPELINE.paragraph_reading_preferences(note)
 
-    def test_mode_a_note_accepts_no_images_when_figures_are_disabled(self):
+    def test_continuous_mode_log_validates_with_mineru_and_no_crops(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
+            task["pdf_extractor_used"] = "mineru"
             PIPELINE.paper_images_dir({"vault": vault}, task, create=True)
-            text = (
-                "---\n"
-                "type: paper-paragraph-reading\n"
-                "status: draft\n"
-                "reading_mode: A\n"
-                "integration_role: auxiliary\n"
-                f'primary_source_id: "{task["id"]}"\n'
-                f'source_note: "[[{task["note_path"]}]]"\n'
-                f'images_dir: "{task["images_dir"]}"\n'
-                "include_figures: false\n"
-                "paragraph_reading_progress: partial\n"
-                "---\n\n"
-                f"# {task['display_title']}：逐段精读\n\n"
-                "## 逐段精读\n\n#### PDF p.1 · ¶1\n\n> Source paragraph\n"
+            state = PIPELINE.validate_paragraph_reading_note(
+                {"vault": vault}, task, self.make_log(task)
             )
-            self.assertEqual(
-                PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, text),
-                "partial",
-            )
+            self.assertEqual(state["stage"], "awaiting_initial_analysis")
+            self.assertEqual(state["covered_units"], 0)
 
-    def test_mode_a_note_rejects_images_when_figures_are_disabled(self):
+    def test_log_rejects_embedded_images_without_crop_permission(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
+            task["pdf_extractor_used"] = "mineru"
             image_dir = PIPELINE.paper_images_dir({"vault": vault}, task, create=True)
             (image_dir / "fig-01.png").write_bytes(b"png")
-            text = (
-                "---\n"
-                "type: paper-paragraph-reading\nstatus: draft\nreading_mode: A\n"
-                "integration_role: auxiliary\n"
-                f'primary_source_id: "{task["id"]}"\n'
-                f'source_note: "[[{task["note_path"]}]]"\n'
-                f'images_dir: "{task["images_dir"]}"\n'
-                "include_figures: false\nparagraph_reading_progress: complete\n---\n\n"
-                f"# {task['display_title']}：逐段精读\n\n## 逐段精读\n\n"
-                "> Source paragraph\n\n"
-                f"![[{task['images_dir']}/fig-01.png]]\n"
+            text = self.make_log(task).replace(
+                "## Agentic Q&A",
+                f"![[{task['images_dir']}/fig-01.png]]\n\n## Agentic Q&A",
             )
-            with self.assertRaisesRegex(RuntimeError, "embedded figures"):
+            with self.assertRaisesRegex(RuntimeError, "without crop permission"):
                 PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, text)
 
-    def test_human_selected_note_runs_mode_a_without_changing_main_lifecycle(self):
+    def test_continue_creates_log_without_changing_primary_body(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
-            task.update(
-                {
-                    "id": "paper:ATTACH:0123456789abcdef",
-                    "kind": "paper",
-                    "status": "drafted",
-                    "source_path": "sources/literature/pdf/paper.pdf",
-                    "extract_path": "extracts/papers/ATTACH.md",
-                    "title": "A valuable paper",
-                }
-            )
-            source = vault / task["source_path"]
-            source.parent.mkdir(parents=True)
-            source.write_bytes(b"paper pdf")
-            task["sha256"] = PIPELINE.file_sha256(source)
-            extract = vault / task["extract_path"]
-            extract.parent.mkdir(parents=True)
-            extract.write_text("## Page 1\n\nSource paragraph", encoding="utf-8")
-            main_note = vault / task["note_path"]
-            main_note.parent.mkdir(parents=True)
-            main_note.write_text(
-                "---\ntype: paper\nstatus: draft\nparagraph_reading: true\n"
-                "paragraph_reading_figures: false\n"
-                "paragraph_reading_status: not_requested\n"
-                "paragraph_reading_note: null\n---\n\n# Main\n",
-                encoding="utf-8",
-            )
-            queue = {"schema_version": 1, "items": [task]}
-            queue_file = vault / "system/queue/pending.json"
-            queue_file.parent.mkdir(parents=True)
-            queue_file.write_text(json.dumps(queue), encoding="utf-8")
+            _source, extract, main_note, queue_file = self.prepare_vault(vault, task)
 
             def fake_codex(*_args, **_kwargs):
-                companion = vault / task["paragraph_reading_note_path"]
-                companion.parent.mkdir(parents=True)
-                companion.write_text(
-                    "---\ntype: paper-paragraph-reading\nstatus: draft\nreading_mode: A\n"
-                    "integration_role: auxiliary\n"
-                    f'primary_source_id: "{task["id"]}"\n'
-                    f'source_note: "[[{task["note_path"]}]]"\n'
-                    f'images_dir: "{task["images_dir"]}"\n'
-                    "include_figures: false\nparagraph_reading_progress: complete\n---\n\n"
-                    f"# {task['display_title']}：逐段精读\n\n## 逐段精读\n\n"
-                    "> Source paragraph\n",
+                log_note = vault / task["paragraph_reading_note_path"]
+                log_note.parent.mkdir(parents=True)
+                log_note.write_text(self.make_log(task), encoding="utf-8")
+                return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+            config = {"vault": vault, "paragraph_reading_timeout_seconds": 30}
+            with mock.patch.object(
+                PIPELINE,
+                "ensure_paragraph_reading_skill",
+                return_value="paper-intensive-reading",
+            ), mock.patch.object(
+                PIPELINE, "extract_pdf", return_value=extract
+            ), mock.patch.object(
+                PIPELINE, "codex_command", side_effect=fake_codex
+            ):
+                self.assertEqual(PIPELINE.paragraph_read_paper(config, task["note_path"]), 0)
+
+            main_text = main_note.read_text(encoding="utf-8")
+            self.assertIn("# Main\n\nOriginal body.", main_text)
+            self.assertNotIn("Source evidence", main_text)
+            main_values = PIPELINE.yaml_frontmatter_scalars(main_text)
+            self.assertEqual(
+                PIPELINE.unquote_yaml_scalar(main_values["paragraph_reading_status"]),
+                "partial",
+            )
+            saved_task = json.loads(queue_file.read_text(encoding="utf-8"))["items"][0]
+            self.assertEqual(saved_task["status"], "drafted")
+
+    def test_log_resolves_back_to_primary_note(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            self.prepare_vault(vault, task)
+            log_note = vault / task["paragraph_reading_note_path"]
+            log_note.parent.mkdir(parents=True)
+            log_note.write_text(
+                self.make_log({**task, "pdf_extractor_used": "mineru"}), encoding="utf-8"
+            )
+            primary, relative = PIPELINE.resolve_primary_paper_note(
+                {"vault": vault}, task["paragraph_reading_note_path"]
+            )
+            self.assertEqual(relative, task["note_path"])
+            self.assertEqual(primary, (vault / task["note_path"]).resolve())
+
+    def test_merge_is_the_only_stage_that_adds_verified_increment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            _source, extract, main_note, queue_file = self.prepare_vault(vault, task)
+            ready_task = {**task, "pdf_extractor_used": "mineru"}
+            log_note = vault / task["paragraph_reading_note_path"]
+            log_note.parent.mkdir(parents=True)
+            log_note.write_text(
+                self.make_log(
+                    ready_task,
+                    stage="ready_to_merge",
+                    score=7,
+                    verified_units="U01",
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_codex(*_args, **_kwargs):
+                main_text = main_note.read_text(encoding="utf-8")
+                main_note.write_text(
+                    main_text
+                    + "\n## 精读验证与增量\n\n"
+                    "<!-- intensive-reading:U01:start -->\n"
+                    "### U01 · Claim\n\n"
+                    "- 验证结论：Verified\n"
+                    "- 对原自动笔记的处理：已补充\n"
+                    "- 非重复增量：New boundary\n"
+                    "- 证据与边界：Evidence "
+                    "[[sources/literature/pdf/paper.pdf#page=1|PDF p.1]]\n"
+                    "<!-- intensive-reading:U01:end -->\n",
+                    encoding="utf-8",
+                )
+                log_note.write_text(
+                    self.make_log(
+                        ready_task,
+                        stage="ready_for_next_unit",
+                        covered=1,
+                        total=2,
+                        score=7,
+                        verified_units="U01",
+                        merged_units="U01",
+                    ),
                     encoding="utf-8",
                 )
                 return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
 
             config = {"vault": vault, "paragraph_reading_timeout_seconds": 30}
             with mock.patch.object(
-                PIPELINE, "ensure_paragraph_reading_skill", return_value="paper-reading"
-            ), mock.patch.object(PIPELINE, "extract_pdf", return_value=extract), mock.patch.object(
+                PIPELINE,
+                "ensure_paragraph_reading_skill",
+                return_value="paper-intensive-reading",
+            ), mock.patch.object(
+                PIPELINE, "extract_pdf", return_value=extract
+            ), mock.patch.object(
                 PIPELINE, "codex_command", side_effect=fake_codex
             ):
-                self.assertEqual(PIPELINE.paragraph_read_paper(config, task["note_path"]), 0)
+                self.assertEqual(PIPELINE.paragraph_merge_paper(config, task["note_path"]), 0)
 
-            main_values = PIPELINE.yaml_frontmatter_scalars(
-                main_note.read_text(encoding="utf-8")
-            )
+            main_text = main_note.read_text(encoding="utf-8")
+            self.assertEqual(main_text.count("<!-- intensive-reading:U01:start -->"), 1)
+            values = PIPELINE.yaml_frontmatter_scalars(main_text)
             self.assertEqual(
-                PIPELINE.unquote_yaml_scalar(main_values["paragraph_reading_status"]),
-                "completed",
+                PIPELINE.unquote_yaml_scalar(values["intensive_reading_coverage"]),
+                "1/2 (50%)",
+            )
+            self.assertFalse(PIPELINE.yaml_boolean(values["intensive_reading_verified"]))
+            self.assertEqual(
+                PIPELINE.unquote_yaml_scalar(values["knowledge_growth_status"]),
+                "not_ready",
             )
             saved_task = json.loads(queue_file.read_text(encoding="utf-8"))["items"][0]
             self.assertEqual(saved_task["status"], "drafted")
-            self.assertEqual(saved_task["paragraph_reading_status"], "completed")
 
-    def test_auxiliary_companion_cannot_be_integrated_directly(self):
+    def test_auxiliary_log_cannot_be_integrated_directly(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
-            companion = vault / "wiki/papers/close-reading/paper.md"
-            companion.parent.mkdir(parents=True)
-            companion.write_text(
-                "---\ntype: paper-paragraph-reading\nstatus: reviewed\n---\n",
+            log_note = vault / "wiki/papers/close-reading/paper.md"
+            log_note.parent.mkdir(parents=True)
+            log_note.write_text(
+                "---\ntype: paper-intensive-reading-log\nstatus: reviewed\n---\n",
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(RuntimeError, "auxiliary"):
-                PIPELINE.integrate_note(
-                    {"vault": vault},
-                    "wiki/papers/close-reading/paper.md",
-                )
+                PIPELINE.integrate_note({"vault": vault}, "wiki/papers/close-reading/paper.md")
 
     def test_redraft_requeues_only_the_exact_existing_paper_note(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
-            task.update(
-                {
-                    "id": "paper:ATTACH:0123456789abcdef",
-                    "kind": "paper",
-                    "status": "drafted",
-                }
-            )
             note = vault / task["note_path"]
             note.parent.mkdir(parents=True)
             note.write_text("---\ntype: paper\nstatus: draft\n---\n", encoding="utf-8")
             queue_file = vault / "system/queue/pending.json"
             queue_file.parent.mkdir(parents=True)
             queue_file.write_text(
-                json.dumps({"schema_version": 1, "items": [task]}),
-                encoding="utf-8",
+                json.dumps({"schema_version": 1, "items": [task]}), encoding="utf-8"
             )
-
-            self.assertEqual(
-                PIPELINE.queue_paper_redraft({"vault": vault}, task["note_path"]),
-                0,
-            )
+            self.assertEqual(PIPELINE.queue_paper_redraft({"vault": vault}, task["note_path"]), 0)
             saved_task = json.loads(queue_file.read_text(encoding="utf-8"))["items"][0]
             self.assertEqual(saved_task["status"], "pending")
             self.assertEqual(saved_task["redraft_previous_status"], "drafted")
@@ -234,15 +342,11 @@ class PipelineParagraphReadingTest(unittest.TestCase):
         config = {"codex_timeout_seconds": 1800, "redraft_timeout_seconds": 1800}
         self.assertEqual(
             PIPELINE.ingest_timeout_seconds(
-                config,
-                {"kind": "paper", "redraft_requested_at": "2026-09-02T18:00:00+08:00"},
+                config, {"kind": "paper", "redraft_requested_at": "2026-09-02T18:00:00+08:00"}
             ),
             1800,
         )
-        self.assertEqual(
-            PIPELINE.ingest_timeout_seconds(config, {"kind": "paper"}),
-            1800,
-        )
+        self.assertEqual(PIPELINE.ingest_timeout_seconds(config, {"kind": "paper"}), 1800)
 
     def test_cancel_redrafts_restores_previous_states(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -15,10 +15,11 @@
 - New source-specific notes under `wiki/papers/` and `wiki/experiments/` must use `status: draft`.
 - Paper draft filenames, level-one headings, and index aliases use `YYYY-MM-DD - First Author - Paper Title`.
 - Paper-note images live under `wiki/papers/images/<exact-note-stem>/`. Keep MinerU's complete extraction cache under `extracts/papers/assets/`; copy only selected, visually reviewed note assets into the paper-specific directory.
-- Optional Mode A notes live under `wiki/papers/close-reading/<exact-primary-note-filename>`. Start them only after a human checks `paragraph_reading` in the primary paper note. They share that paper's exact `images_dir`; `paragraph_reading_figures` is a separate human permission gate.
-- A Mode A companion is auxiliary evidence, never a second integration source. Merge only reviewed, non-duplicative insights into its linked primary paper note with the same PDF-page evidence, then integrate the primary note once. Never integrate a file under `wiki/papers/close-reading/` directly.
+- Optional intensive-reading logs live under `wiki/papers/close-reading/<exact-primary-note-filename>`. Start them only after a human checks `paragraph_reading` in the primary paper note. They share that paper's exact `images_dir`; `paragraph_reading_figures` permits saving selected crops but never excludes scientific figures or tables from full-text reasoning coverage.
+- The intensive-reading log is auxiliary evidence, never a second summary or integration source. Each invocation advances one Mode A interaction stage. The primary paper note body remains unchanged until the human explicitly merges a unit that scored at least 6/8 with no major factual error.
+- During explicit intensive-reading merge, write only the linked primary note and its auxiliary log. Add only verified corrections or non-duplicative increments with the same PDF-page evidence. Do not update canonical knowledge pages; those remain behind the existing primary-note review and integration gate. Never integrate a file under `wiki/papers/close-reading/` directly.
 - During paper ingest, write only the task's `note_path`, its exact `images_dir`, and the draft section of `wiki/index.md`.
-- During paragraph reading, write only the task's `paragraph_reading_note_path` and its already assigned `images_dir`; the deterministic runner alone updates selection/status properties on the primary note.
+- During intensive reading before merge, write only the task's `paragraph_reading_note_path` and permitted files in its already assigned `images_dir`; the deterministic runner alone updates selection/status properties on the primary note.
 - Do not update canonical knowledge pages from an unreviewed draft.
 - Integrate only a note explicitly marked `status: reviewed`; then mark it `status: integrated`.
 - Represent scientific contradictions as competing, conditioned claims.
@@ -32,5 +33,7 @@
 - Queue and runner: `system/knowledge/run_pipeline.py`
 - Ingest rules: `system/workflows/ingest.md`
 - Integration rules: `system/workflows/integrate.md`
+- Intensive-reading rules: `system/workflows/paragraph-reading.md`
+- Verified-unit merge rules: `system/workflows/paragraph-reading-merge.md`
 - Health-check rules: `system/workflows/lint.md`
 - Queue state is program-owned; do not edit `system/queue/pending.json` manually.

@@ -9,6 +9,8 @@ Common commands:
 /usr/bin/python3 system/knowledge/run_pipeline.py status
 /usr/bin/python3 system/knowledge/run_pipeline.py ingest-next
 /usr/bin/python3 system/knowledge/run_pipeline.py paragraph-read --note "wiki/papers/YYYY-MM-DD - First Author - Paper Title.md"
+/usr/bin/python3 system/knowledge/run_pipeline.py paragraph-read --note "wiki/papers/YYYY-MM-DD - First Author - Paper Title.md" --action hint
+/usr/bin/python3 system/knowledge/run_pipeline.py paragraph-merge --note "wiki/papers/YYYY-MM-DD - First Author - Paper Title.md"
 /usr/bin/python3 system/knowledge/run_pipeline.py redraft --note "wiki/papers/YYYY-MM-DD - First Author - Paper Title.md"
 /usr/bin/python3 system/knowledge/run_pipeline.py integrate --note "wiki/papers/YYYY-MM-DD - First Author - Paper Title.md"
 /usr/bin/python3 system/knowledge/run_pipeline.py lint
@@ -73,32 +75,36 @@ summarize only how the current paper describes its cited works. It does not sear
 web or open cited papers, every entry is marked as not independently verified, and
 follow-up novelty remains unresolved without external literature calibration.
 
-## Optional Mode A paragraph reading
+## Optional continuous Mode A intensive reading
 
 Every primary paper note exposes two human-owned Obsidian checkboxes:
 `paragraph_reading` and `paragraph_reading_figures`. The first opts a valuable paper
-into full-text paragraph reading; the second separately authorizes figure/table
-analysis. Neither option runs automatically.
+into interactive full-text reading; the second authorizes persistence of selected
+image crops. Scientific figures, tables, and equations remain part of reasoning
+coverage even when crop persistence is disabled. Neither option runs automatically.
 
 After checking `paragraph_reading`, open that primary note and run the Obsidian command
-`开始或继续当前论文的逐段精读（Mode A）`. The runner invokes the repository-bundled,
-locally installed
-`paper-reading` skill in Mode A and writes a separate companion note at
-`wiki/papers/close-reading/<exact-primary-note-filename>`. Partial work records a
-precise checkpoint and can be continued with the same command. Both notes share the
-paper's existing `wiki/papers/images/<exact-note-stem>/` asset directory.
+`开始或继续当前论文的交互式全文精读`. The runner invokes the repository-bundled,
+locally installed `paper-intensive-reading` skill. It uses the MinerU page-delimited
+Markdown as its navigation/evidence layer, consolidates the whole paper into
+non-overlapping reasoning units, and writes a separate process log at
+`wiki/papers/close-reading/<exact-primary-note-filename>`. Each invocation advances
+one user/AI interaction stage and then stops. Both files share the paper's existing
+`wiki/papers/images/<exact-note-stem>/` asset directory.
 
-The primary paper note is the paper's sole integration source. Mode A companions carry
+The primary paper note is the paper's sole integration source. The process log carries
 `integration_role: auxiliary` and `primary_source_id`, and the runner rejects attempts
-to integrate them directly. Merge only reviewed, non-duplicate insights back into the
-primary note with its PDF-page evidence, then integrate the primary note once.
+to integrate it directly. Normal reading actions cannot change the primary-note body.
+Only a unit scoring at least 6/8 without major factual error becomes `ready_to_merge`;
+the separate `paragraph-merge` action then adds a compact verification, correction, or
+non-duplicate increment with exact PDF-page evidence. Canonical knowledge remains
+unchanged until the primary note is reviewed and passed through normal integration.
 
 Verify the optional local skill before first use:
 
 ```bash
-python3 scripts/check-paper-reading.py
+python3 scripts/check-paper-intensive-reading.py
 ```
 
-Set `paragraph_reading_skill` to `paper-reading` and allow a longer
-`paragraph_reading_timeout_seconds` in `config.json` because Mode A is substantially
-more detailed than normal ingest.
+Set `paragraph_reading_skill` to `paper-intensive-reading`. Each invocation is capped
+by `paragraph_reading_timeout_seconds`, which defaults to 1800 seconds.

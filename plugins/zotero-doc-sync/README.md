@@ -17,12 +17,13 @@ SI 首次发现可能需要下载较大的 Supporting Information PDF，因此�
 常规 Forge Paper Note 草稿会包含两个 Obsidian 复选属性：
 
 - `paragraph_reading`：人工确认这篇论文值得逐段精读；
-- `paragraph_reading_figures`：是否额外授权分析图表，默认关闭。
+- `paragraph_reading_figures`：是否允许把选定裁图保存到论文专属图片目录，默认关闭；不影响图表作为科学证据被阅读。
 
-勾选 `paragraph_reading` 后，在命令面板运行“开始或继续当前论文的逐段精读
-（Mode A）”。插件调用本地 `paper-reading` skill 的 MODE A，将伴随笔记写到
-`wiki/papers/close-reading/`；若一次未读完，属性显示 `partial`，再次运行同一命令
-会从保存的定位点续读。逐段笔记与主笔记共用该论文自己的 `images_dir`。
+勾选 `paragraph_reading` 后，在命令面板运行“开始或继续当前论文的交互式全文精读”。
+插件调用本地 `paper-intensive-reading` skill，把交互日志写到
+`wiki/papers/close-reading/`。每次只推进一个人机交互阶段。还可单独运行“获取当前
+精读单元的分级提示”或“查看当前精读单元的专家解释”。日志打开时同样可以执行这些命令。
 
-逐段精读笔记仅是辅助证据，不能直接执行“审核并整合”。人工确认其中确有主笔记
-未覆盖的洞见后，应连同原 PDF 页码合并回主论文笔记，再对主笔记执行一次整合。
+精读日志仅是辅助证据，不能直接执行“审核并整合”。只有单元评分至少 6/8 且无重大
+事实错误后，才能运行“合并当前已验证精读单元”。该命令只把验证/修正/非重复增量
+连同 PDF 页码写回主笔记；之后仍需对主笔记执行原有审核与整合。

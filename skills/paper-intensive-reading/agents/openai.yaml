@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Intensive Reading"
+  short_description: "Interactive full-paper reasoning and verified note merging"
+  default_prompt: "Use $paper-intensive-reading to guide an interactive full-paper reading and merge verified insights into the existing paper note."

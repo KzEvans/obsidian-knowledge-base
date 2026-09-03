@@ -1,9 +1,9 @@
 {
   "id": "zotero-doc-sync",
   "name": "Zotero Doc Sync",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "minAppVersion": "1.0.0",
-  "description": "Mirrors Zotero Doc PDFs and runs Forge notes plus opt-in Mode A paragraph reading.",
+  "description": "Mirrors Zotero Doc PDFs and runs Forge notes plus gated full-text intensive reading.",
   "author": "Local",
   "isDesktopOnly": true
 }

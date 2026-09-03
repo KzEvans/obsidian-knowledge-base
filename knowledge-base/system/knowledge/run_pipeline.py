@@ -30,6 +30,14 @@ PAPER_READING_CONTROL_DEFAULTS = {
     "paragraph_reading_status": "not_requested",
     "paragraph_reading_note": None,
 }
+INTENSIVE_READING_STAGES = {
+    "awaiting_initial_analysis",
+    "awaiting_supervisor_answer",
+    "awaiting_reconstruction",
+    "ready_to_merge",
+    "ready_for_next_unit",
+    "complete",
+}
 
 
 def now_iso() -> str:
@@ -147,7 +155,7 @@ def paper_image_identity(note_path: str) -> Dict[str, str]:
 
 
 def paper_paragraph_reading_identity(note_path: str) -> Dict[str, str]:
-    """Return the companion Mode A note path for one primary paper note."""
+    """Return the auxiliary intensive-reading log path for one primary paper note."""
 
     relative_note = Path(str(note_path))
     if relative_note.parent != Path("wiki") / "papers" or relative_note.suffix.casefold() != ".md":
@@ -196,19 +204,22 @@ def ensure_paper_skills(config: Dict[str, Any]) -> List[str]:
 
 
 def ensure_paragraph_reading_skill(config: Dict[str, Any]) -> str:
-    name = str(config.get("paragraph_reading_skill", "paper-reading")).strip()
+    name = str(config.get("paragraph_reading_skill", "paper-intensive-reading")).strip()
     if not re.fullmatch(r"[a-z0-9-]+", name):
         raise RuntimeError(f"Invalid paragraph_reading_skill name: {name!r}")
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
     skill_file = codex_home / "skills" / name / "SKILL.md"
     if not skill_file.is_file():
         raise RuntimeError(
-            f"Missing Mode A paragraph-reading skill: {name}. "
+            f"Missing intensive-reading skill: {name}. "
             f"Expected {skill_file}."
         )
     skill_text = skill_file.read_text(encoding="utf-8", errors="ignore")
-    if "Mode A" not in skill_text or "Paragraph-by-Paragraph" not in skill_text:
-        raise RuntimeError(f"Local skill {name} does not declare the required Mode A workflow")
+    required_markers = ("Mode A", "full-text", "ready_to_merge", "MinerU")
+    if any(marker not in skill_text for marker in required_markers):
+        raise RuntimeError(
+            f"Local skill {name} does not declare the required continuous Mode A workflow"
+        )
     return name
 
 
@@ -1186,45 +1197,91 @@ def validate_paragraph_reading_note(
     config: Dict[str, Any],
     task: Dict[str, Any],
     note_text: str,
-) -> str:
-    """Validate the durable Mode A companion note and return its progress state."""
+) -> Dict[str, Any]:
+    """Validate the durable intensive-reading log and return its managed state."""
 
     values = yaml_frontmatter_scalars(note_text)
     expected = {
-        "type": "paper-paragraph-reading",
+        "type": "paper-intensive-reading-log",
         "status": "draft",
         "reading_mode": "A",
+        "workflow": "full-text-reasoning-units",
         "integration_role": "auxiliary",
         "primary_source_id": str(task["id"]),
         "source_note": f"[[{task['note_path']}]]",
+        "source_pdf": f"[[{task['source_path']}]]",
+        "extract": f"[[{task['extract_path']}]]",
+        "pdf_extractor": str(task["pdf_extractor_used"]),
         "images_dir": str(task["images_dir"]),
     }
     for key, expected_value in expected.items():
         actual = unquote_yaml_scalar(values.get(key, ""))
         if actual != expected_value:
             raise RuntimeError(
-                f"Mode A note {key} must equal {expected_value!r}; got {actual!r}"
+                f"Intensive-reading log {key} must equal {expected_value!r}; got {actual!r}"
             )
 
-    include_figures = yaml_boolean(values.get("include_figures", "false"))
-    if include_figures != bool(task["paragraph_reading_figures"]):
-        raise RuntimeError("Mode A note include_figures does not match the human checkbox")
-    if not include_figures and note_image_targets(note_text):
-        raise RuntimeError("Mode A note embedded figures although paragraph_reading_figures is false")
+    allow_crops = yaml_boolean(values.get("allow_image_crops", "false"))
+    if allow_crops != bool(task["paragraph_reading_figures"]):
+        raise RuntimeError("Intensive-reading allow_image_crops does not match the human checkbox")
+    if not allow_crops and note_image_targets(note_text):
+        raise RuntimeError("Intensive-reading log embedded images without crop permission")
 
     progress = unquote_yaml_scalar(values.get("paragraph_reading_progress", ""))
     if progress not in {"partial", "complete"}:
-        raise RuntimeError("Mode A note paragraph_reading_progress must be partial or complete")
-    expected_heading = f"# {task['display_title']}：逐段精读"
+        raise RuntimeError("Intensive-reading progress must be partial or complete")
+    stage = unquote_yaml_scalar(values.get("interaction_stage", ""))
+    if stage not in INTENSIVE_READING_STAGES:
+        raise RuntimeError(f"Invalid intensive-reading interaction_stage: {stage!r}")
+    current_unit = unquote_yaml_scalar(values.get("current_unit", ""))
+    if not re.fullmatch(r"U\d{2,}", current_unit):
+        raise RuntimeError("Intensive-reading current_unit must look like U01")
+    try:
+        covered_units = int(unquote_yaml_scalar(values.get("covered_units", "")))
+        total_units = int(unquote_yaml_scalar(values.get("total_units", "")))
+    except ValueError as error:
+        raise RuntimeError("Intensive-reading unit counts must be integers") from error
+    if total_units < 1 or covered_units < 0 or covered_units > total_units:
+        raise RuntimeError("Intensive-reading unit counts are inconsistent")
+    score_text = unquote_yaml_scalar(values.get("current_unit_score", "null"))
+    score: Optional[int] = None
+    if score_text.casefold() not in {"", "null", "~"}:
+        try:
+            score = int(score_text)
+        except ValueError as error:
+            raise RuntimeError("Intensive-reading score must be an integer or null") from error
+        if score < 0 or score > 8:
+            raise RuntimeError("Intensive-reading score must be between 0 and 8")
+    if stage == "ready_to_merge":
+        if score is None or score < 6:
+            raise RuntimeError("A unit cannot be ready_to_merge below 6/8")
+        marker = rf"<!-- verified-unit:{re.escape(current_unit)}:start -->"
+        if not re.search(marker, note_text):
+            raise RuntimeError("The ready unit is missing its verified joint conclusion")
+    if progress == "complete" and (stage != "complete" or covered_units != total_units):
+        raise RuntimeError("Complete intensive reading requires complete stage and full coverage")
+
+    expected_heading = f"# {task['display_title']}：逐段精读验证日志"
     if not re.search(rf"(?m)^{re.escape(expected_heading)}\s*$", note_text):
-        raise RuntimeError("Mode A note has the wrong level-one heading")
-    if not re.search(r"(?m)^## 逐段精读\s*$", note_text):
-        raise RuntimeError("Mode A note is missing the paragraph-by-paragraph reading section")
+        raise RuntimeError("Intensive-reading log has the wrong level-one heading")
+    if not re.search(r"(?m)^## 全文推理单元地图\s*$", note_text):
+        raise RuntimeError("Intensive-reading log is missing the full-text unit map")
+    if not re.search(r"(?m)^## 交互精读\s*$", note_text):
+        raise RuntimeError("Intensive-reading log is missing the interactive section")
     if not re.search(r"(?m)^>\s+\S", note_text):
-        raise RuntimeError("Mode A note contains no blockquoted source paragraph")
+        raise RuntimeError("Intensive-reading log contains no blockquoted source evidence")
 
     validate_paper_image_contract(config, task, note_text)
-    return progress
+    return {
+        "progress": progress,
+        "stage": stage,
+        "current_unit": current_unit,
+        "score": score,
+        "covered_units": covered_units,
+        "total_units": total_units,
+        "verified_units": unquote_yaml_scalar(values.get("verified_units", "")),
+        "merged_units": unquote_yaml_scalar(values.get("merged_units", "")),
+    }
 
 
 def ingest_next(config: Dict[str, Any]) -> int:
@@ -1350,45 +1407,94 @@ def vault_relative_note(config: Dict[str, Any], note_value: str) -> tuple[Path, 
     return note, relative
 
 
-def paragraph_read_paper(config: Dict[str, Any], note_value: str) -> int:
-    """Run or continue human-opted-in paragraph reading with paper-reading Mode A."""
+def wikilink_target(value: str) -> str:
+    """Return the path portion of one scalar Obsidian wikilink."""
+
+    text = unquote_yaml_scalar(value).strip()
+    match = re.fullmatch(r"\[\[([^\]]+)\]\]", text)
+    if not match:
+        raise RuntimeError(f"Expected an Obsidian wikilink, got {value!r}")
+    return match.group(1).split("|", 1)[0].split("#", 1)[0].strip()
+
+
+def resolve_primary_paper_note(config: Dict[str, Any], note_value: str) -> tuple[Path, str]:
+    """Resolve either a primary paper note or its auxiliary reading log."""
+
+    note, relative = vault_relative_note(config, note_value)
+    relative_path = Path(relative)
+    if relative_path.parent == Path("wiki") / "papers" and note.is_file():
+        return note, relative
+    if relative_path.is_relative_to(PAPER_PARAGRAPH_READING_ROOT) and note.is_file():
+        values = yaml_frontmatter_scalars(note.read_text(encoding="utf-8", errors="ignore"))
+        primary_path = wikilink_target(values.get("source_note", ""))
+        primary, primary_relative = vault_relative_note(config, primary_path)
+        if primary.parent != (config["vault"] / "wiki" / "papers").resolve() or not primary.is_file():
+            raise RuntimeError("The intensive-reading log does not link to a valid primary paper note")
+        return primary, primary_relative
+    raise RuntimeError(
+        "Intensive reading requires a primary wiki/papers note or its close-reading log"
+    )
+
+
+def paragraph_reading_task(
+    config: Dict[str, Any],
+    note_value: str,
+) -> tuple[Path, str, Dict[str, Any], Dict[str, Any]]:
+    """Resolve and enrich one human-selected intensive-reading task."""
+
+    note, relative = resolve_primary_paper_note(config, note_value)
+    ensure_paper_reading_controls(note)
+    preferences = paragraph_reading_preferences(note)
+    queue = load_queue(config)
+    matches = [
+        item
+        for item in queue["items"]
+        if item.get("kind") == "paper" and item.get("note_path") == relative
+    ]
+    if not matches:
+        raise RuntimeError("No paper queue task matches the selected note; run scan first")
+    task = matches[-1]
+    task.update(paper_image_identity(relative))
+    task.update(paper_paragraph_reading_identity(relative))
+    task["paragraph_reading_mode"] = "A"
+    task["paragraph_reading_figures"] = preferences["paragraph_reading_figures"]
+    if not task.get("display_title"):
+        task["display_title"] = note.stem
+    return note, relative, queue, task
+
+
+def paragraph_read_paper(
+    config: Dict[str, Any],
+    note_value: str,
+    action: str = "continue",
+) -> int:
+    """Advance one stage of the opt-in continuous Mode A reading log."""
 
     with pipeline_lock(config):
-        note, relative = vault_relative_note(config, note_value)
-        if Path(relative).parent != Path("wiki") / "papers" or not note.is_file():
-            raise RuntimeError(
-                "Paragraph reading must start from an existing primary note directly under wiki/papers"
-            )
-        ensure_paper_reading_controls(note)
-        preferences = paragraph_reading_preferences(note)
-
-        queue = load_queue(config)
-        matches = [
-            item
-            for item in queue["items"]
-            if item.get("kind") == "paper" and item.get("note_path") == relative
-        ]
-        if not matches:
-            raise RuntimeError("No paper queue task matches the selected note; run scan first")
-        task = matches[-1]
-        task.update(paper_image_identity(relative))
-        task.update(paper_paragraph_reading_identity(relative))
-        task["paragraph_reading_mode"] = "A"
-        task["paragraph_reading_figures"] = preferences["paragraph_reading_figures"]
+        if action not in {"continue", "hint", "explain"}:
+            raise RuntimeError(f"Unsupported intensive-reading action: {action}")
+        note, relative, queue, task = paragraph_reading_task(config, note_value)
+        task["intensive_reading_action"] = action
         task["paragraph_reading_status"] = "running"
         task["paragraph_reading_updated_at"] = now_iso()
-        if not task.get("display_title"):
-            task["display_title"] = note.stem
 
         skill_name = ensure_paragraph_reading_skill(config)
         paper_images_dir(config, task, create=True)
         extract_path = extract_pdf(config, task)
         task["extract_path"] = str(extract_path.relative_to(config["vault"]))
+        extract_values = yaml_frontmatter_scalars(
+            extract_path.read_text(encoding="utf-8", errors="ignore")
+        )
+        task["pdf_extractor_used"] = unquote_yaml_scalar(
+            extract_values.get("extractor", "unknown")
+        )
         source = config["vault"] / str(task["source_path"])
         if not source.is_file() or file_sha256(source) != task["sha256"]:
             raise RuntimeError(f"Source PDF does not match its queued hash: {task['source_path']}")
 
         companion = config["vault"] / str(task["paragraph_reading_note_path"])
+        if action in {"hint", "explain"} and not companion.is_file():
+            raise RuntimeError("Start the intensive reading before requesting a hint or explanation")
         update_frontmatter_scalars(
             note,
             {
@@ -1397,27 +1503,27 @@ def paragraph_read_paper(config: Dict[str, Any], note_value: str) -> int:
                 "paragraph_reading_updated_at": now_iso(),
             },
         )
+        guarded_primary = note.read_bytes()
         save_queue(config, queue)
         log(
-            f"paragraph reading start id={task['id']} figures={task['paragraph_reading_figures']}"
+            f"intensive reading {action} id={task['id']} "
+            f"allow_image_crops={task['paragraph_reading_figures']}"
         )
 
         workflow = config["vault"] / "system" / "workflows" / "paragraph-reading.md"
-        figure_instruction = (
-            "The human explicitly enabled figure/table analysis. Visually inspect only relevant "
-            "figures and store any new selected assets in TASK_JSON.images_dir."
+        crop_instruction = (
+            "允许把人工选择、视觉核验过的图像副本保存到 TASK_JSON.images_dir。"
             if task["paragraph_reading_figures"]
-            else "The human did not enable figure/table analysis. Completely ignore figures and tables; "
-            "do not reference, analyze, or embed them."
+            else "仍须阅读与论证有关的图、表和公式，但不得复制、嵌入或新建任何图片文件。"
         )
         prompt = (
-            "执行人工选择论文的逐段精读任务。严格读取并遵守 AGENTS.md 与 "
-            f"{workflow.relative_to(config['vault'])}。必须使用 ${skill_name} 的 MODE A；"
-            "阅读模式、全文范围、输出中文和图表偏好已经由人工在笔记属性中确认，不要再次提问。"
-            "只读主论文笔记、extract_path、source_path 和必要的上下文；不得修改原始资料、主论文笔记、"
-            "队列文件或知识页。只可写 paragraph_reading_note_path 与该论文原有 images_dir。"
-            f"{figure_instruction} 若一次无法覆盖全文，诚实标记 partial 并保存精确续读点；"
-            "下次运行必须从该点继续，不能重复或假装完成。\n\n"
+            "执行人工选择论文的交互式全文精读任务。严格读取并遵守 AGENTS.md 与 "
+            f"{workflow.relative_to(config['vault'])}，并完整使用 ${skill_name}。"
+            f"本次 action 是 {action}；只推进一个交互阶段后停止。不要提出阅读契约，"
+            "不要生成第二份论文总结。主论文笔记是基线且正文只读；只可写 "
+            "paragraph_reading_note_path 与获准的 images_dir，不得写队列、索引或规范知识页。"
+            "优先使用 extract_path 中由 MinerU 生成的带页码 Markdown，并在版面、公式、表格或图片"
+            f"含义不清时回看 source_path。{crop_instruction} 保留全部人工原文并明确标记 AI 内容。\n\n"
             f"TASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}"
         )
 
@@ -1426,7 +1532,7 @@ def paragraph_read_paper(config: Dict[str, Any], note_value: str) -> int:
                 config,
                 prompt,
                 f"last-paragraph-reading-{safe_stem(task['id'])}",
-                timeout_seconds=int(config.get("paragraph_reading_timeout_seconds", 3600)),
+                timeout_seconds=int(config.get("paragraph_reading_timeout_seconds", 1800)),
             )
             run_log = write_run_log(config, "paragraph-reading", task["id"], result)
             if result.returncode != 0:
@@ -1435,13 +1541,15 @@ def paragraph_read_paper(config: Dict[str, Any], note_value: str) -> int:
                 )
             if not source.is_file() or file_sha256(source) != task["sha256"]:
                 raise RuntimeError(f"Source-of-truth file changed during reading: {task['source_path']}")
+            if note.read_bytes() != guarded_primary:
+                raise RuntimeError("The primary paper note changed during a non-merge reading action")
             if not companion.is_file():
                 raise RuntimeError(
-                    f"Codex did not create paragraph-reading note {task['paragraph_reading_note_path']}"
+                    f"Codex did not create intensive-reading log {task['paragraph_reading_note_path']}"
                 )
             companion_text = companion.read_text(encoding="utf-8", errors="ignore")
-            progress = validate_paragraph_reading_note(config, task, companion_text)
-            state = "completed" if progress == "complete" else "partial"
+            reading = validate_paragraph_reading_note(config, task, companion_text)
+            state = "completed" if reading["progress"] == "complete" else "partial"
             timestamp = now_iso()
             main_updates: Dict[str, Any] = {
                 "paragraph_reading_status": state,
@@ -1458,13 +1566,15 @@ def paragraph_read_paper(config: Dict[str, Any], note_value: str) -> int:
             save_queue(config, queue)
             append_log(
                 config["vault"] / "system" / "ingest-log.md",
-                f"paragraph reading ({state}) | {task.get('title', task['id'])}",
+                f"intensive reading ({reading['stage']}) | {task.get('title', task['id'])}",
                 f"- Paper: `[[{relative}]]`\n"
-                f"- Mode A note: `[[{task['paragraph_reading_note_path']}]]`\n"
-                f"- Figures enabled: `{str(task['paragraph_reading_figures']).lower()}`",
+                f"- Reading log: `[[{task['paragraph_reading_note_path']}]]`\n"
+                f"- Current unit: `{reading['current_unit']}`\n"
+                f"- Stage: `{reading['stage']}`\n"
+                f"- Image crops allowed: `{str(task['paragraph_reading_figures']).lower()}`",
             )
             log(
-                f"paragraph reading {state} note={task['paragraph_reading_note_path']}"
+                f"intensive reading stage={reading['stage']} note={task['paragraph_reading_note_path']}"
             )
             return 0
         except Exception as error:
@@ -1483,6 +1593,134 @@ def paragraph_read_paper(config: Dict[str, Any], note_value: str) -> int:
             save_queue(config, queue)
             log(f"paragraph reading failed id={task['id']} error={error}")
             return 1
+
+
+def paragraph_merge_paper(config: Dict[str, Any], note_value: str) -> int:
+    """Merge one verified intensive-reading unit into the sole primary paper note."""
+
+    with pipeline_lock(config):
+        note, relative, queue, task = paragraph_reading_task(config, note_value)
+        skill_name = ensure_paragraph_reading_skill(config)
+        paper_images_dir(config, task, create=True)
+        extract_path = extract_pdf(config, task)
+        task["extract_path"] = str(extract_path.relative_to(config["vault"]))
+        extract_values = yaml_frontmatter_scalars(
+            extract_path.read_text(encoding="utf-8", errors="ignore")
+        )
+        task["pdf_extractor_used"] = unquote_yaml_scalar(
+            extract_values.get("extractor", "unknown")
+        )
+        task["intensive_reading_action"] = "merge"
+        companion = config["vault"] / str(task["paragraph_reading_note_path"])
+        if not companion.is_file():
+            raise RuntimeError("No intensive-reading log exists for the selected paper")
+        before_log = validate_paragraph_reading_note(
+            config,
+            task,
+            companion.read_text(encoding="utf-8", errors="ignore"),
+        )
+        if before_log["stage"] != "ready_to_merge":
+            raise RuntimeError("The current intensive-reading unit is not ready to merge")
+        if before_log["score"] is None or before_log["score"] < 6:
+            raise RuntimeError("The current unit must score at least 6/8 before merge")
+
+        source = config["vault"] / str(task["source_path"])
+        if not source.is_file() or file_sha256(source) != task["sha256"]:
+            raise RuntimeError(f"Source PDF does not match its queued hash: {task['source_path']}")
+        primary_status_before = note_status(note)
+        workflow = config["vault"] / "system" / "workflows" / "paragraph-reading-merge.md"
+        prompt = (
+            "执行一个已验证精读单元的显式合并。严格读取并遵守 AGENTS.md 与 "
+            f"{workflow.relative_to(config['vault'])}，并使用 ${skill_name} 的 merge 操作。"
+            "只允许修改 TASK_JSON.note_path 与 TASK_JSON.paragraph_reading_note_path；"
+            "不得修改 PDF、提取缓存、队列、索引或规范知识页。主笔记只写验证、修正或非重复增量，"
+            "不复制教学对话，不创建第二份论文总结。\n\n"
+            f"TASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}"
+        )
+        result = codex_command(
+            config,
+            prompt,
+            f"last-paragraph-merge-{safe_stem(task['id'])}",
+            timeout_seconds=int(config.get("paragraph_reading_timeout_seconds", 1800)),
+        )
+        run_log = write_run_log(config, "paragraph-merge", task["id"], result)
+        if result.returncode != 0:
+            raise RuntimeError(
+                result.stderr.strip() or result.stdout.strip() or "Codex intensive-reading merge failed"
+            )
+        if not source.is_file() or file_sha256(source) != task["sha256"]:
+            raise RuntimeError(f"Source-of-truth file changed during merge: {task['source_path']}")
+        if not note.is_file() or not companion.is_file():
+            raise RuntimeError("The primary note or intensive-reading log disappeared during merge")
+        if note_status(note) != primary_status_before:
+            raise RuntimeError("The merge agent changed the primary note lifecycle status")
+
+        after_text = companion.read_text(encoding="utf-8", errors="ignore")
+        after_log = validate_paragraph_reading_note(config, task, after_text)
+        if after_log["stage"] not in {"ready_for_next_unit", "complete"}:
+            raise RuntimeError("Merge did not advance the reading log to the next valid stage")
+        if after_log["covered_units"] != before_log["covered_units"] + 1:
+            raise RuntimeError("Merge must increment covered_units exactly once")
+        if after_log["current_unit"] not in {
+            unit.strip() for unit in after_log["merged_units"].split(",") if unit.strip()
+        }:
+            raise RuntimeError("Merged unit is missing from merged_units")
+
+        primary_text = note.read_text(encoding="utf-8", errors="ignore")
+        marker = f"<!-- intensive-reading:{before_log['current_unit']}:start -->"
+        if primary_text.count(marker) != 1:
+            raise RuntimeError("Primary note must contain exactly one marker for the merged unit")
+        marker_start = primary_text.index(marker)
+        marker_end_text = f"<!-- intensive-reading:{before_log['current_unit']}:end -->"
+        marker_end = primary_text.find(marker_end_text, marker_start)
+        if marker_end < 0 or not re.search(
+            r"\[\[[^\]]+\.pdf#page=\d+\|PDF p\.\d+\]\]",
+            primary_text[marker_start:marker_end],
+        ):
+            raise RuntimeError("Merged unit lacks an exact primary-PDF page link")
+
+        complete = after_log["progress"] == "complete"
+        if complete != (after_log["covered_units"] == after_log["total_units"]):
+            raise RuntimeError("Merged log completion and coverage counts disagree")
+        percentage = round(100 * after_log["covered_units"] / after_log["total_units"])
+        timestamp = now_iso()
+        update_frontmatter_scalars(
+            note,
+            {
+                "status": "draft",
+                "reviewed": False,
+                "reviewed_at": None,
+                "integrated_at": None,
+                "paragraph_reading_status": "completed" if complete else "partial",
+                "paragraph_reading_note": f"[[{task['paragraph_reading_note_path']}]]",
+                "paragraph_reading_updated_at": timestamp,
+                "reading_status": "verified" if complete else "intensive-reading",
+                "intensive_reading_coverage": (
+                    f"{after_log['covered_units']}/{after_log['total_units']} ({percentage}%)"
+                ),
+                "intensive_reading_verified": complete,
+                "knowledge_growth_status": "pending" if complete else "not_ready",
+            },
+        )
+        task["paragraph_reading_status"] = "completed" if complete else "partial"
+        task["paragraph_reading_updated_at"] = timestamp
+        task["paragraph_reading_last_run_log"] = str(run_log.relative_to(config["vault"]))
+        task["status"] = "drafted"
+        task["updated_at"] = timestamp
+        save_queue(config, queue)
+        append_log(
+            config["vault"] / "system" / "ingest-log.md",
+            f"intensive reading merge | {task.get('title', task['id'])}",
+            f"- Paper: `[[{relative}]]`\n"
+            f"- Unit: `{before_log['current_unit']}`\n"
+            f"- Coverage: `{after_log['covered_units']}/{after_log['total_units']}`\n"
+            f"- Knowledge growth: `{'pending' if complete else 'not_ready'}`",
+        )
+        log(
+            f"intensive reading merged unit={before_log['current_unit']} "
+            f"coverage={after_log['covered_units']}/{after_log['total_units']}"
+        )
+        return 0
 
 
 def note_status(path: Path) -> str:
@@ -1669,9 +1907,19 @@ def main() -> int:
     subparsers.add_parser("ingest-next", help="Draft the oldest pending source")
     paragraph_parser = subparsers.add_parser(
         "paragraph-read",
-        help="Start or continue Mode A for one human-selected paper note",
+        help="Advance one interactive stage for a human-selected paper",
     )
     paragraph_parser.add_argument("--note", required=True)
+    paragraph_parser.add_argument(
+        "--action",
+        choices=("continue", "hint", "explain"),
+        default="continue",
+    )
+    paragraph_merge_parser = subparsers.add_parser(
+        "paragraph-merge",
+        help="Merge one verified intensive-reading unit into its primary paper note",
+    )
+    paragraph_merge_parser.add_argument("--note", required=True)
     integrate_parser = subparsers.add_parser("integrate", help="Integrate one reviewed draft")
     integrate_parser.add_argument("--note", required=True)
     subparsers.add_parser("lint", help="Generate a wiki health report")
@@ -1696,7 +1944,9 @@ def main() -> int:
         if args.command == "ingest-next":
             return ingest_next(config)
         if args.command == "paragraph-read":
-            return paragraph_read_paper(config, args.note)
+            return paragraph_read_paper(config, args.note, args.action)
+        if args.command == "paragraph-merge":
+            return paragraph_merge_paper(config, args.note)
         if args.command == "integrate":
             return integrate_note(config, args.note)
         if args.command == "lint":

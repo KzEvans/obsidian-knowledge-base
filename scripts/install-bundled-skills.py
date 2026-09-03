@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 
-SKILLS = ("forge-paper-note", "paper-reading")
+SKILLS = ("forge-paper-note", "paper-reading", "paper-intensive-reading")
 
 
 def main() -> int:

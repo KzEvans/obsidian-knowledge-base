@@ -12,14 +12,15 @@
 - `plugins/pdf-selection-translator/`：在 Obsidian PDF 阅读器中翻译选中文本；包含 TypeScript 源码和构建产物。
 - `knowledge-base/`：Zotero PDF 镜像、PDF 文本提取、草稿生成、人工审核、知识整合和健康检查脚本。
 - `skills/forge-paper-note/`：常规论文笔记生成 Skill，以及确定性的提取、图片、审计与保存脚本。
-- `skills/paper-reading/`：人工勾选后使用的 Mode A 逐段精读 Skill。
-- 可选逐段精读：人工在主论文笔记勾选后，调用本地 `paper-reading` skill 的 MODE A，并把长篇伴随笔记隔离到 `wiki/papers/close-reading/`。
+- `skills/paper-reading/`：保留的上游 Mode A Skill，不修改其原始版本。
+- `skills/paper-intensive-reading/`：基于 Mode A 改造的全文连续覆盖、交互验证与显式合并 Skill。
+- 可选逐段精读：人工在主论文笔记勾选后调用 `paper-intensive-reading`，把交互过程隔离到 `wiki/papers/close-reading/`；普通精读阶段不修改自动论文笔记正文。
 
 ## 安装
 
 1. 将需要的插件目录复制到 `<vault>/.obsidian/plugins/`，并在 Obsidian 中启用。
 2. 将 `knowledge-base/` 内的内容复制到 vault 根目录。
-3. 运行 `python3 scripts/install-bundled-skills.py`，把仓库内的两个 Skill 安装到 `$CODEX_HOME/skills/`；安装器遇到已有同名目录会停止，不会覆盖。
+3. 运行 `python3 scripts/install-bundled-skills.py`，把仓库内的三个 Skill 安装到 `$CODEX_HOME/skills/`；安装器遇到已有同名目录会停止，不会覆盖。
 4. 分别复制两个 `config.example.json` 为 `config.json`，填写本机路径和 Zotero collection 名称。
 5. 确保 Zotero 已开启本地 API，并安装 MinerU、`pdftotext` 与 Codex CLI。MinerU 是主解析器，`pdftotext` 是自动回退。
 6. 在 vault 中创建 `sources/literature/`、`笔记/实验笔记/`、`extracts/papers/`、`wiki/papers/images/` 和其他 `wiki/` 所需目录。
@@ -80,35 +81,49 @@ python3 scripts/check-forge-paper-note.py
 论文正文及其参考文献表进行转述，不联网检索或打开被引论文；笔记会明确标注
 “仅依据本文转述，未独立核验”，后续方向的新颖性状态保持为 `unresolved`。
 
-## 可选 MODE A 逐段精读
+## 可选交互式全文精读
 
 每篇常规论文笔记会显示两个复选属性：`paragraph_reading` 用于人工选择值得
-精读的论文，`paragraph_reading_figures` 用于单独授权图表分析。勾选前者后，
-在 Obsidian 命令面板执行“开始或继续当前论文的逐段精读（Mode A）”。未勾选的
+精读的论文，`paragraph_reading_figures` 用于授权把选定裁图保存到论文专属图片目录；
+即使未勾选后者，科学图、表和公式仍属于全文证据，不能跳过。勾选前者后，
+在 Obsidian 命令面板执行“开始或继续当前论文的交互式全文精读”。未勾选的
 论文不会被后台自动精读。
 
-逐段结果存放于 `wiki/papers/close-reading/<主论文笔记文件名>`，按照原文、外文
-中文翻译、专家解释、公式/逻辑拆解和 Obsidian 知识片段展开。一次未完成时会记录
-精确续读点；重复执行同一命令即可继续。若允许图表，伴随笔记仍只使用主论文的
-`wiki/papers/images/<论文笔记名>/`，不建立重复图片目录。
+精读日志存放于 `wiki/papers/close-reading/<主论文笔记文件名>`。新流程取消开场
+“阅读契约”，先把全文组织为互不重叠的核心推理单元，并将背景、定义和过渡段并入
+相邻单元。每次命令只推进一个阶段：证据包与用户初步理解 → AI 导师问题 → 可选
+分级提示 → 专家解释 → 用户重构 → 0–8 分评分。得分至少 6/8 且不存在重大事实
+错误时，该单元才进入待合并状态。人工文本始终原样保留，AI 内容明确标记。
 
 主论文笔记是该论文唯一允许进入自生长知识库的来源；逐段精读笔记标记为
-`integration_role: auxiliary`，不能单独审核整合。人工复核后，只把主笔记尚未覆盖的
-洞见连同原 PDF 页码合并回主笔记，再整合主笔记一次，从流程上避免同一论文重复入库。
+`integration_role: auxiliary`，不能单独审核整合。在普通“继续/提示/解释”阶段，
+流水线会校验主论文笔记正文没有变化。只有人工运行“合并当前已验证精读单元”后，
+才把验证结论、修正或非重复增量连同原 PDF 页码写入主笔记的“精读验证与增量”层。
+完成全文前不会产生规范知识；全文完成后也只生成候选，仍需审核主笔记并运行原有
+整合命令，才会影响规范知识页。
 
-本功能使用 [Kingslayer-bot/paper-reading-skill](https://github.com/Kingslayer-bot/paper-reading-skill)
-的 MODE A。仓库源文件位于 `skills/paper-reading/`，安装后的生效副本位于 `$CODEX_HOME/skills/paper-reading/`。
-可用 `python3 scripts/check-paper-reading.py` 验证。
+PDF 处理使用现有 MinerU 主解析器：逐页 Markdown、公式、表格、图注和提取图片缓存在
+`extracts/papers/`，精读 skill 优先读取该证据层，遇到多栏版面、组合图、表头或公式
+歧义时再回看原 PDF。MinerU 失败时仍可回退到 `pdftotext`，日志会保留实际解析器。
+
+本功能的新 skill 位于 `skills/paper-intensive-reading/`，是在保留原始
+[Kingslayer-bot/paper-reading-skill](https://github.com/Kingslayer-bot/paper-reading-skill)
+Mode A 的同时进行的独立改造。安装后生效副本位于
+`$CODEX_HOME/skills/paper-intensive-reading/`。验证命令：
+
+```bash
+python3 scripts/check-paper-intensive-reading.py
+```
 
 ## 致谢与引用
 
-本项目使用本地 Forge Paper Note 流程；可选逐段精读使用
+本项目使用本地 Forge Paper Note 流程；可选逐段精读的新 skill 基于
 [Kingslayer-bot/paper-reading-skill](https://github.com/Kingslayer-bot/paper-reading-skill)
-的 MODE A。Forge 的研究审计方法参考了 Feijiang Han 维护的
+的 Mode A 改造。Forge 的研究审计方法参考了 Feijiang Han 维护的
 [PaperForge](https://github.com/FeijiangHan/PaperForge)，确定性论文与图片流水线源自
 [DeepPaperNote](https://github.com/917Dhj/DeepPaperNote)。如果在研究或项目中使用该流程，请保留相应上游引用：
 
-两个 Skill 的固定上游版本、MIT 许可证位置和完整 BibTeX 见
+相关 Skill 的固定上游版本、MIT 许可证位置和完整 BibTeX 见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 > Han, Feijiang. *PaperForge*. GitHub repository. <https://github.com/FeijiangHan/PaperForge>.

@@ -2,10 +2,11 @@
 
 Integrate exactly the supplied `NOTE_PATH`. The note must already have `status: reviewed`.
 
-`wiki/papers/close-reading/` contains auxiliary Mode A companions. Never integrate
-those files directly. Reviewed, non-duplicative findings from a companion must first
-be merged into its linked primary paper note; that primary note remains the paper's
-only integration source.
+`wiki/papers/close-reading/` contains auxiliary intensive-reading logs. Never
+integrate those files directly. A scored, verified unit must first pass the separate
+explicit merge gate; its corrections or non-duplicative increments then become part
+of the linked primary paper note. That primary note remains the paper's only
+integration source.
 
 ## Safety boundary
 

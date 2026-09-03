@@ -25,8 +25,26 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
 
     this.addCommand({
       id: "start-or-continue-paragraph-reading",
-      name: "开始或继续当前论文的逐段精读（Mode A）",
-      callback: () => this.startOrContinueParagraphReading(),
+      name: "开始或继续当前论文的交互式全文精读",
+      callback: () => this.runIntensiveReadingAction("continue", "逐段精读"),
+    });
+
+    this.addCommand({
+      id: "hint-current-intensive-reading-unit",
+      name: "获取当前精读单元的分级提示",
+      callback: () => this.runIntensiveReadingAction("hint", "精读提示"),
+    });
+
+    this.addCommand({
+      id: "explain-current-intensive-reading-unit",
+      name: "查看当前精读单元的专家解释",
+      callback: () => this.runIntensiveReadingAction("explain", "精读解释"),
+    });
+
+    this.addCommand({
+      id: "merge-current-intensive-reading-unit",
+      name: "合并当前已验证精读单元",
+      callback: () => this.mergeCurrentIntensiveReadingUnit(),
     });
 
     this.addCommand({
@@ -137,40 +155,69 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     });
   }
 
-  async startOrContinueParagraphReading() {
+  intensiveReadingContext() {
     const file = this.app.workspace.getActiveFile();
-    if (!file || !/^wiki\/papers\/[^/]+\.md$/.test(file.path)) {
-      new Notice("请先打开 wiki/papers 下的主论文笔记");
+    if (!file) return null;
+    if (/^wiki\/papers\/[^/]+\.md$/.test(file.path)) {
+      return {
+        active: file,
+        primary: file,
+        logPath: path.posix.join("wiki", "papers", "close-reading", file.name),
+      };
+    }
+    if (!file.path.startsWith("wiki/papers/close-reading/")) return null;
+    const logFrontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+    const rawSource = String(logFrontmatter.source_note || "");
+    const match = rawSource.match(/^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]$/);
+    if (!match) return null;
+    const primary = this.app.vault.getAbstractFileByPath(match[1]);
+    if (!primary || !/^wiki\/papers\/[^/]+\.md$/.test(primary.path)) return null;
+    return { active: file, primary, logPath: file.path };
+  }
+
+  async runIntensiveReadingAction(action, label) {
+    const context = this.intensiveReadingContext();
+    if (!context) {
+      new Notice("请先打开主论文笔记或其逐段精读日志");
       return;
     }
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+    const frontmatter = this.app.metadataCache.getFileCache(context.primary)?.frontmatter || {};
     if (frontmatter.paragraph_reading !== true && frontmatter.paragraph_reading !== "true") {
-      new Notice("请先在当前笔记属性中勾选 paragraph_reading");
+      new Notice("请先在主论文笔记属性中勾选 paragraph_reading");
       return;
     }
 
-    return this.withLock(true, "逐段精读", async () => {
+    return this.withLock(true, label, async () => {
       await this.runPipeline(
-        ["paragraph-read", "--note", file.path],
-        65 * 60 * 1000
+        ["paragraph-read", "--note", context.primary.path, "--action", action],
+        35 * 60 * 1000
       );
-      const companionPath = path.posix.join(
-        "wiki",
-        "papers",
-        "close-reading",
-        file.name
-      );
-      const companion = this.app.vault.getAbstractFileByPath(companionPath);
+      const companion = this.app.vault.getAbstractFileByPath(context.logPath);
       if (companion) {
         await this.app.workspace.getLeaf("tab").openFile(companion);
       }
     });
   }
 
+  async mergeCurrentIntensiveReadingUnit() {
+    const context = this.intensiveReadingContext();
+    if (!context) {
+      new Notice("请先打开主论文笔记或其逐段精读日志");
+      return;
+    }
+    return this.withLock(true, "精读单元合并", async () => {
+      await this.runPipeline(
+        ["paragraph-merge", "--note", context.primary.path],
+        35 * 60 * 1000
+      );
+      await this.app.workspace.getLeaf("tab").openFile(context.primary);
+    });
+  }
+
   async approveAndIntegrateCurrent() {
     const file = this.app.workspace.getActiveFile();
     if (file?.path.startsWith("wiki/papers/close-reading/")) {
-      new Notice("逐段精读笔记仅作辅助证据；请将复核后的新增洞见合并到主论文笔记，再审核整合主笔记");
+      new Notice("精读日志仅作辅助证据；请先运行“合并当前已验证精读单元”，再审核主笔记");
       return;
     }
     if (!file || !(file.path.startsWith("wiki/papers/") || file.path.startsWith("wiki/experiments/"))) {

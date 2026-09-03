@@ -1,6 +1,6 @@
 # Third-party notices and citations
 
-This repository vendors the two Codex skills used by the knowledge pipeline.
+This repository vendors the three Codex skills used by the knowledge pipeline.
 
 ## DeepPaperNote
 
@@ -53,3 +53,10 @@ It is distributed under the upstream MIT license preserved at
   version = {0753224cd94bc0bd923c111584c2326cdf18d1de}
 }
 ```
+
+`skills/paper-intensive-reading/` is a project-specific adaptation of that Mode A
+workflow. It changes the unit of analysis to continuous, non-overlapping reasoning
+units; adds user reconstruction, scoring, an auxiliary verification log, MinerU
+evidence routing, and an explicit verified-unit merge gate. The original vendored
+`skills/paper-reading/` remains unchanged. The adaptation is distributed under the
+same MIT license, preserved at `skills/paper-intensive-reading/LICENSE`.
