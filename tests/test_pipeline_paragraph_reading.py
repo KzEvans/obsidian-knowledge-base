@@ -40,6 +40,9 @@ class PipelineParagraphReadingTest(unittest.TestCase):
                 "paragraph_reading_figures": False,
             }
         )
+        task["paragraph_reading_images_dir"] = (
+            Path(task["images_dir"]) / PIPELINE.PAPER_INTENSIVE_IMAGES_SUBDIR
+        ).as_posix()
         return task
 
     def make_log(
@@ -53,14 +56,16 @@ class PipelineParagraphReadingTest(unittest.TestCase):
         progress="partial",
         verified_units="",
         merged_units="",
+        initial_answer="",
     ):
         score_value = "null" if score is None else str(score)
         verified_block = ""
         if stage == "ready_to_merge":
             verified_block = (
                 "\n<!-- verified-unit:U01:start -->\n"
-                "#### 已验证共同结论（U01）\n\n"
-                "- 核心结论：Verified [[sources/literature/pdf/paper.pdf#page=1|PDF p.1]]\n"
+                "##### 已验证共同结论（U01）\n\n"
+                "- 核心结论：Verified\n"
+                "- 证据定位：见本单元“原文位置”\n"
                 "<!-- verified-unit:U01:end -->\n"
             )
         return (
@@ -68,7 +73,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "type: paper-intensive-reading-log\n"
             "status: draft\n"
             "reading_mode: A\n"
-            "workflow: full-text-reasoning-units\n"
+            "workflow: full-text-continuous-pdf-units\n"
             "integration_role: auxiliary\n"
             f'primary_source_id: "{task["id"]}"\n'
             f'source_note: "[[{task["note_path"]}]]"\n'
@@ -76,7 +81,10 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             f'extract: "[[{task["extract_path"]}]]"\n'
             "pdf_extractor: mineru\n"
             f'images_dir: "{task["images_dir"]}"\n'
-            "allow_image_crops: false\n"
+            f'intensive_images_dir: "{task["paragraph_reading_images_dir"]}"\n'
+            "source_display: pdf-crops\n"
+            "allow_image_crops: true\n"
+            "allow_optional_image_crops: false\n"
             f"paragraph_reading_progress: {progress}\n"
             f"interaction_stage: {stage}\n"
             "current_unit: U01\n"
@@ -88,9 +96,19 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "last_completed_locator: null\n"
             "---\n\n"
             f"# {task['display_title']}：逐段精读验证日志\n\n"
-            "## 全文推理单元地图\n\n- [ ] U01 · Claim · PDF p.1\n\n"
-            "## 交互精读\n\n### U01 · Claim · PDF p.1\n\n"
-            "> Source evidence\n"
+            "## 全文推理单元地图\n\n- [ ] U01 · 当前：awaiting_initial_analysis\n\n"
+            "## 交互精读\n\n### U01\n\n"
+            "#### 原文\n\n"
+            f"![[{task['paragraph_reading_images_dir']}/U01/source-p001-01.png]]\n\n"
+            "#### 翻译\n\n连续中文翻译。\n\n"
+            "#### 配图\n\n本单元无独立配图。\n\n"
+            "#### 原文位置\n\n"
+            f"[[{task['source_path']}#page=1|PDF p.1]]\n\n"
+            "#### 交互\n\n##### 用户初始理解（请填写）\n\n"
+            "<!-- initial-understanding:U01:start -->\n"
+            f"- 我目前的理解：{initial_answer}\n"
+            "- 我不确定的是：\n"
+            "<!-- initial-understanding:U01:end -->\n"
             f"{verified_block}\n"
             "## Agentic Q&A\n\n## 完成检查\n\n## 知识增长候选\n\n"
             "## 人工笔记\n<!-- user-notes:start -->\n<!-- user-notes:end -->\n"
@@ -123,6 +141,12 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             json.dumps({"schema_version": 1, "items": [task]}),
             encoding="utf-8",
         )
+        image_dir = PIPELINE.paper_intensive_images_dir(
+            {"vault": vault}, task, create=True
+        )
+        unit_dir = image_dir / "U01"
+        unit_dir.mkdir(parents=True)
+        (unit_dir / "source-p001-01.png").write_bytes(b"png")
         return source, extract, main_note, queue_file
 
     def test_log_uses_separate_directory_and_same_filename(self):
@@ -160,30 +184,40 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not checked"):
                 PIPELINE.paragraph_reading_preferences(note)
 
-    def test_continuous_mode_log_validates_with_mineru_and_no_crops(self):
+    def test_continuous_mode_log_validates_with_direct_pdf_crops(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
             task["pdf_extractor_used"] = "mineru"
-            PIPELINE.paper_images_dir({"vault": vault}, task, create=True)
+            image_dir = PIPELINE.paper_intensive_images_dir(
+                {"vault": vault}, task, create=True
+            )
+            unit_dir = image_dir / "U01"
+            unit_dir.mkdir(parents=True)
+            (unit_dir / "source-p001-01.png").write_bytes(b"png")
             state = PIPELINE.validate_paragraph_reading_note(
                 {"vault": vault}, task, self.make_log(task)
             )
             self.assertEqual(state["stage"], "awaiting_initial_analysis")
             self.assertEqual(state["covered_units"], 0)
 
-    def test_log_rejects_embedded_images_without_crop_permission(self):
+    def test_log_rejects_mineru_or_other_non_pdf_crop_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
             task = self.make_task()
             task["pdf_extractor_used"] = "mineru"
-            image_dir = PIPELINE.paper_images_dir({"vault": vault}, task, create=True)
-            (image_dir / "fig-01.png").write_bytes(b"png")
-            text = self.make_log(task).replace(
-                "## Agentic Q&A",
-                f"![[{task['images_dir']}/fig-01.png]]\n\n## Agentic Q&A",
+            image_dir = PIPELINE.paper_intensive_images_dir(
+                {"vault": vault}, task, create=True
             )
-            with self.assertRaisesRegex(RuntimeError, "without crop permission"):
+            unit_dir = image_dir / "U01"
+            unit_dir.mkdir(parents=True)
+            (unit_dir / "source-p001-01.png").write_bytes(b"png")
+            foreign = Path(task["images_dir"]) / "mineru-figure.png"
+            text = self.make_log(task).replace(
+                f"{task['paragraph_reading_images_dir']}/U01/source-p001-01.png",
+                foreign.as_posix(),
+            )
+            with self.assertRaisesRegex(RuntimeError, "source crop must use"):
                 PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, text)
 
     def test_continue_creates_log_without_changing_primary_body(self):
@@ -220,6 +254,81 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             )
             saved_task = json.loads(queue_file.read_text(encoding="utf-8"))["items"][0]
             self.assertEqual(saved_task["status"], "drafted")
+
+    def test_initial_understanding_requires_explicit_nonempty_submission(self):
+        task = self.make_task()
+        empty = self.make_log(task)
+        with self.assertRaisesRegex(RuntimeError, "尚未填写完成"):
+            PIPELINE.validate_initial_understanding_submission(empty, "U01")
+        filled = self.make_log(task, initial_answer="作者通过对照实验验证了关键机制。")
+        block = PIPELINE.validate_initial_understanding_submission(filled, "U01")
+        self.assertIn("对照实验", block)
+
+    def test_continue_cannot_implicitly_submit_initial_understanding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            self.prepare_vault(vault, task)
+            log_note = vault / task["paragraph_reading_note_path"]
+            log_note.parent.mkdir(parents=True)
+            log_note.write_text(
+                self.make_log(task, initial_answer="我已经写完了初始理解。"),
+                encoding="utf-8",
+            )
+            config = {"vault": vault, "paragraph_reading_timeout_seconds": 30}
+            with mock.patch.object(
+                PIPELINE,
+                "ensure_paragraph_reading_skill",
+                return_value="paper-intensive-reading",
+            ):
+                with self.assertRaisesRegex(RuntimeError, "点击.*提交初始理解"):
+                    PIPELINE.paragraph_read_paper(config, task["note_path"], "continue")
+
+    def test_submit_initial_advances_only_after_explicit_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            _source, extract, main_note, _queue_file = self.prepare_vault(vault, task)
+            log_note = vault / task["paragraph_reading_note_path"]
+            log_note.parent.mkdir(parents=True)
+            answer = "作者先建立结构差异，再用实验结果验证机制。"
+            log_note.write_text(
+                self.make_log(task, initial_answer=answer), encoding="utf-8"
+            )
+            seen_prompts = []
+
+            def fake_codex(_config, prompt, *_args, **_kwargs):
+                seen_prompts.append(prompt)
+                log_note.write_text(
+                    self.make_log(
+                        task,
+                        stage="awaiting_supervisor_answer",
+                        initial_answer=answer,
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+            config = {"vault": vault, "paragraph_reading_timeout_seconds": 30}
+            with mock.patch.object(
+                PIPELINE,
+                "ensure_paragraph_reading_skill",
+                return_value="paper-intensive-reading",
+            ), mock.patch.object(
+                PIPELINE, "extract_pdf", return_value=extract
+            ), mock.patch.object(
+                PIPELINE, "codex_command", side_effect=fake_codex
+            ):
+                self.assertEqual(
+                    PIPELINE.paragraph_read_paper(
+                        config, task["note_path"], "submit-initial"
+                    ),
+                    0,
+                )
+
+            self.assertIn('"intensive_reading_action": "submit-initial"', seen_prompts[0])
+            self.assertIn(answer, log_note.read_text(encoding="utf-8"))
+            self.assertIn("Original body.", main_note.read_text(encoding="utf-8"))
 
     def test_log_resolves_back_to_primary_note(self):
         with tempfile.TemporaryDirectory() as directory:

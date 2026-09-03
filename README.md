@@ -13,8 +13,8 @@
 - `knowledge-base/`：Zotero PDF 镜像、PDF 文本提取、草稿生成、人工审核、知识整合和健康检查脚本。
 - `skills/forge-paper-note/`：常规论文笔记生成 Skill，以及确定性的提取、图片、审计与保存脚本。
 - `skills/paper-reading/`：保留的上游 Mode A Skill，不修改其原始版本。
-- `skills/paper-intensive-reading/`：基于 Mode A 改造的全文连续覆盖、交互验证与显式合并 Skill。
-- 可选逐段精读：人工在主论文笔记勾选后调用 `paper-intensive-reading`，把交互过程隔离到 `wiki/papers/close-reading/`；普通精读阶段不修改自动论文笔记正文。
+- `skills/paper-intensive-reading/`：基于 Mode A 改造的全文连续 PDF 裁图、交互验证与显式合并 Skill。
+- 可选逐段精读：人工勾选后自动启动；把交互过程隔离到 `wiki/papers/close-reading/`，把原文和相关配图裁到论文专属 `images/.../intensive-reading/Uxx/`，普通精读阶段不修改自动论文笔记正文。
 
 ## 安装
 
@@ -88,16 +88,23 @@ python3 scripts/check-forge-paper-note.py
 ## 可选交互式全文精读
 
 每篇常规论文笔记会显示两个复选属性：`paragraph_reading` 用于人工选择值得
-精读的论文，`paragraph_reading_figures` 用于授权把选定裁图保存到论文专属图片目录；
-即使未勾选后者，科学图、表和公式仍属于全文证据，不能跳过。勾选前者后，
-在 Obsidian 命令面板执行“开始或继续当前论文的交互式全文精读”。未勾选的
-论文不会被后台自动精读。
+精读的论文；勾选后插件自动启动并显示进度百分比。`paragraph_reading_figures`
+保留为旧笔记的附加裁图开关，不控制当前单元必需的原文和相关图表裁图。也可以在
+Obsidian 命令面板手动执行“开始或继续当前论文的交互式全文精读”。未勾选的论文
+不会被后台自动精读。
 
 精读日志存放于 `wiki/papers/close-reading/<主论文笔记文件名>`。新流程取消开场
-“阅读契约”，先把全文组织为互不重叠的核心推理单元，并将背景、定义和过渡段并入
-相邻单元。每次命令只推进一个阶段：证据包与用户初步理解 → AI 导师问题 → 可选
-分级提示 → 专家解释 → 用户重构 → 0–8 分评分。得分至少 6/8 且不存在重大事实
-错误时，该单元才进入待合并状态。人工文本始终原样保留，AI 内容明确标记。
+“阅读契约”，把全文组织为通常 4–8 个连续、互不重叠的 `Uxx` 单元，并将背景、
+定义和过渡段并入相邻单元。每个单元只按“原文连续裁图 → 对应翻译 → 相关配图 →
+一次原文位置 → 交互”展示，不写 AI 判断的单元作用或关系。原文和图表均由原 PDF
+直接裁切并存放在 `wiki/papers/images/<论文笔记名>/intensive-reading/<Uxx>/`；MinerU
+只提供文本、公式和页码导航。
+
+首次呈现单元后状态停在 `awaiting_initial_analysis`。填写初始理解并不会自动推进，
+必须点击 Obsidian 状态栏中的“提交 Uxx 初始理解”按钮；空内容会被拒绝并给出修改
+提示。后台随后按 AI 导师问题 → 可选分级提示 → 专家解释 → 用户重构 → 0–8 分评分
+推进，每次调用均显示阶段和百分比。得分至少 6/8 且不存在重大事实错误时，该单元
+才进入待合并状态。人工文本始终原样保留。
 
 主论文笔记是该论文唯一允许进入自生长知识库的来源；逐段精读笔记标记为
 `integration_role: auxiliary`，不能单独审核整合。在普通“继续/提示/解释”阶段，
@@ -106,9 +113,10 @@ python3 scripts/check-forge-paper-note.py
 完成全文前不会产生规范知识；全文完成后也只生成候选，仍需审核主笔记并运行原有
 整合命令，才会影响规范知识页。
 
-PDF 处理使用现有 MinerU 主解析器：逐页 Markdown、公式、表格、图注和提取图片缓存在
-`extracts/papers/`，精读 skill 优先读取该证据层，遇到多栏版面、组合图、表头或公式
-歧义时再回看原 PDF。MinerU 失败时仍可回退到 `pdftotext`，日志会保留实际解析器。
+PDF 处理继续使用 MinerU 生成逐页 Markdown、公式、表格和图注导航并缓存在
+`extracts/papers/`；但笔记里展示的原文与配图一律由 `crop_pdf_region.py` 从原 PDF
+直接渲染裁切，不复制 MinerU 图像。MinerU 失败时仍可回退到 `pdftotext`，日志会保留
+实际解析器，但展示裁图仍来自原 PDF。
 
 本功能的新 skill 位于 `skills/paper-intensive-reading/`，是在保留原始
 [Kingslayer-bot/paper-reading-skill](https://github.com/Kingslayer-bot/paper-reading-skill)

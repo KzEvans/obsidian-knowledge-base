@@ -96,18 +96,23 @@ reuse the previous plan when the paper identity and source hash are unchanged.
 
 Every primary paper note exposes two human-owned Obsidian checkboxes:
 `paragraph_reading` and `paragraph_reading_figures`. The first opts a valuable paper
-into interactive full-text reading; the second authorizes persistence of selected
-image crops. Scientific figures, tables, and equations remain part of reasoning
-coverage even when crop persistence is disabled. Neither option runs automatically.
+into interactive full-text reading and authorizes required original/visual PDF crops.
+The second is retained for optional supplemental crops. Changing the first checkbox
+from false to true in the active note starts the workflow automatically.
 
-After checking `paragraph_reading`, open that primary note and run the Obsidian command
-`开始或继续当前论文的交互式全文精读`. The runner invokes the repository-bundled,
+The Obsidian command `开始或继续当前论文的交互式全文精读` remains available as a
+manual entry point. The runner invokes the repository-bundled,
 locally installed `paper-intensive-reading` skill. It uses the MinerU page-delimited
-Markdown as its navigation/evidence layer, consolidates the whole paper into
-non-overlapping reasoning units, and writes a separate process log at
-`wiki/papers/close-reading/<exact-primary-note-filename>`. Each invocation advances
-one user/AI interaction stage and then stops. Both files share the paper's existing
-`wiki/papers/images/<exact-note-stem>/` asset directory.
+Markdown only for navigation and translation, consolidates the whole main text into
+a few continuous non-overlapping units, and renders every displayed source passage
+and relevant figure directly from the PDF. Crops live under
+`wiki/papers/images/<exact-note-stem>/intensive-reading/<Uxx>/`; the separate process
+log lives at `wiki/papers/close-reading/<exact-primary-note-filename>`.
+
+At `awaiting_initial_analysis`, editing the user block does not advance the state.
+The user must click the visible `提交 Uxx 初始理解` control or run its command. The
+runner validates non-empty input before invoking Codex. Intensive-reading actions
+stream named milestones and percentages to the plugin progress display.
 
 The primary paper note is the paper's sole integration source. The process log carries
 `integration_role: auxiliary` and `primary_source_id`, and the runner rejects attempts

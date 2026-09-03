@@ -80,7 +80,8 @@ generated_at: "ISO timestamp"
 `paragraph_reading` and `paragraph_reading_figures` are human-owned Obsidian
 checkboxes. Always initialize them to `false`, but preserve their existing values
 when regenerating a draft. The optional Mode A workflow starts only after the human
-checks `paragraph_reading` and explicitly runs the paragraph-reading command.
+checks `paragraph_reading`; the Obsidian plugin starts it on that false-to-true change,
+while the paragraph-reading command remains available as a manual fallback.
 
 Every paper note must contain `impact_factor`, `impact_factor_year`,
 `impact_factor_source`, and `impact_factor_retrieved_at`. Copy them exactly

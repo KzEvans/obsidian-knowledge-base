@@ -8,7 +8,7 @@ official paper note at `note_path`. Use the `paper-intensive-reading` skill's
 
 - The log is auxiliary and its `interaction_stage` is `ready_to_merge`.
 - The current unit has a score of at least 6/8 and no major factual error.
-- Its stable verified-unit block has exact primary-PDF page evidence.
+- Its `原文位置` block has exact primary-PDF page evidence and its stable verified-unit block points back to that location.
 - The current unit is not already present in `merged_units`.
 
 If any precondition fails, change neither file and return `blocked`.
@@ -27,7 +27,7 @@ update exactly one stable block:
 
 ```markdown
 <!-- intensive-reading:U01:start -->
-### U01 · <reasoning move>
+### U01
 
 - 验证结论：...
 - 对原自动笔记的处理：已验证 / 已修正 / 已补充
