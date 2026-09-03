@@ -91,7 +91,7 @@ PROHIBITED_PHRASES = {
 HEADING_RE = re.compile(r"^(#{2,3})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 ORDERED_STEP_RE = re.compile(r"(?m)^\s*\d+[.)、]\s+")
 PDF_PAGE_LINK_RE = re.compile(
-    r"\[\[[^\]\n]+\.pdf#page=(\d+)\|(?:PDF|SI)\s+p\.(\d+)\]\]",
+    r"\[\[[^\]\n]+\.pdf#page=(\d+)\\?\|(?:(?:PDF|SI)\s+)?p\.(\d+)\]\]",
     re.IGNORECASE,
 )
 

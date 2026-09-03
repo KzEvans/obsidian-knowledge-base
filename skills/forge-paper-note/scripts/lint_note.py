@@ -22,8 +22,14 @@ from localization import (
     note_schema,
     require_artifact_output_language,
 )
+from normalize_markdown_tables import (
+    normalize_table_wikilinks,
+    split_row,
+    table_blocks,
+)
 
 ACTIVE_LANGUAGE = "zh-CN"
+ACTIVE_PROFILE = "canonical"
 SCHEMA: dict = {}
 SECTIONS: dict[str, str] = {}
 REQUIRED_SECTIONS: tuple[str, ...] = NOTE_REQUIRED_SECTIONS
@@ -34,13 +40,71 @@ FIGURE_TARGET_SECTIONS: set[str] = set()
 FIGURE_LABELS: dict[str, str] = {}
 MECHANISM_FLOW_HEADING = "机制流程"
 
-def configure_output_language(language: str | None = None) -> str:
+PIPELINE_PAPERFORGE_SECTIONS = {
+    "zh-CN": (
+        "1. 研究问题与重要性",
+        "2. 前人工作与不足",
+        "3. 重建作者的思考路径",
+        "4. 核心 Intuition",
+        "5. 具体方法与完整 Pipeline",
+        "6. 核心数学推导",
+        "7. 实验设计与结论",
+        "8. Take-aways",
+        "9. 最脆弱的假设",
+        "10. 最小复现实验",
+        "11. 最强反例设计",
+        "12. Follow-up Research Idea",
+        "与现有知识的候选关联",
+        "可验证的知识声明",
+        "人工复核",
+    ),
+    "en": (
+        "1. Research Question and Importance",
+        "2. Prior Work and Its Limits",
+        "3. Reconstructing the Authors' Reasoning Path",
+        "4. Core Intuition",
+        "5. Complete Method Pipeline",
+        "6. Core Mathematical Derivation",
+        "7. Experimental Design and Conclusions",
+        "8. Takeaways",
+        "9. Most Fragile Assumption",
+        "10. Minimal Reproduction",
+        "11. Strongest Counterexample",
+        "12. Follow-up Research Idea",
+        "Candidate Knowledge Links",
+        "Verifiable Claims",
+        "Human Review",
+    ),
+}
+
+def configure_output_language(language: str | None = None, profile: str = "canonical") -> str:
+    global ACTIVE_PROFILE
     global ACTIVE_LANGUAGE, SCHEMA, SECTIONS, REQUIRED_SECTIONS, CORE_INFO_FIELDS
     global CORE_INFO_FIELD_INDEX, CORE_INFO_FIELD_ALIASES, FIGURE_TARGET_SECTIONS, FIGURE_LABELS, MECHANISM_FLOW_HEADING
     ACTIVE_LANGUAGE = normalize_output_language(language)
+    ACTIVE_PROFILE = profile
     SCHEMA = note_schema(ACTIVE_LANGUAGE)
     SECTIONS = dict(SCHEMA["sections"])
     REQUIRED_SECTIONS = tuple(SECTIONS.values())
+    if profile == "pipeline-paperforge":
+        pipeline_sections = PIPELINE_PAPERFORGE_SECTIONS[ACTIVE_LANGUAGE]
+        REQUIRED_SECTIONS = pipeline_sections
+        SECTIONS.update(
+            {
+                "core_information": "__frontmatter__",
+                "abstract": pipeline_sections[0],
+                "contributions": pipeline_sections[7],
+                "one_sentence_summary": pipeline_sections[3],
+                "research_questions": pipeline_sections[0],
+                "data_and_task": pipeline_sections[4],
+                "method": pipeline_sections[4],
+                "key_results": pipeline_sections[6],
+                "deep_analysis": pipeline_sections[8],
+                "limitations": pipeline_sections[8],
+                "my_notes": pipeline_sections[9],
+                "references": pipeline_sections[1],
+            }
+        )
     CORE_INFO_FIELDS = list(SCHEMA["core_info_fields"])
     CORE_INFO_FIELD_INDEX = {field: idx for idx, field in enumerate(CORE_INFO_FIELDS)}
     CORE_INFO_FIELD_ALIASES = dict(SCHEMA.get("core_info_aliases", {}))
@@ -211,7 +275,7 @@ ENGLISH_CJK_MATH_LABEL_RE = re.compile(
     r"\\operatorname\{(?:输入|输出|损失|状态|动作|奖励|标签|样本|预测|目标)\}"
 )
 ENGLISH_MATH_SPAN_RE = re.compile(r"\$\$[^$\n]+\$\$|\$[^$\n]+\$")
-OBSIDIAN_LINK_RE = re.compile(r"!?\[\[([^\]|\n]+)(?:\|([^\]\n]+))?\]\]")
+OBSIDIAN_LINK_RE = re.compile(r"!?\[\[([^\]|\n]+)(?:\\?\|([^\]\n]+))?\]\]")
 
 RUNTIME_ARTIFACT_REFERENCE_PATTERNS = [
     re.compile(
@@ -255,6 +319,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default="", help="Output JSON path.")
     p.add_argument("--paper-id", default="", help="Canonical paper id.")
     p.add_argument("--language", default="", help="Run Override for output language: en or zh-CN.")
+    p.add_argument(
+        "--profile",
+        choices=("canonical", "pipeline-paperforge"),
+        default="canonical",
+        help="Top-level note structure to validate.",
+    )
     return p
 
 
@@ -350,13 +420,16 @@ def extract_headers(text: str) -> list[str]:
 
 def find_missing_sections(text: str) -> list[str]:
     missing = []
-    for section in REQUIRED_SECTIONS:
-        if f"## {section}" not in text:
-            missing.append(section)
+    actual = set(re.findall(r"^##\s+(.+?)\s*$", text, flags=re.MULTILINE))
+    for required_section in REQUIRED_SECTIONS:
+        if required_section not in actual:
+            missing.append(required_section)
     return missing
 
 
 def front_matter_order_warnings(text: str) -> list[str]:
+    if ACTIVE_PROFILE == "pipeline-paperforge":
+        return []
     warnings: list[str] = []
     required_order = [f"## {section('abstract')}", f"## {section('contributions')}", f"## {section('one_sentence_summary')}"]
     positions = []
@@ -1663,6 +1736,141 @@ def mechanism_flow_warnings(text: str) -> list[str]:
     return warnings
 
 
+def _table_cell_display_text(cell: str) -> str:
+    def wikilink_label(match: re.Match[str]) -> str:
+        content = match.group(1)
+        parts = re.split(r"\\?\|", content, maxsplit=1)
+        return parts[-1].strip()
+
+    visible = re.sub(r"!?\[\[(.*?)\]\]", wikilink_label, cell)
+    visible = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", visible)
+    visible = re.sub(r"[`*_~]", "", visible)
+    return re.sub(r"\s+", " ", visible).strip()
+
+
+def _unlinked_reference_numbers(cell: str) -> list[str]:
+    without_links = re.sub(r"!?\[\[.*?\]\]", "", cell)
+    without_links = re.sub(r"\[[^\]]+\]\([^)]+\)", "", without_links)
+    return re.findall(r"\[(\d+)\](?!\s*\()", without_links)
+
+
+def inspect_table_hygiene(text: str) -> list[dict[str, object]]:
+    lines = text.splitlines()
+    issues: list[dict[str, object]] = []
+    for start, end in table_blocks(lines):
+        normalized_lines: list[str] = []
+        for offset, line in enumerate(lines[start:end]):
+            normalized, changes = normalize_table_wikilinks(line)
+            normalized_lines.append(normalized)
+            if changes:
+                issues.append(
+                    {
+                        "line_number": start + offset + 1,
+                        "reason": "table_wikilink_pipe_unescaped",
+                        "severity": "error",
+                        "snippet": line.strip()[:180],
+                    }
+                )
+
+        rows = [split_row(line) for line in normalized_lines]
+        expected_columns = len(rows[0])
+        for offset, row in enumerate(rows[1:], start=1):
+            if len(row) != expected_columns:
+                issues.append(
+                    {
+                        "line_number": start + offset + 1,
+                        "reason": "table_column_count_inconsistent",
+                        "severity": "error",
+                        "expected_columns": expected_columns,
+                        "actual_columns": len(row),
+                    }
+                )
+
+        width = max(len(row) for row in rows)
+        padded = [row + [""] * (width - len(row)) for row in rows]
+        content_rows = padded[2:] or padded[:1]
+        empty_columns = [
+            index + 1
+            for index in range(width)
+            if all(not row[index].strip() for row in content_rows)
+        ]
+        if empty_columns:
+            issues.append(
+                {
+                    "line_number": start + 1,
+                    "reason": "table_empty_columns",
+                    "severity": "error",
+                    "columns": empty_columns,
+                }
+            )
+        if width > 5:
+            issues.append(
+                {
+                    "line_number": start + 1,
+                    "reason": "table_too_many_columns",
+                    "severity": "error",
+                    "columns": width,
+                }
+            )
+
+        section_name = section_name_for_line(lines, start)
+        prior_work_table = "前人工作" in section_name or "prior work" in section_name.casefold()
+        verification_rows = 0
+        for row_offset, row in enumerate(rows):
+            if row_offset == 1:
+                continue
+            for cell in row:
+                if len(_table_cell_display_text(cell)) > 160:
+                    issues.append(
+                        {
+                            "line_number": start + row_offset + 1,
+                            "reason": "table_cell_too_long",
+                            "severity": "error",
+                            "snippet": _table_cell_display_text(cell)[:180],
+                        }
+                    )
+                if prior_work_table and _unlinked_reference_numbers(cell):
+                    issues.append(
+                        {
+                            "line_number": start + row_offset + 1,
+                            "reason": "table_reference_not_linked",
+                            "severity": "error",
+                            "references": _unlinked_reference_numbers(cell),
+                        }
+                    )
+            joined = " ".join(row)
+            if "paper_characterization_only" in joined or "仅依据本文转述，未独立核验" in joined:
+                verification_rows += 1
+            if prior_work_table and re.search(r"\*[^*]{40,}\*\s*\[\d+\]", joined):
+                issues.append(
+                    {
+                        "line_number": start + row_offset + 1,
+                        "reason": "table_full_reference_entry",
+                        "severity": "error",
+                        "snippet": _table_cell_display_text(joined)[:180],
+                    }
+                )
+        if verification_rows > 1:
+            issues.append(
+                {
+                    "line_number": start + 1,
+                    "reason": "table_repeated_verification_boilerplate",
+                    "severity": "error",
+                    "rows": verification_rows,
+                }
+            )
+
+    deduped: list[dict[str, object]] = []
+    seen: set[tuple[int, str]] = set()
+    for item in issues:
+        key = (int(item["line_number"]), str(item["reason"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def strip_frontmatter(text: str) -> str:
     """Remove a leading YAML frontmatter block (---...---) if present.
 
@@ -1673,11 +1881,10 @@ def strip_frontmatter(text: str) -> str:
 
 
 def main() -> None:
-    from common import emit, runtime_config
+    from common import emit
 
     args = parser().parse_args()
-    config = runtime_config(cli_overrides={"output_language": args.language})
-    output_language = configure_output_language(str(config["output_language"]))
+    output_language = configure_output_language(args.language or None, args.profile)
     path = Path(args.input).expanduser().resolve()
     # utf-8-sig strips a leading BOM and the replace() normalizes CRLF so
     # Windows-authored notes are linted identically to LF/BOM-less notes;
@@ -1696,6 +1903,7 @@ def main() -> None:
     core_info_issues = core_info_structure_issues(text)
     reference_hygiene_issues = inspect_reference_hygiene(text)
     substantive_issues = inspect_substantive_content(text)
+    table_issues = inspect_table_hygiene(text)
     planning_artifact_found, planning_artifact_issues = inspect_note_plan(
         resolve_note_plan_path(path, args.plan_file),
         output_language,
@@ -1743,11 +1951,16 @@ def main() -> None:
         warnings.append("math_render_issues_present")
     if reference_hygiene_issues:
         warnings.append("runtime_artifact_references_present")
+    for item in table_issues:
+        reason = str(item.get("reason", ""))
+        if reason and reason not in warnings:
+            warnings.append(reason)
 
     payload = {
         "status": "ok",
         "script": "lint_note.py",
         "output_language": output_language,
+        "profile": args.profile,
         "paper_id": args.paper_id,
         "input_path": str(path),
         "note_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -1763,6 +1976,7 @@ def main() -> None:
         "core_info_structure_issues": core_info_issues,
         "reference_hygiene_issues": reference_hygiene_issues,
         "substantive_content_issues": substantive_issues,
+        "table_structure_issues": table_issues,
         "planning_artifact_found": planning_artifact_found,
         "planning_artifact_issues": planning_artifact_issues,
         "passes_basic_structure": (
@@ -1782,6 +1996,7 @@ def main() -> None:
             and not mechanical_artifact_issues
             and not linebreak_issues
             and not code_math_issues
+            and not table_issues
         ),
         "passes_math_gate": not math_issues,
         "passes_figure_gate": not figure_issues,
@@ -1790,6 +2005,7 @@ def main() -> None:
         "passes_substantive_content": not any(
             str(issue.get("severity", "")) == "error" for issue in substantive_issues
         ),
+        "passes_table_gate": not table_issues,
     }
     emit(payload, args.output)
 

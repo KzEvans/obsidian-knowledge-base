@@ -126,7 +126,7 @@ ENTITY_TYPES = {
 HEADING_RE = re.compile(r"^(#{2,3})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
 PDF_PAGE_LINK_RE = re.compile(
-    r"\[\[[^\]\n]+\.pdf#page=(\d+)\|(?:PDF|SI)\s+p\.(\d+)\]\]",
+    r"\[\[[^\]\n]+\.pdf#page=(\d+)\\?\|(?:(?:PDF|SI)\s+)?p\.(\d+)\]\]",
     re.IGNORECASE,
 )
 WIKILINK_RE = re.compile(r"\[\[([^\]|#\n]+)(?:#[^\]|\n]+)?(?:\|[^\]\n]+)?\]\]")

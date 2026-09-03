@@ -1,7 +1,9 @@
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -347,6 +349,98 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             1800,
         )
         self.assertEqual(PIPELINE.ingest_timeout_seconds(config, {"kind": "paper"}), 1800)
+
+    def test_forge_runtime_persists_checkpoint_and_exposes_previous_plan_for_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            config = {"vault": vault}
+            task = self.make_task()
+            task["sha256"] = "0" * 64
+            first = PIPELINE.prepare_forge_runtime(config, task, 1800)
+            first_plan = vault / first["forge_note_plan_path"]
+            first_plan.write_text('{"source_id":"same"}', encoding="utf-8")
+            second = PIPELINE.prepare_forge_runtime(config, task, 1800)
+            self.assertEqual(second["forge_resume_plan_path"], first["forge_note_plan_path"])
+            checkpoint = json.loads(
+                (vault / second["forge_checkpoint_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(checkpoint["stage"], "generation_pending")
+            self.assertEqual(checkpoint["source_sha256"], task["sha256"])
+
+    def test_timeout_log_keeps_partial_output_without_serializing_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            error = subprocess.TimeoutExpired(
+                cmd=["codex", "SECRETLY-LONG-PROMPT"],
+                timeout=25,
+                output=b"partial progress",
+                stderr=b"partial error",
+            )
+            path = PIPELINE.write_timeout_run_log(
+                {"vault": vault}, "ingest", "paper:test", "generation", error
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("timed_out=true", text)
+            self.assertIn("partial progress", text)
+            self.assertNotIn("SECRETLY-LONG-PROMPT", text)
+
+    def test_deterministic_forge_validation_combines_all_required_gates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            config = {"vault": vault, "forge_python_path": sys.executable}
+            task = self.make_task()
+            task["sha256"] = "0" * 64
+            PIPELINE.prepare_forge_runtime(config, task, 1800)
+            note = vault / task["note_path"]
+            note.parent.mkdir(parents=True)
+            note.write_text("# Draft\n", encoding="utf-8")
+            completed = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+            note_report = {
+                name: True
+                for name in (
+                    "passes_basic_structure",
+                    "passes_style_gate",
+                    "passes_math_gate",
+                    "passes_figure_gate",
+                    "passes_reference_hygiene_gate",
+                    "passes_plan_gate",
+                    "passes_substantive_content",
+                    "passes_table_gate",
+                )
+            }
+            reports = [
+                ({"changed": False}, completed),
+                (note_report, completed),
+                ({"passes_research_audit": True}, completed),
+                ({"passed": True}, completed),
+            ]
+            with mock.patch.object(PIPELINE, "run_forge_script", side_effect=reports):
+                validation = PIPELINE.validate_forge_draft(
+                    config, task, note, time.monotonic() + 30
+                )
+            self.assertTrue(validation["passed"])
+            self.assertEqual(validation["status"], "passed")
+            self.assertTrue((vault / task["forge_validation_path"]).is_file())
+
+    def test_runner_replaces_paper_draft_index_entry_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            index = vault / "wiki/index.md"
+            index.parent.mkdir(parents=True)
+            index.write_text(
+                "# Index\n\n## 待审核草稿\n\n"
+                "<!-- runner -->\n\n"
+                f"- [[{task['note_path']}|Old title]] — old\n\n"
+                "## 已整合来源\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(PIPELINE.ensure_paper_draft_index_entry({"vault": vault}, task))
+            updated = index.read_text(encoding="utf-8")
+            target = task["note_path"].removesuffix(".md")
+            self.assertEqual(updated.count(f"[[{target}|{task['display_title']}]]"), 1)
+            self.assertNotIn("Old title", updated)
+            self.assertFalse(PIPELINE.ensure_paper_draft_index_entry({"vault": vault}, task))
 
     def test_cancel_redrafts_restores_previous_states(self):
         with tempfile.TemporaryDirectory() as directory:

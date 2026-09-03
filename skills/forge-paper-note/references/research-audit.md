@@ -317,3 +317,6 @@ Do not invent novelty by rhetoric.
 - Avoid repeating the same result in Contributions, Takeaways, Verifiable Claims, and the result section with identical wording. Change the function of each occurrence or remove it.
 - Make Verifiable Claims atomic and integration-ready; keep interpretation in Deep Analysis.
 - Prefer a compact takeaway list over a 5/3/1 repetition stack unless explicitly requested.
+- Keep Markdown tables to two through five meaningful columns and one compact claim per cell. Remove any column whose body cells are all empty.
+- In tables, escape Obsidian alias separators and shorten page evidence to `[[paper.pdf#page=N\|p.N]]`; put these links in a compact final evidence column.
+- In prior-work tables, use a clickable compact `Ref. N · Author (Year)` label. State the local-source-only verification boundary once above the table instead of repeating it in every row, and move full reference entries outside the table.

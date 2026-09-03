@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import unquote
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1119,6 +1120,320 @@ def write_run_log(config: Dict[str, Any], operation: str, source_id: str, result
     return path
 
 
+def process_output_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def write_timeout_run_log(
+    config: Dict[str, Any],
+    operation: str,
+    source_id: str,
+    stage: str,
+    error: subprocess.TimeoutExpired,
+) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_id)
+    path = config["vault"] / "system" / "knowledge" / "logs" / f"{stamp}-{operation}-{safe_id}.log"
+    content = "\n".join(
+        [
+            f"operation={operation}",
+            f"source_id={source_id}",
+            f"stage={stage}",
+            "returncode=124",
+            "timed_out=true",
+            f"timeout_seconds={error.timeout}",
+            "",
+            "--- partial stdout ---",
+            process_output_text(error.stdout),
+            "",
+            "--- partial stderr ---",
+            process_output_text(error.stderr),
+        ]
+    )
+    atomic_write_text(path, content)
+    return path
+
+
+def installed_paper_skill_dir(name: str = "forge-paper-note") -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+    skill_dir = (codex_home / "skills" / name).resolve()
+    if not (skill_dir / "SKILL.md").is_file():
+        raise RuntimeError(f"Installed paper skill is incomplete: {skill_dir}")
+    return skill_dir
+
+
+def prepare_forge_runtime(
+    config: Dict[str, Any], task: Dict[str, Any], total_timeout_seconds: int
+) -> Dict[str, str]:
+    vault = config["vault"]
+    previous_runtime = str(task.get("forge_runtime_dir") or "").strip()
+    previous_plan = vault / previous_runtime / "note-plan.json" if previous_runtime else None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    runtime_relative = Path("system") / "runtime" / "forge" / safe_stem(task["id"]) / stamp
+    runtime = vault / runtime_relative
+    runtime.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "forge_runtime_dir": runtime_relative.as_posix(),
+        "forge_note_plan_path": (runtime_relative / "note-plan.json").as_posix(),
+        "forge_checkpoint_path": (runtime_relative / "checkpoint.json").as_posix(),
+        "forge_table_report_path": (runtime_relative / "table-normalization.json").as_posix(),
+        "forge_note_lint_path": (runtime_relative / "lint-note.json").as_posix(),
+        "forge_research_lint_path": (runtime_relative / "lint-research-audit.json").as_posix(),
+        "forge_technical_lint_path": (runtime_relative / "lint-technical-language.json").as_posix(),
+        "forge_validation_path": (runtime_relative / "validation.json").as_posix(),
+    }
+    task.pop("forge_resume_plan_path", None)
+    if previous_plan and previous_plan.is_file():
+        paths["forge_resume_plan_path"] = previous_plan.relative_to(vault).as_posix()
+    task.update(paths)
+    task["runner_validation"] = True
+    task["forge_job_timeout_seconds"] = total_timeout_seconds
+    atomic_write_json(
+        vault / paths["forge_checkpoint_path"],
+        {
+            "operation": "ingest",
+            "source_id": task["id"],
+            "source_sha256": task.get("sha256", ""),
+            "stage": "generation_pending",
+            "started_at": now_iso(),
+            "updated_at": now_iso(),
+        },
+    )
+    return paths
+
+
+def update_forge_checkpoint(
+    config: Dict[str, Any], task: Dict[str, Any], stage: str, **details: Any
+) -> None:
+    raw_path = str(task.get("forge_checkpoint_path") or "").strip()
+    if not raw_path:
+        return
+    path = config["vault"] / raw_path
+    checkpoint = read_json(path, {})
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+    checkpoint.update(details)
+    checkpoint["stage"] = stage
+    checkpoint["updated_at"] = now_iso()
+    atomic_write_json(path, checkpoint)
+
+
+def remaining_deadline_seconds(deadline: float) -> int:
+    return max(0, int(deadline - time.monotonic()))
+
+
+def run_forge_script(
+    config: Dict[str, Any],
+    script_name: str,
+    arguments: List[str],
+    output_path: Path,
+    deadline: float,
+) -> tuple[Dict[str, Any], subprocess.CompletedProcess]:
+    remaining = remaining_deadline_seconds(deadline)
+    if remaining < 1:
+        raise RuntimeError(f"Forge deadline reached before {script_name}")
+    script = installed_paper_skill_dir() / "scripts" / script_name
+    if not script.is_file():
+        raise RuntimeError(f"Installed Forge script is missing: {script}")
+    timeout = min(max(1, int(config.get("forge_lint_timeout_seconds", 60))), remaining)
+    interpreter = str(config.get("forge_python_path") or sys.executable)
+    command = [interpreter, str(script), *arguments, "--output", str(output_path)]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        env=configured_environment(config),
+        stdin=subprocess.DEVNULL,
+        text=True,
+        timeout=timeout,
+        cwd=str(config["vault"]),
+    )
+    if not output_path.is_file():
+        raise RuntimeError(
+            result.stderr.strip() or result.stdout.strip() or f"{script_name} wrote no report"
+        )
+    report = read_json(output_path, None)
+    if not isinstance(report, dict):
+        raise RuntimeError(f"{script_name} produced an invalid JSON report")
+    return report, result
+
+
+def forge_validation_warnings(reports: Dict[str, Dict[str, Any]]) -> List[str]:
+    warnings: List[str] = []
+    note = reports.get("note", {})
+    research = reports.get("research", {})
+    technical = reports.get("technical", {})
+    for value in note.get("warnings", []):
+        warnings.append(f"note:{value}")
+    for key in ("semantic_failures", "plan_issues", "warnings"):
+        for value in research.get(key, []):
+            warnings.append(f"research:{value}")
+    for value in technical.get("issues", []):
+        warnings.append(f"technical:{value}")
+    return list(dict.fromkeys(str(value) for value in warnings))
+
+
+def validate_forge_draft(
+    config: Dict[str, Any], task: Dict[str, Any], note: Path, deadline: float
+) -> Dict[str, Any]:
+    vault = config["vault"]
+    plan = vault / task["forge_note_plan_path"]
+    table_report_path = vault / task["forge_table_report_path"]
+    note_report_path = vault / task["forge_note_lint_path"]
+    research_report_path = vault / task["forge_research_lint_path"]
+    technical_report_path = vault / task["forge_technical_lint_path"]
+    update_forge_checkpoint(config, task, "table_normalization")
+    table, _ = run_forge_script(
+        config,
+        "normalize_markdown_tables.py",
+        ["--input", str(note), "--write"],
+        table_report_path,
+        deadline,
+    )
+    update_forge_checkpoint(config, task, "deterministic_validation")
+    note_report, _ = run_forge_script(
+        config,
+        "lint_note.py",
+        [
+            "--input",
+            str(note),
+            "--plan-file",
+            str(plan),
+            "--language",
+            "zh-CN",
+            "--profile",
+            "pipeline-paperforge",
+            "--paper-id",
+            task["id"],
+        ],
+        note_report_path,
+        deadline,
+    )
+    research_report, _ = run_forge_script(
+        config,
+        "lint_research_audit.py",
+        [
+            "--input",
+            str(note),
+            "--plan-file",
+            str(plan),
+            "--language",
+            "zh-CN",
+            "--require-plan",
+            "--require-page-links",
+            "--require-draft",
+            "--require-user-note-markers",
+        ],
+        research_report_path,
+        deadline,
+    )
+    technical_report, _ = run_forge_script(
+        config,
+        "lint_technical_language.py",
+        [
+            "--input",
+            str(note),
+            "--plan-file",
+            str(plan),
+            "--language",
+            "zh-CN",
+            "--require-plan",
+        ],
+        technical_report_path,
+        deadline,
+    )
+    reports = {
+        "table": table,
+        "note": note_report,
+        "research": research_report,
+        "technical": technical_report,
+    }
+    note_gates = (
+        "passes_basic_structure",
+        "passes_style_gate",
+        "passes_math_gate",
+        "passes_figure_gate",
+        "passes_reference_hygiene_gate",
+        "passes_plan_gate",
+        "passes_substantive_content",
+        "passes_table_gate",
+    )
+    passed = (
+        all(note_report.get(gate) is True for gate in note_gates)
+        and research_report.get("passes_research_audit") is True
+        and technical_report.get("passed") is True
+    )
+    combined = {
+        "status": "passed" if passed else "needs_repair",
+        "passed": passed,
+        "source_id": task["id"],
+        "note_path": task["note_path"],
+        "plan_path": task["forge_note_plan_path"],
+        "reports": {
+            "table": task["forge_table_report_path"],
+            "note": task["forge_note_lint_path"],
+            "research": task["forge_research_lint_path"],
+            "technical": task["forge_technical_lint_path"],
+        },
+        "warnings": forge_validation_warnings(reports),
+        "note_sha256": file_sha256(note),
+        "validated_at": now_iso(),
+    }
+    atomic_write_json(vault / task["forge_validation_path"], combined)
+    return combined
+
+
+def ensure_paper_draft_index_entry(config: Dict[str, Any], task: Dict[str, Any]) -> bool:
+    index = config["vault"] / "wiki" / "index.md"
+    if not index.is_file():
+        raise RuntimeError(f"Knowledge index is missing: {index}")
+    original = index.read_text(encoding="utf-8-sig")
+    lines = original.splitlines()
+    heading_index = next(
+        (position for position, line in enumerate(lines) if line.strip() == "## 待审核草稿"),
+        None,
+    )
+    if heading_index is None:
+        raise RuntimeError("Knowledge index is missing the ## 待审核草稿 section")
+
+    targets = (task["note_path"], task["note_path"].removesuffix(".md"))
+    link_patterns = tuple(f"[[{target}|" for target in targets)
+    filtered = [
+        line
+        for line in lines
+        if not (line.lstrip().startswith("-") and any(pattern in line for pattern in link_patterns))
+    ]
+    heading_index = next(
+        position for position, line in enumerate(filtered) if line.strip() == "## 待审核草稿"
+    )
+    insertion = next(
+        (
+            position
+            for position in range(heading_index + 1, len(filtered))
+            if filtered[position].startswith("## ")
+        ),
+        len(filtered),
+    )
+    while insertion > heading_index + 1 and not filtered[insertion - 1].strip():
+        del filtered[insertion - 1]
+        insertion -= 1
+    year = str(task.get("year") or "年份待核对")
+    target = task["note_path"].removesuffix(".md")
+    entry = (
+        f"- [[{target}|{task['display_title']}]] — "
+        f"PaperForge 论文摄取草稿（{year}）"
+    )
+    filtered[insertion:insertion] = [entry, ""]
+    updated = "\n".join(filtered) + ("\n" if original.endswith("\n") else "")
+    if updated == original:
+        return False
+    atomic_write_text(index, updated)
+    return True
+
+
 def set_task_failure(task: Dict[str, Any], error: str, status: str = "failed") -> None:
     task["attempts"] = int(task.get("attempts", 0)) + 1
     task["last_error"] = error[-4000:]
@@ -1294,6 +1609,8 @@ def ingest_next(config: Dict[str, Any]) -> int:
 
         log(f"ingest start id={task['id']} kind={task['kind']}")
         try:
+            forge_deadline: Optional[float] = None
+            forge_warnings: List[str] = []
             if task["kind"] == "paper":
                 paper_skills = ensure_paper_skills(config)
                 task["forge_python_path"] = ensure_forge_python(config)
@@ -1304,16 +1621,32 @@ def ingest_next(config: Dict[str, Any]) -> int:
                 save_queue(config, queue)
                 extract_path = extract_pdf(config, task)
                 task["extract_path"] = str(extract_path.relative_to(config["vault"]))
+                total_timeout = ingest_timeout_seconds(config, task)
+                reserve = min(
+                    max(0, int(config.get("forge_finalize_reserve_seconds", 300))),
+                    max(0, total_timeout - 1),
+                )
+                task["forge_generation_budget_seconds"] = max(1, total_timeout - reserve)
+                task["forge_finalize_reserve_seconds"] = reserve
+                prepare_forge_runtime(config, task, total_timeout)
+                save_queue(config, queue)
+                forge_deadline = time.monotonic() + total_timeout
             workflow = config["vault"] / "system" / "workflows" / "ingest.md"
             skill_instruction = ""
             if task["kind"] == "paper":
                 invocations = " and ".join(f"${name}" for name in paper_skills)
                 skill_instruction = (
-                    f"\nUse {invocations} for the complete paper analysis, figure review, "
-                    "quality gates, and vault-note mapping. Store every selected or cropped "
+                    f"\nUse {invocations} for the complete paper analysis, persistent note plan, "
+                    "bounded figure review, and Phase B vault-note save. The deterministic runner "
+                    "owns table normalization and all final lints because TASK_JSON.runner_validation "
+                    "is true; do not run those lints in this generation session. Atomically write the "
+                    "complete plan to TASK_JSON.forge_note_plan_path before drafting and save the full "
+                    "note before optional polish. Store every selected or cropped "
                     "note image only in TASK_JSON.images_dir, pass TASK_JSON.image_asset_subdir "
                     "to figure materialization, use TASK_JSON.forge_python_path for every bundled "
-                    "Forge Python script, and embed images with vault-relative Obsidian links. "
+                    "Forge Python script, and embed images with vault-relative Obsidian links. In "
+                    "Markdown tables, escape wikilink alias pipes, use compact clickable page/reference "
+                    "labels, remove empty columns, and keep full reference entries outside the table. "
                     "For prior work, novelty context, and follow-up calibration, use only the current "
                     "paper and its printed references. Do not perform network literature research or "
                     "open cited works; label every prior-work summary as not independently verified."
@@ -1325,16 +1658,58 @@ def ingest_next(config: Dict[str, Any]) -> int:
                 f"{skill_instruction}\n\n"
                 f"TASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}"
             )
-            result = codex_command(
-                config,
-                prompt,
-                f"last-ingest-{safe_stem(task['id'])}",
-                timeout_seconds=ingest_timeout_seconds(config, task),
-            )
-            run_log = write_run_log(config, "ingest", task["id"], result)
             note = config["vault"] / task["note_path"]
-            if result.returncode != 0:
-                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Codex ingest failed")
+            note_hash_before = file_sha256(note) if note.is_file() else ""
+            if task["kind"] == "paper":
+                update_forge_checkpoint(config, task, "generation_running")
+            try:
+                result = codex_command(
+                    config,
+                    prompt,
+                    f"last-ingest-{safe_stem(task['id'])}",
+                    timeout_seconds=(
+                        int(task["forge_generation_budget_seconds"])
+                        if task["kind"] == "paper"
+                        else ingest_timeout_seconds(config, task)
+                    ),
+                )
+                run_log = write_run_log(config, "ingest", task["id"], result)
+                if task["kind"] == "paper":
+                    update_forge_checkpoint(
+                        config,
+                        task,
+                        "generation_returned",
+                        generation_returncode=result.returncode,
+                        generation_run_log=str(run_log.relative_to(config["vault"])),
+                    )
+            except subprocess.TimeoutExpired as error:
+                run_log = write_timeout_run_log(
+                    config, "ingest", task["id"], "generation", error
+                )
+                result = None
+                if task["kind"] == "paper":
+                    forge_warnings.append(
+                        f"generation:timed_out_after_{task['forge_generation_budget_seconds']}s"
+                    )
+                    update_forge_checkpoint(
+                        config,
+                        task,
+                        "generation_timed_out",
+                        generation_run_log=str(run_log.relative_to(config["vault"])),
+                    )
+
+            note_changed = note.is_file() and file_sha256(note) != note_hash_before
+            if result is not None and result.returncode != 0:
+                if task["kind"] != "paper" or not note_changed:
+                    raise RuntimeError(
+                        result.stderr.strip() or result.stdout.strip() or "Codex ingest failed"
+                    )
+                forge_warnings.append(f"generation:returncode_{result.returncode}_draft_saved")
+            if task["kind"] == "paper" and result is None and not note_changed:
+                raise RuntimeError(
+                    "Forge generation reached its deadline before saving a changed draft; "
+                    f"checkpoint: {task['forge_checkpoint_path']}"
+                )
             source_after = config["vault"] / task["source_path"]
             if not source_after.is_file() or file_sha256(source_after) != task["sha256"]:
                 raise RuntimeError(f"Source-of-truth file changed during ingest: {task['source_path']}")
@@ -1355,6 +1730,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                     raise RuntimeError(
                         f"Generated note title does not match '{task['display_title']}': {task['note_path']}"
                     )
+                ensure_paper_draft_index_entry(config, task)
                 index_text = (config["vault"] / "wiki" / "index.md").read_text(
                     encoding="utf-8", errors="ignore"
                 )
@@ -1366,6 +1742,135 @@ def ingest_next(config: Dict[str, Any]) -> int:
                     raise RuntimeError(
                         f"Draft index must contain exactly one matching title link: {task['note_path']}"
                     )
+
+                validation: Dict[str, Any]
+                try:
+                    assert forge_deadline is not None
+                    validation = validate_forge_draft(config, task, note, forge_deadline)
+                except (RuntimeError, subprocess.TimeoutExpired) as error:
+                    validation = {
+                        "status": "not_completed",
+                        "passed": False,
+                        "warnings": [f"runner_validation:{error}"],
+                        "note_sha256": file_sha256(note),
+                    }
+                    atomic_write_json(
+                        config["vault"] / task["forge_validation_path"], validation
+                    )
+                remaining = remaining_deadline_seconds(forge_deadline)
+                repair_minimum = max(
+                    1, int(config.get("forge_repair_minimum_seconds", 90))
+                )
+                repair_reserve = max(
+                    1,
+                    int(config.get("forge_post_repair_validation_reserve_seconds", 30)),
+                )
+                if not validation.get("passed") and remaining >= repair_minimum + repair_reserve:
+                    update_forge_checkpoint(
+                        config,
+                        task,
+                        "repair_running",
+                        validation_status=validation.get("status", "needs_repair"),
+                    )
+                    repair_prompt = (
+                        "执行 Forge 论文草稿的有界修复。使用 $forge-paper-note，但只修复已有"
+                        "校验报告列出的失败项；不得重新开始全文分析、文献检索或完整图片审查。"
+                        "严格遵守 AGENTS.md 与 system/workflows/ingest.md。只允许修改 TASK_JSON.note_path、"
+                        "TASK_JSON.forge_note_plan_path 和 TASK_JSON.images_dir 中的必要图片；wiki/index.md 由 runner 管理。"
+                        "优先修复结构、证据、表格空列/错列、未链接的引文、过长单元格及计划字段。"
+                        "保存后立即返回结果，确定性 runner 会再次格式化和校验。\n\n"
+                        f"TASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}\n\n"
+                        f"VALIDATION_JSON:\n{json.dumps(validation, ensure_ascii=False, indent=2)}"
+                    )
+                    repair_timeout = max(
+                        1,
+                        min(
+                            remaining - repair_reserve,
+                            int(config.get("forge_repair_timeout_seconds", 240)),
+                        ),
+                    )
+                    try:
+                        repair_result = codex_command(
+                            config,
+                            repair_prompt,
+                            f"last-ingest-repair-{safe_stem(task['id'])}",
+                            timeout_seconds=repair_timeout,
+                        )
+                        repair_log = write_run_log(
+                            config, "ingest-repair", task["id"], repair_result
+                        )
+                        task["last_repair_run_log"] = str(
+                            repair_log.relative_to(config["vault"])
+                        )
+                        if repair_result.returncode != 0:
+                            forge_warnings.append(
+                                f"repair:returncode_{repair_result.returncode}"
+                            )
+                    except subprocess.TimeoutExpired as error:
+                        repair_log = write_timeout_run_log(
+                            config, "ingest-repair", task["id"], "repair", error
+                        )
+                        task["last_repair_run_log"] = str(
+                            repair_log.relative_to(config["vault"])
+                        )
+                        forge_warnings.append(f"repair:timed_out_after_{repair_timeout}s")
+                    source_after_repair = config["vault"] / task["source_path"]
+                    if (
+                        not source_after_repair.is_file()
+                        or file_sha256(source_after_repair) != task["sha256"]
+                    ):
+                        raise RuntimeError(
+                            f"Source-of-truth file changed during Forge repair: {task['source_path']}"
+                        )
+                    ensure_paper_reading_controls(note)
+                    repaired_text = note.read_text(encoding="utf-8", errors="ignore")
+                    if not re.search(
+                        r"(?m)^status:\s*['\"]?draft['\"]?\s*$", repaired_text[:2000]
+                    ):
+                        raise RuntimeError(
+                            f"Repaired note is not marked status: draft: {task['note_path']}"
+                        )
+                    validate_impact_factor_properties(repaired_text, task)
+                    validate_paper_reading_controls(repaired_text)
+                    validate_paper_image_contract(config, task, repaired_text)
+                    expected_heading = f"# {task['display_title']}"
+                    if not re.search(
+                        rf"(?m)^{re.escape(expected_heading)}\s*$", repaired_text
+                    ):
+                        raise RuntimeError(
+                            f"Repaired note title does not match '{task['display_title']}': "
+                            f"{task['note_path']}"
+                        )
+                    try:
+                        validation = validate_forge_draft(config, task, note, forge_deadline)
+                    except (RuntimeError, subprocess.TimeoutExpired) as error:
+                        validation = {
+                            "status": "not_completed_after_repair",
+                            "passed": False,
+                            "warnings": [f"post_repair_validation:{error}"],
+                            "note_sha256": file_sha256(note),
+                        }
+                        atomic_write_json(
+                            config["vault"] / task["forge_validation_path"], validation
+                        )
+                task["forge_validation_status"] = (
+                    "passed" if validation.get("passed") else "draft_with_warnings"
+                )
+                current_validation_warnings = [
+                    str(item) for item in validation.get("warnings", [])
+                ]
+                task["forge_validation_warnings"] = list(
+                    dict.fromkeys([*forge_warnings, *current_validation_warnings])
+                )[:100]
+                task["forge_note_sha256"] = file_sha256(note)
+                update_forge_checkpoint(
+                    config,
+                    task,
+                    "draft_admitted",
+                    validation_status=task["forge_validation_status"],
+                    warning_count=len(task["forge_validation_warnings"]),
+                    note_sha256=task["forge_note_sha256"],
+                )
 
             task["attempts"] = int(task.get("attempts", 0)) + 1
             task["completed_at"] = now_iso()
@@ -1379,7 +1884,9 @@ def ingest_next(config: Dict[str, Any]) -> int:
             append_log(
                 config["vault"] / "system" / "ingest-log.md",
                 f"draft | {task.get('title', task['id'])}",
-                f"- Source: `[[{task['source_path']}]]`\n- Draft: `[[{task['note_path']}]]`\n- Task: `{task['id']}`",
+                f"- Source: `[[{task['source_path']}]]`\n- Draft: `[[{task['note_path']}]]`\n"
+                f"- Task: `{task['id']}`\n- Forge validation: `{task.get('forge_validation_status', 'not_applicable')}`\n"
+                f"- Validation report: `{task.get('forge_validation_path', '')}`",
             )
             log(f"ingest complete note={task['note_path']}")
             return 0

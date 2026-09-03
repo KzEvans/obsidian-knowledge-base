@@ -6,7 +6,7 @@ The caller supplies exactly one `TASK_JSON`. Process only that source.
 
 - Read, but never modify, anything under `sources/` or `笔记/实验笔记/`.
 - Do not edit `system/queue/pending.json`; the deterministic runner owns queue state.
-- During paper ingest, write only the task's `note_path`, its exact `images_dir`, and the draft section of `wiki/index.md`. Experiment ingest has no image-directory permission unless its task explicitly provides one.
+- During paper ingest, the generation agent may write only the task's `note_path`, exact `images_dir`, and `forge_note_plan_path`. The deterministic runner owns the draft section of `wiki/index.md`, `forge_checkpoint_path`, table normalization, and lint reports under `system/runtime/forge/`. Experiment ingest has no image-directory permission unless its task explicitly provides one.
 - Store every selected or cropped paper-note image under `wiki/papers/images/<exact-note-stem>/`, as supplied by `TASK_JSON.images_dir`. Do not embed temporary paths or another paper's image directory.
 - Do not create or update concept, material, method, phenomenon, project, question, or synthesis pages yet.
 - Never invent a page number, result, material, method, or causal explanation.
@@ -127,6 +127,27 @@ Before drafting, plan all major figures and tables. Visually inspect every candi
 
 In paper drafts, explicitly label content as an author claim, a conclusion from prior literature, an evidence-based inference, or uncertain speculation. Forge Paper Note analysis does not relax the page-citation requirement or the review gate.
 
-Add or update one entry for the draft under `## 待审核草稿` in `wiki/index.md`. Do not duplicate an existing entry.
+### Timed Forge checkpoint contract
 
-Finish with JSON matching `system/knowledge/result.schema.json`, using `operation: ingest` and `status: drafted`.
+When `runner_validation` is `true`, complete only generation phases A and B in this Codex session:
+
+1. Read the full page-delimited extract and build the required combined plan.
+2. Atomically write that JSON plan to `forge_note_plan_path` before drafting. If `forge_resume_plan_path` exists and matches the same source identity/hash, reuse and improve it instead of restarting.
+3. Inspect the two or three most decisive visuals first. Additional visual work must not delay a complete saved draft.
+4. Save the complete note within `forge_generation_budget_seconds`; the runner writes the index entry.
+5. Return the required result object immediately after the save. Do not run table normalization or any Forge lint script; the runner reserves the final budget for those steps and a separate bounded repair.
+
+Do not present runner-owned validation as passed. A generation timeout after a changed draft has been saved may still be admitted as `status: draft` with explicit validation warnings; the review gate remains closed.
+
+### Table and citation readability
+
+- Use two to five meaningful columns. Never emit a column that is empty in every body row.
+- In a table, write page evidence as compact escaped Obsidian links such as `[[sources/literature/pdf/example.pdf#page=6\|p.6]]`; an unescaped alias pipe breaks the table.
+- Put page links in a short final `证据` column instead of repeating a full source path in prose cells.
+- In a prior-work table, keep the first cell to a clickable `Ref. N · Author (Year)` label. Link a DOI/URL printed by the current paper without opening it, or link to the current PDF bibliography page. Put the full transcribed reference outside the table only when needed for identity.
+- State `paper_characterization_only` and `仅依据本文转述，未独立核验` once immediately above the table, not in every row.
+- Keep one claim per cell. Move explanations longer than a compact sentence below the table.
+
+For paper tasks, do not edit `wiki/index.md`; after admitting the saved draft, the deterministic runner adds or replaces exactly one entry under `## 待审核草稿`. Experiment tasks retain their existing index behavior.
+
+Finish with JSON matching `system/knowledge/result.schema.json`, using `operation: ingest` and `status: drafted`. This is a generation-stage result; final Forge lint status is recorded separately by the runner.

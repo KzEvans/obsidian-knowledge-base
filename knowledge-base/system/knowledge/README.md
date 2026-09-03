@@ -21,7 +21,12 @@ Obsidian exposes equivalent commands. Automatic ingest processes one source at a
 the next `ingest-next` regenerates it with the current Forge workflow and returns it
 to draft review without editing queue JSON by hand. Both normal paper ingest and
 redrafts have a 30-minute single-paper limit (`codex_timeout_seconds` and
-`redraft_timeout_seconds`, both defaulting to 1800 seconds).
+`redraft_timeout_seconds`, both defaulting to 1800 seconds). The runner reserves
+the final five minutes by default: the generation session first persists a reusable
+`note-plan.json` checkpoint and complete draft, then the runner normalizes tables,
+runs all three Forge lints, and uses a short repair-only session only when time remains.
+If generation reaches its stage deadline after saving a changed draft, that draft is
+retained with explicit validation warnings instead of being discarded.
 
 Paper extraction uses MinerU by default. Its structured content list is regrouped by
 `page_idx`, preserving formulas, tables, figures, captions, and `## Page N` evidence
@@ -74,6 +79,18 @@ Forge literature context is intentionally local-only: the prior-work section may
 summarize only how the current paper describes its cited works. It does not search the
 web or open cited papers, every entry is marked as not independently verified, and
 follow-up novelty remains unresolved without external literature calibration.
+
+Forge table normalization escapes Obsidian wikilink pipes inside tables, removes
+body-empty columns, shortens page aliases, and lint-checks inconsistent widths,
+paragraph-length cells, repeated verification boilerplate, and plain-text numbered
+references. Prior-work rows use compact clickable reference labels rather than full
+bibliographic entries.
+
+The time-budget controls are `forge_finalize_reserve_seconds`,
+`forge_repair_timeout_seconds`, `forge_repair_minimum_seconds`,
+`forge_post_repair_validation_reserve_seconds`, and `forge_lint_timeout_seconds`.
+Checkpoint and lint artifacts are stored under `system/runtime/forge/`; a retry can
+reuse the previous plan when the paper identity and source hash are unchanged.
 
 ## Optional continuous Mode A intensive reading
 

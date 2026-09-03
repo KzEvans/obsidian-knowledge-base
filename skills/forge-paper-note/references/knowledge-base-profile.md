@@ -114,6 +114,7 @@ For genuine SI use:
 Rules:
 
 - In the pipeline profile, attach a primary-PDF page link to every substantive paper-derived paragraph or list item.
+- In Markdown tables, escape the wikilink alias separator and use a compact label such as `[[sources/literature/pdf/example.pdf#page=6\|p.6]]`; an unescaped `|` is parsed as a new column.
 - Never infer a page from nearby text. Mark `（页码待核对）` when unresolved.
 - Open SI only when a concrete claim is required, the primary paper delegates that evidence to SI, and the correct cached SI file can be identified.
 - List only SI files actually used under `supporting_information_used` when that property exists.

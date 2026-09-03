@@ -20,6 +20,7 @@ REQUIRED_FILES = (
     "scripts/lint_research_audit.py",
     "scripts/lint_technical_language.py",
     "scripts/materialize_figure_asset.py",
+    "scripts/normalize_markdown_tables.py",
     "scripts/write_obsidian_note.py",
 )
 
