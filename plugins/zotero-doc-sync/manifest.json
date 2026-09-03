@@ -1,7 +1,7 @@
 {
   "id": "zotero-doc-sync",
   "name": "Zotero Doc Sync",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "minAppVersion": "1.0.0",
   "description": "Mirrors Zotero Doc PDFs and runs Forge notes plus gated full-text intensive reading.",
   "author": "Local",

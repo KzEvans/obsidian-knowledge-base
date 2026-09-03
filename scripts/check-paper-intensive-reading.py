@@ -26,7 +26,7 @@ def main() -> int:
         "verified-unit",
         "intensive-reading",
         "submit-initial",
-        "full-text-paragraph-pairs",
+        "full-text-unlabeled-paragraph-pairs",
         "crop_pdf_region.py",
     )
     missing = [marker for marker in required if marker not in combined]

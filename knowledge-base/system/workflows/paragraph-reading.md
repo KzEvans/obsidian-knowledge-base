@@ -18,12 +18,12 @@ Do not ask for a reading contract, section range, or summary format. Do not crea
 
 Use a neutral heading such as `### U01`, then exactly:
 
-1. `#### 原文与翻译`: sequential `P01`, `P02`, … blocks, each containing `###### 原文` with one extracted paragraph followed immediately by `###### 翻译` for that paragraph;
+1. `#### 原文与翻译`: sequential `P01`, `P02`, … blocks, each displaying one extracted paragraph, an invisible `<!-- pair:Pxx:split -->` boundary, and then its translation—without visible `原文` or `翻译` labels;
 2. an optional relevant figure/table/equation crop immediately after the matching paragraph's translation;
 3. `#### 原文位置`: exact primary-PDF page link(s), stated once after all paragraph pairs;
 4. `#### 交互`: the human/AI interaction state.
 
-Do not collect a large source block followed by a large translation block. Do not create separate `#### 原文`, `#### 翻译`, or `#### 配图` sections. Do not display an AI-authored unit title, purpose, role, covered-content list, or relationship to the automatic note. Do not repeat PDF page links elsewhere inside the unit.
+Do not collect a large source block followed by a large translation block. Do not create source/translation headings at any level or a separate `#### 配图` section. Do not display an AI-authored unit title, purpose, role, covered-content list, or relationship to the automatic note. Do not repeat PDF page links elsewhere inside the unit.
 
 ## Extracted text and direct PDF visual crops
 
@@ -55,6 +55,6 @@ Preserve user-authored text verbatim. The log remains `integration_role: auxilia
 - filled reconstruction + `continue` → score 0–8; request one retry or create the stable verified-unit block and set `ready_to_merge`; stop;
 - `ready_to_merge` → do not edit the primary note; wait for the separate merge command.
 
-When continuing a legacy log, migrate its map and current unit to the interleaved paragraph-pair layout while preserving all user text exactly. Replace source-text crops with extracted text, retain or recrop only relevant visuals, and do not advance the interaction stage. Never fill a user field.
+When continuing a legacy log, migrate its map and current unit to the unlabeled interleaved paragraph-pair layout while preserving all user text exactly. Remove visible source/translation headings, retain an invisible `pair:Pxx:split` boundary, replace source-text crops with extracted text, retain or recrop only relevant visuals, and do not advance the interaction stage. Never fill a user field.
 
 Finish with result JSON using `operation: paragraph-reading`, `status: drafted`, and only files actually updated.

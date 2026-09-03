@@ -177,7 +177,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     if (!waiting) return;
     const unit = String(frontmatter.current_unit || "当前单元");
     const legacy =
-      String(frontmatter.workflow || "") !== "full-text-paragraph-pairs";
+      String(frontmatter.workflow || "") !== "full-text-unlabeled-paragraph-pairs";
     this.submitButton.dataset.action = legacy ? "continue" : "submit-initial";
     this.submitButton.textContent = this.busy
       ? "处理中…"

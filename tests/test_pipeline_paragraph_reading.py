@@ -75,7 +75,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "type: paper-intensive-reading-log\n"
             "status: draft\n"
             "reading_mode: A\n"
-            "workflow: full-text-paragraph-pairs\n"
+            "workflow: full-text-unlabeled-paragraph-pairs\n"
             "integration_role: auxiliary\n"
             f'primary_source_id: "{task["id"]}"\n'
             f'source_note: "[[{task["note_path"]}]]"\n'
@@ -84,7 +84,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "pdf_extractor: mineru\n"
             f'images_dir: "{task["images_dir"]}"\n'
             f'intensive_images_dir: "{task["paragraph_reading_images_dir"]}"\n'
-            "source_display: extracted-paragraph-pairs\n"
+            "source_display: unlabeled-extracted-paragraph-pairs\n"
             "allow_image_crops: true\n"
             "allow_optional_image_crops: false\n"
             f"paragraph_reading_progress: {progress}\n"
@@ -102,8 +102,9 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             "## 交互精读\n\n### U01\n\n"
             "#### 原文与翻译\n\n"
             "##### P01\n\n"
-            "###### 原文\n\nSource evidence paragraph.\n\n"
-            "###### 翻译\n\n来源证据段落。\n"
+            "Source evidence paragraph.\n\n"
+            "<!-- pair:P01:split -->\n\n"
+            "来源证据段落。\n"
             f"{visual_block}\n"
             "#### 原文位置\n\n"
             f"[[{task['source_path']}#page=1|PDF p.1]]\n\n"
@@ -233,13 +234,27 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             task["pdf_extractor_used"] = "mineru"
             PIPELINE.paper_intensive_images_dir({"vault": vault}, task, create=True)
             old_layout = self.make_log(task).replace(
-                "#### 原文与翻译\n\n##### P01\n\n###### 原文\n\n"
-                "Source evidence paragraph.\n\n###### 翻译\n\n来源证据段落。",
+                "#### 原文与翻译\n\n##### P01\n\nSource evidence paragraph.\n\n"
+                "<!-- pair:P01:split -->\n\n来源证据段落。",
                 "#### 原文\n\nSource evidence paragraph.\n\n"
                 "#### 翻译\n\n来源证据段落。\n\n#### 配图\n\n本单元无独立配图。",
             )
             with self.assertRaisesRegex(RuntimeError, "missing #### 原文与翻译"):
                 PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, old_layout)
+
+    def test_log_rejects_visible_source_and_translation_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            task["pdf_extractor_used"] = "mineru"
+            PIPELINE.paper_intensive_images_dir({"vault": vault}, task, create=True)
+            labeled = self.make_log(task).replace(
+                "Source evidence paragraph.\n\n<!-- pair:P01:split -->\n\n来源证据段落。",
+                "###### 原文\n\nSource evidence paragraph.\n\n"
+                "<!-- pair:P01:split -->\n\n###### 翻译\n\n来源证据段落。",
+            )
+            with self.assertRaisesRegex(RuntimeError, "must not display 原文 or 翻译"):
+                PIPELINE.validate_paragraph_reading_note({"vault": vault}, task, labeled)
 
     def test_source_paragraph_cannot_be_replaced_with_an_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -329,7 +344,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             log_note = vault / task["paragraph_reading_note_path"]
             log_note.parent.mkdir(parents=True)
             legacy = self.make_log(task).replace(
-                "workflow: full-text-paragraph-pairs",
+                "workflow: full-text-unlabeled-paragraph-pairs",
                 "workflow: full-text-reasoning-units",
             )
             log_note.write_text(legacy, encoding="utf-8")
@@ -371,7 +386,7 @@ class PipelineParagraphReadingTest(unittest.TestCase):
             legacy = self.make_log(
                 task, initial_answer="我已经完成了旧版初始理解。"
             ).replace(
-                "workflow: full-text-paragraph-pairs",
+                "workflow: full-text-unlabeled-paragraph-pairs",
                 "workflow: full-text-reasoning-units",
             )
             log_note.write_text(legacy, encoding="utf-8")

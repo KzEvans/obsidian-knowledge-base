@@ -229,7 +229,7 @@ def ensure_paragraph_reading_skill(config: Dict[str, Any]) -> str:
     skill_text = skill_file.read_text(encoding="utf-8", errors="ignore")
     required_markers = (
         "Mode A",
-        "full-text-paragraph-pairs",
+        "full-text-unlabeled-paragraph-pairs",
         "ready_to_merge",
         "MinerU",
         "crop_pdf_region.py",
@@ -1688,10 +1688,12 @@ def validate_intensive_unit_display(
         raise RuntimeError("Intensive-reading unit contains a removed AI role/relationship field")
     if re.search(r"(?m)^>\s*\S", unit_text):
         raise RuntimeError("Intensive-reading source paragraphs must be searchable text, not blockquotes")
-    if re.search(r"(?m)^#### (?:原文|翻译|配图)\s*$", unit_text):
+    if re.search(r"(?m)^#{1,6}\s*(?:原文|翻译)\s*$", unit_text):
         raise RuntimeError(
-            "Intensive-reading unit must interleave source and translation inside 原文与翻译"
+            "Intensive-reading paragraph pairs must not display 原文 or 翻译 headings"
         )
+    if re.search(r"(?m)^#### 配图\s*$", unit_text):
+        raise RuntimeError("Intensive-reading visuals must stay inside their paragraph pair")
 
     pair_section = sections["原文与翻译"]
     pair_matches = list(re.finditer(r"(?m)^##### (P\d{2,})\s*$", pair_section))
@@ -1715,33 +1717,34 @@ def validate_intensive_unit_display(
     for index, pair_match in enumerate(pair_matches):
         end = pair_matches[index + 1].start() if index + 1 < len(pair_matches) else len(pair_section)
         pair_body = pair_section[pair_match.end() : end]
-        all_subheadings = re.findall(r"(?m)^###### (.+?)\s*$", pair_body)
-        if all_subheadings != ["原文", "翻译"]:
+        pair_id = pair_match.group(1)
+        split_marker = f"<!-- pair:{pair_id}:split -->"
+        if pair_body.count(split_marker) != 1:
             raise RuntimeError(
-                f"Intensive-reading {pair_match.group(1)} must contain only 原文 then 翻译"
+                f"Intensive-reading {pair_id} must contain exactly one invisible pair split"
             )
-        subheadings = list(re.finditer(r"(?m)^###### (原文|翻译)\s*$", pair_body))
-        source_text = pair_body[subheadings[0].end() : subheadings[1].start()].strip()
-        translated_text = pair_body[subheadings[1].end() :].strip()
+        source_text, translated_tail = pair_body.split(split_marker, 1)
+        source_text = source_text.strip()
+        translated_tail = translated_tail.strip()
         if not re.search(r"[A-Za-z0-9\u3400-\u9fff]", source_text):
-            raise RuntimeError(f"Intensive-reading {pair_match.group(1)} 原文 cannot be empty")
+            raise RuntimeError(f"Intensive-reading {pair_id} source paragraph cannot be empty")
         if note_image_targets(source_text):
             raise RuntimeError("Intensive-reading source text cannot embed images")
 
-        first_image = image_embed.search(translated_text)
+        first_image = image_embed.search(translated_tail)
         translated_before_images = (
-            translated_text[: first_image.start()] if first_image else translated_text
+            translated_tail[: first_image.start()] if first_image else translated_tail
         )
         if not re.search(r"[A-Za-z0-9\u3400-\u9fff]", translated_before_images):
             raise RuntimeError(
-                f"Intensive-reading {pair_match.group(1)} 翻译 must precede any visual crop"
+                f"Intensive-reading {pair_id} translation must precede any visual crop"
             )
-        pair_targets = note_image_targets(translated_text)
+        pair_targets = note_image_targets(translated_tail)
         if first_image:
-            after_first_image = image_embed.sub("", translated_text[first_image.start() :])
+            after_first_image = image_embed.sub("", translated_tail[first_image.start() :])
             if re.search(r"[A-Za-z0-9\u3400-\u9fff]", after_first_image):
                 raise RuntimeError(
-                    f"Intensive-reading {pair_match.group(1)} visual crops must follow the paragraph translation"
+                    f"Intensive-reading {pair_id} visual crops must follow the paragraph translation"
                 )
         for target in pair_targets:
             if not target.startswith(expected_prefix) or not Path(target).name.startswith(
@@ -1783,7 +1786,7 @@ def validate_paragraph_reading_note(
         "type": "paper-intensive-reading-log",
         "status": "draft",
         "reading_mode": "A",
-        "workflow": "full-text-paragraph-pairs",
+        "workflow": "full-text-unlabeled-paragraph-pairs",
         "integration_role": "auxiliary",
         "primary_source_id": str(task["id"]),
         "source_note": f"[[{task['note_path']}]]",
@@ -1792,7 +1795,7 @@ def validate_paragraph_reading_note(
         "pdf_extractor": str(task["pdf_extractor_used"]),
         "images_dir": str(task["images_dir"]),
         "intensive_images_dir": str(task["paragraph_reading_images_dir"]),
-        "source_display": "extracted-paragraph-pairs",
+        "source_display": "unlabeled-extracted-paragraph-pairs",
     }
     for key, expected_value in expected.items():
         actual = unquote_yaml_scalar(values.get(key, ""))
@@ -2228,7 +2231,7 @@ def paragraph_read_paper(
             existing_workflow = unquote_yaml_scalar(
                 existing_state["values"].get("workflow", "")
             )
-            legacy_log = existing_workflow != "full-text-paragraph-pairs"
+            legacy_log = existing_workflow != "full-text-unlabeled-paragraph-pairs"
             if action == "submit-initial":
                 if existing_state["stage"] != "awaiting_initial_analysis":
                     raise RuntimeError("当前精读单元不处于等待提交初始理解的阶段")
@@ -2288,6 +2291,7 @@ def paragraph_read_paper(
             "paragraph_reading_note_path 与 paragraph_reading_images_dir，不得写队列、索引或规范知识页。"
             "把全文划为少量连续、互不重叠的 U 单元；每个单元从 extract_path 按原顺序提取可搜索原文，"
             "严格按一段原文紧跟一段翻译的 Pxx 对交替展示，不得先堆积整片英文再统一翻译。"
+            "Pxx 内不得显示‘原文’或‘翻译’标题，只用不可见的 <!-- pair:Pxx:split --> 分隔两段。"
             "若某段有直接相关的图、表或公式，必须调用 paragraph_reading_crop_script 从 "
             "source_pdf_absolute 直接裁切，并把图片紧接在该段翻译后；普通原文不得裁成图片，"
             "不得使用 MinerU 图片。单元末尾只保留一次原文位置和交互内容，不得写单元作用、关系或语义标题。"

@@ -30,7 +30,7 @@ Use scalar frontmatter:
 type: paper-intensive-reading-log
 status: draft
 reading_mode: A
-workflow: full-text-paragraph-pairs
+workflow: full-text-unlabeled-paragraph-pairs
 integration_role: auxiliary
 primary_source_id: "paper:example"
 source_note: "[[wiki/papers/example.md]]"
@@ -39,7 +39,7 @@ extract: "[[extracts/papers/example.md]]"
 pdf_extractor: mineru
 images_dir: "wiki/papers/images/example"
 intensive_images_dir: "wiki/papers/images/example/intensive-reading"
-source_display: extracted-paragraph-pairs
+source_display: unlabeled-extracted-paragraph-pairs
 allow_image_crops: true
 allow_optional_image_crops: false
 paragraph_reading_progress: partial
@@ -145,11 +145,9 @@ Use this exact order and heading depth:
 
 ##### P01
 
-###### 原文
-
 <从 extract_path 提取的一个完整、连续、可搜索原文段落。>
 
-###### 翻译
+<!-- pair:P01:split -->
 
 <只翻译上面的 P01 原文；保留公式、符号和术语边界。>
 
@@ -157,11 +155,9 @@ Use this exact order and heading depth:
 
 ##### P02
 
-###### 原文
-
 <紧接 P01 的下一个原文段落。>
 
-###### 翻译
+<!-- pair:P02:split -->
 
 <只翻译上面的 P02 原文。>
 
@@ -182,13 +178,13 @@ Use this exact order and heading depth:
 Rules for paragraph pairs:
 
 - number blocks sequentially as `P01`, `P02`, … within the unit;
-- include exactly one `###### 原文` followed immediately by one `###### 翻译` in every block;
+- display the source paragraph first, then exactly one invisible `<!-- pair:Pxx:split -->` boundary, then its translation; never display `原文` or `翻译` labels;
 - keep each extracted source paragraph intact when possible; split only when the PDF itself has a paragraph break or when an unusually long paragraph needs a natural sentence-boundary split for readability;
 - translate only the source paragraph directly above, so the reader never has to match a large English block to a later translation block;
 - place any relevant direct-PDF visual crop after that pair's translation and before the next `Pxx` heading;
 - omit images entirely when the paragraph has no relevant visual.
 
-Do not create separate `#### 原文`, `#### 翻译`, or `#### 配图` sections. Do not use blockquotes or crop ordinary source text into images. Do not add a semantic subtitle to `### U01`, or add “证据包”, “涵盖内容”, “在全文论证中的作用”, or “与自动笔记的关系”. Put PDF links only under `#### 原文位置`, once per unit.
+Do not create source/translation headings at any level or a separate `#### 配图` section. Do not use blockquotes or crop ordinary source text into images. Do not add a semantic subtitle to `### U01`, or add “证据包”, “涵盖内容”, “在全文论证中的作用”, or “与自动笔记的关系”. Put PDF links only under `#### 原文位置`, once per unit.
 
 Set `interaction_stage: awaiting_initial_analysis` and stop. Never write inside the user marker block.
 
@@ -219,7 +215,7 @@ On `submit-initial`, preserve the marker content verbatim and add under `#### �
 
 Do not add the unit's role or relationship. Do not repeat the PDF location link; all unit-specific discussion refers to the single `原文位置` block. Set stage `awaiting_supervisor_answer` and stop.
 
-When continuing an older log, migrate its map and current unit to the interleaved paragraph-pair template while preserving every user-written character. Replace old source-text crops with extracted paragraphs and their immediately following translations. Keep or recrop only relevant direct-PDF visuals and place them after the matching paragraph pair. Do not advance the interaction stage during migration.
+When continuing an older log, migrate its map and current unit to the unlabeled interleaved paragraph-pair template while preserving every user-written character. Remove visible source/translation headings, retain only the invisible `pair:Pxx:split` boundary, replace old source-text crops with extracted paragraphs, and keep or recrop only relevant direct-PDF visuals after the matching translation. Do not advance the interaction stage during migration.
 
 ## 8. Graded hints
 

@@ -105,7 +105,7 @@ manual entry point. The runner invokes the repository-bundled,
 locally installed `paper-intensive-reading` skill. It uses the MinerU page-delimited
 Markdown as searchable source text and for translation, consolidates the whole main
 text into a few continuous non-overlapping units, and interleaves each source paragraph
-with its translation. Relevant figures, tables, and equations are rendered directly
+with its translation without visible source/translation labels. Relevant figures, tables, and equations are rendered directly
 from the PDF immediately after the matching paragraph pair. Visual crops live under
 `wiki/papers/images/<exact-note-stem>/intensive-reading/<Uxx>/`; the separate process
 log lives at `wiki/papers/close-reading/<exact-primary-note-filename>`.

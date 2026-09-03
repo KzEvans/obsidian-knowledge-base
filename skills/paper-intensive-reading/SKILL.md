@@ -11,7 +11,7 @@ Run interactive Mode A reading without creating a competing paper summary. Treat
 
 This workflow adapts Mode A from `paper-reading`, but replaces scattered excerpts with continuous full-text units whose extracted source paragraphs and translations alternate in reading order. Keep relevant visuals as direct PDF crops. Retain explicit user submission, reconstruction, scoring, and gated merge semantics.
 
-Write the durable log with workflow identifier `full-text-paragraph-pairs`.
+Write the durable log with workflow identifier `full-text-unlabeled-paragraph-pairs`.
 
 ## Required resources
 
@@ -58,11 +58,11 @@ Use neutral IDs only (`U01`, `U02`, …) in the displayed map and headings. Do n
 
 For each unit, show exactly this content order:
 
-1. `原文与翻译`: sequential `P01`, `P02`, … blocks. Each block contains one searchable extracted source paragraph followed immediately by its Chinese translation. If that paragraph has a relevant figure, table, or equation, place its direct-PDF crop immediately after the translation in the same `Pxx` block;
+1. `原文与翻译`: sequential `P01`, `P02`, … blocks. Each block displays one searchable extracted source paragraph followed immediately by its Chinese translation, without visible `原文` or `翻译` labels. Use only the invisible `<!-- pair:Pxx:split -->` boundary between them. If that paragraph has a relevant figure, table, or equation, place its direct-PDF crop immediately after the translation in the same `Pxx` block;
 2. `原文位置`: the unit's PDF location, stated once after all paragraph pairs;
 3. `交互`: user understanding, AI diagnosis/question, hints, explanation, reconstruction, scoring, and verified conclusion as the state advances.
 
-Preserve paragraph order and boundaries wherever the extraction permits. Never collect all source paragraphs before all translations. Do not use blockquotes, crop ordinary text into images, create a separate `配图` section, repeat PDF location links elsewhere inside the same unit, or add fields such as “在全文论证中的作用” or “与自动笔记的关系”.
+Preserve paragraph order and boundaries wherever the extraction permits. Never collect all source paragraphs before all translations. Do not add visible source/translation labels, use blockquotes, crop ordinary text into images, create a separate `配图` section, repeat PDF location links elsewhere inside the same unit, or add fields such as “在全文论证中的作用” or “与自动笔记的关系”.
 
 ## Explicit submission and stage discipline
 
