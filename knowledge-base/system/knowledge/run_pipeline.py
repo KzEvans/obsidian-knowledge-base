@@ -2185,16 +2185,27 @@ def paragraph_read_paper(
         if companion.is_file():
             existing_text = companion.read_text(encoding="utf-8", errors="ignore")
             existing_state = parse_intensive_reading_state(existing_text)
+            existing_workflow = unquote_yaml_scalar(
+                existing_state["values"].get("workflow", "")
+            )
+            legacy_log = existing_workflow != "full-text-continuous-pdf-units"
             if action == "submit-initial":
                 if existing_state["stage"] != "awaiting_initial_analysis":
                     raise RuntimeError("当前精读单元不处于等待提交初始理解的阶段")
+                if legacy_log:
+                    raise RuntimeError(
+                        "当前日志仍是旧版格式：请先运行“开始或继续当前论文的交互式全文精读”完成格式迁移，再填写并提交"
+                    )
                 validate_initial_understanding_submission(
                     existing_text, existing_state["current_unit"]
                 )
             elif action == "continue" and existing_state["stage"] == "awaiting_initial_analysis":
-                raise RuntimeError(
-                    "请先填写当前单元的用户初始理解，并点击“提交初始理解”按钮"
-                )
+                if legacy_log:
+                    task["intensive_reading_migration_only"] = True
+                else:
+                    raise RuntimeError(
+                        "请先填写当前单元的用户初始理解，并点击“提交初始理解”按钮"
+                    )
         emit_progress(16, "正在准备 PDF 裁图目录与阅读工具")
 
         extract_path = extract_pdf(config, task)
@@ -2240,7 +2251,8 @@ def paragraph_read_paper(
             "必须调用 paragraph_reading_crop_script 从 source_pdf_absolute 直接生成所有展示图片；"
             "MinerU 的 extract_path 只用于导航和翻译，不得把 MinerU 图片当作展示原图。"
             "awaiting_initial_analysis 只能由 submit-initial 推进。若现有日志是旧格式，"
-            "先迁移当前单元与地图并逐字保留人工输入，再执行本次唯一状态转换。\n\n"
+            "当 intensive_reading_migration_only 为 true 时，只迁移当前单元与地图、逐字保留人工输入，"
+            "并保持 awaiting_initial_analysis，不执行任何交互状态转换。\n\n"
             f"TASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}"
         )
 

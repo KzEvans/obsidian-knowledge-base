@@ -91,7 +91,9 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     this.submitButton.type = "button";
     this.submitButton.setAttribute("aria-label", "提交当前精读单元的初始理解");
     this.submitButton.addEventListener("click", () => {
-      this.runIntensiveReadingAction("submit-initial", "提交初始理解");
+      const action = this.submitButton.dataset.action || "submit-initial";
+      const label = action === "continue" ? "迁移精读格式" : "提交初始理解";
+      this.runIntensiveReadingAction(action, label);
     });
     this.submitStatusItem.style.display = "none";
 
@@ -174,10 +176,20 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     this.submitStatusItem.style.display = waiting ? "" : "none";
     if (!waiting) return;
     const unit = String(frontmatter.current_unit || "当前单元");
-    this.submitButton.textContent = this.busy ? "处理中…" : `提交 ${unit} 初始理解`;
+    const legacy =
+      String(frontmatter.workflow || "") !== "full-text-continuous-pdf-units";
+    this.submitButton.dataset.action = legacy ? "continue" : "submit-initial";
+    this.submitButton.textContent = this.busy
+      ? "处理中…"
+      : legacy
+        ? `更新 ${unit} 精读格式`
+        : `提交 ${unit} 初始理解`;
     this.submitButton.disabled = this.busy;
     this.submitButton.setAttribute("aria-busy", this.busy ? "true" : "false");
-    this.submitButton.setAttribute("aria-label", `提交 ${unit} 的初始理解`);
+    this.submitButton.setAttribute(
+      "aria-label",
+      legacy ? `将 ${unit} 更新为连续 PDF 裁图格式` : `提交 ${unit} 的初始理解`
+    );
   }
 
   progressNotice(label) {

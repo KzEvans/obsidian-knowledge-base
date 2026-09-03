@@ -284,6 +284,71 @@ class PipelineParagraphReadingTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "点击.*提交初始理解"):
                     PIPELINE.paragraph_read_paper(config, task["note_path"], "continue")
 
+    def test_continue_migrates_legacy_waiting_log_without_advancing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            _source, extract, _main_note, _queue_file = self.prepare_vault(vault, task)
+            log_note = vault / task["paragraph_reading_note_path"]
+            log_note.parent.mkdir(parents=True)
+            legacy = self.make_log(task).replace(
+                "workflow: full-text-continuous-pdf-units",
+                "workflow: full-text-reasoning-units",
+            )
+            log_note.write_text(legacy, encoding="utf-8")
+            seen_prompts = []
+
+            def fake_codex(_config, prompt, *_args, **_kwargs):
+                seen_prompts.append(prompt)
+                log_note.write_text(self.make_log(task), encoding="utf-8")
+                return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+            config = {"vault": vault, "paragraph_reading_timeout_seconds": 30}
+            with mock.patch.object(
+                PIPELINE,
+                "ensure_paragraph_reading_skill",
+                return_value="paper-intensive-reading",
+            ), mock.patch.object(
+                PIPELINE, "extract_pdf", return_value=extract
+            ), mock.patch.object(
+                PIPELINE, "codex_command", side_effect=fake_codex
+            ):
+                self.assertEqual(
+                    PIPELINE.paragraph_read_paper(config, task["note_path"], "continue"),
+                    0,
+                )
+
+            self.assertIn('"intensive_reading_migration_only": true', seen_prompts[0])
+            state = PIPELINE.parse_intensive_reading_state(
+                log_note.read_text(encoding="utf-8")
+            )
+            self.assertEqual(state["stage"], "awaiting_initial_analysis")
+
+    def test_submit_rejects_legacy_log_until_display_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            task = self.make_task()
+            self.prepare_vault(vault, task)
+            log_note = vault / task["paragraph_reading_note_path"]
+            log_note.parent.mkdir(parents=True)
+            legacy = self.make_log(
+                task, initial_answer="我已经完成了旧版初始理解。"
+            ).replace(
+                "workflow: full-text-continuous-pdf-units",
+                "workflow: full-text-reasoning-units",
+            )
+            log_note.write_text(legacy, encoding="utf-8")
+            config = {"vault": vault, "paragraph_reading_timeout_seconds": 30}
+            with mock.patch.object(
+                PIPELINE,
+                "ensure_paragraph_reading_skill",
+                return_value="paper-intensive-reading",
+            ):
+                with self.assertRaisesRegex(RuntimeError, "旧版格式"):
+                    PIPELINE.paragraph_read_paper(
+                        config, task["note_path"], "submit-initial"
+                    )
+
     def test_submit_initial_advances_only_after_explicit_action(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = Path(directory)
