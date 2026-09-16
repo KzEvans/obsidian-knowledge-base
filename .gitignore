@@ -7,6 +7,7 @@ __pycache__/
 **/config.json
 **/data.json
 **/state.json
+**/*-cache.json
 **/pending.json
 .claudian/
 

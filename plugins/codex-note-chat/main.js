@@ -16,7 +16,7 @@ try {
   // Obsidian Desktop normally provides Electron's webUtils; file.path is the fallback.
 }
 
-const PLUGIN_VERSION = "0.4.0";
+const PLUGIN_VERSION = "0.4.1";
 const DEFAULT_CODEX_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const MAX_NOTE_CHARACTERS = 120000;
 const MAX_SELECTION_CHARACTERS = 16000;
@@ -198,7 +198,9 @@ function inspectReviewSection(text, frontmatter) {
     hasSection: Boolean(section),
     total,
     pending,
-    reviewed: Boolean(frontmatter && frontmatter.reviewed),
+    reviewed: Boolean(frontmatter && (frontmatter.reviewed === true || frontmatter.reviewed === "true")
+      && ["reviewed", "integrated"].includes(frontmatter.status)
+      && frontmatter.reviewed_content_sha256 === reviewContentHash(text)),
   };
 }
 
@@ -218,6 +220,15 @@ function upsertFrontmatterField(text, key, value) {
   return lines.join("\n");
 }
 
+function reviewContentHash(text) {
+  let normalized = text.replace(/\r\n/g, "\n");
+  normalized = normalized.replace(/^---\n([\s\S]*?)\n---/, (_all, fields) => {
+    const kept = fields.replace(/^(?:status|reviewed|reviewed_at|reviewed_with|reviewed_content_sha256|review_warnings_accepted|integrated_at):[^\n]*\n?/gm, "").replace(/\n+$/, "");
+    return `---\n${kept}\n---`;
+  });
+  return require("crypto").createHash("sha256").update(normalized, "utf8").digest("hex");
+}
+
 function completeReviewInMarkdown(text, timestamp) {
   let updated = text;
   const section = findMarkdownSection(updated, "人工复核");
@@ -231,8 +242,11 @@ function completeReviewInMarkdown(text, timestamp) {
     updated = section.lines.join("\n");
   }
   updated = upsertFrontmatterField(updated, "reviewed", "true");
+  updated = upsertFrontmatterField(updated, "status", "reviewed");
   updated = upsertFrontmatterField(updated, "reviewed_at", JSON.stringify(timestamp));
   updated = upsertFrontmatterField(updated, "reviewed_with", "codex-note-chat");
+  updated = upsertFrontmatterField(updated, "review_warnings_accepted", "true");
+  updated = upsertFrontmatterField(updated, "reviewed_content_sha256", JSON.stringify(reviewContentHash(updated)));
   return updated;
 }
 
@@ -1398,7 +1412,7 @@ module.exports = class CodexNoteChatPlugin extends Plugin {
     );
     const busy = Boolean(this.activeTurn || this.refs.input.disabled);
 
-    if (info.reviewed || (review && review.status === "completed")) {
+    if (info.reviewed) {
       this.refs.reviewStatus.textContent = "已完成审核";
     } else if (!info.hasSection || info.total === 0) {
       this.refs.reviewStatus.textContent = "未检测到“人工复核”任务清单";
@@ -1726,7 +1740,7 @@ module.exports = class CodexNoteChatPlugin extends Plugin {
     }
     if (
       !window.confirm(
-        "完成审核会把“人工复核”清单中的未完成项标记为已完成，并写入 reviewed: true、reviewed_at 和 reviewed_with。对话正文仍需另行点击“写入笔记”。是否继续？"
+        "请确认已逐项核对人工复核清单，并接受笔记属性 validation_warnings 中仍列出的警告（缺少校验记录也视为待人工确认）。继续将勾选复核清单、标记 status: reviewed，并把审核绑定到当前笔记内容。正文变化后必须重新审核。对话仍需另行点击“写入笔记”。是否确认？"
       )
     ) {
       return;
@@ -1736,10 +1750,14 @@ module.exports = class CodexNoteChatPlugin extends Plugin {
     const reviewedAt = new Date().toISOString();
     try {
       if (typeof this.app.vault.process === "function") {
-        await this.app.vault.process(file, (data) => completeReviewInMarkdown(data, reviewedAt));
+        const expected = await this.app.vault.read(file);
+        if (file.stat.mtime !== sourceMtime) throw new Error("笔记已变化，请重新复核");
+        await this.app.vault.process(file, (data) => {
+          if (data !== expected) throw new Error("笔记已变化，请重新复核");
+          return completeReviewInMarkdown(data, reviewedAt);
+        });
       } else {
-        const current = await this.app.vault.read(file);
-        await this.app.vault.modify(file, completeReviewInMarkdown(current, reviewedAt));
+        throw new Error("当前 Obsidian 不支持安全原子更新，请升级后完成审核");
       }
       session.review = {
         ...review,

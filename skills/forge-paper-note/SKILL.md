@@ -41,6 +41,14 @@ Always read `references/research-audit.md`, `references/technical-language-audit
 
 Follow these checkpointed phases. Do not present a partial run as complete.
 
+When the runner supplies `PHASE_OVERRIDE: plan`, perform only Phase A and return
+after saving the complete JSON plan. With `PHASE_OVERRIDE: draft`, use that saved
+plan and perform Phase B; revisit source evidence as needed without rebuilding
+the entire plan. These invocations share one runner-owned 30-minute deadline,
+including PDF extraction and final validation. A runner candidate workspace is
+not the live vault: keep all writes inside that workspace and leave publication,
+human-content preservation, image versioning, and conflict detection to the runner.
+
 ### Phase A: source and plan checkpoint
 
 1. Resolve the output language (`zh-CN` or `en`), run profile, paper identity, strongest local PDF, page-delimited extract, and admitted save target.
@@ -147,7 +155,7 @@ Read `references/research-audit.md` for the exact planning fields and subsection
 - Keep source PDFs, Zotero mirrors, generated manifests, queues, and human experiment notes read-only unless the governing repository contract explicitly authorizes a write.
 - Set new source-specific notes to `status: draft` and `reviewed: false` when those fields exist.
 - Preserve source identity and hashes so regeneration can detect drift.
-- Preserve `## 人工复核` / `## Human Review` and text between `<!-- user-notes:start -->` and `<!-- user-notes:end -->`.
+- Preserve `## 人工复核` / `## Human Review`, saved `# 提问` conversations, `user-notes` marker blocks, and merged `intensive-reading:Uxx` blocks. A regenerated note requires fresh human review even when the old review discussion is retained.
 - Create only candidate wiki links during ingest. Update canonical concept, material, method, phenomenon, project, question, or synthesis pages only after explicit review/integration authorization.
 - Use SI only for a concrete claim that the primary paper delegates to SI; cite the exact SI file and page separately.
 

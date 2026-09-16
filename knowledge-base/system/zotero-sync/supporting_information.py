@@ -599,6 +599,9 @@ def sync_supporting_information(
             status = "no_doi"
             next_days = retry_days
         elif errors and due:
+            status = "fetch_error"
+            next_days = 1
+        elif due:
             status = "not_found"
             next_days = retry_days
         else:
@@ -611,7 +614,7 @@ def sync_supporting_information(
             "active": True,
             "checked_at": checked_at,
             "doi": doi,
-            "errors": [str(error)[-500:] for error in errors[-8:]],
+            "errors": [str(error)[-500:] for error in (errors if due or errors else previous.get("errors", []))[-8:]],
             "files": files,
             "next_check_after": (base_time + timedelta(days=next_days)).isoformat(timespec="seconds"),
             "parent_key": parent_key,

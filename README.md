@@ -50,7 +50,7 @@ python3 system/knowledge/run_pipeline.py ingest-next
 
 - `sources/literature/pdf/` 和实验笔记是原始资料，流水线只读取，不覆盖。
 - 未审核草稿只进入 `wiki/papers/` 或 `wiki/experiments/`。
-- 只有明确标记为 `status: reviewed` 的笔记才能更新规范知识页。
+- 整合需要 `status: reviewed`、`reviewed: true` 和匹配当前内容的审核指纹；剩余校验警告必须由人明确接受。请在对话插件中完成审核，整合按钮不再自动授予审核。
 - 所有论文声明应保留来源 PDF 页码链接；不确定页码时必须标记待核对。
 - 论文属性自动获取并保留影响因子、统计年份、官方来源和核验时间；缺失时写 `null`，不以其他引用指标替代。
 - `config.json`、`data.json`、队列状态、日志和生成内容已由 `.gitignore` 排除。
@@ -75,9 +75,10 @@ python3 scripts/check-forge-paper-note.py
 
 仓库源文件位于 `skills/forge-paper-note/`，运行安装器后生效副本位于 `$CODEX_HOME/skills/forge-paper-note/`。
 在 `system/knowledge/config.json` 中把 `forge_python_path` 设为 Python 3.10+ 的绝对路径。
+该环境还需安装 PyMuPDF 与 Pillow；运行检查时可用 `--python /path/to/venv/bin/python` 指定同一解释器。保留虚拟环境调用路径，不要替换为其符号链接指向的基础解释器。
 该 skill 复用了 DeepPaperNote 的确定性单论文流水线，并吸收了 PaperForge 的研究推理思想；两者均在下方保留来源说明。
 
-单篇 Forge 笔记生成上限为30分钟。流程会先保存可复用的 `note-plan.json` 检查点和
+单篇 Forge 笔记生成上限为30分钟，包含 MinerU 提取、独立计划与撰写调用和最终校验。流程会先保存可复用的 `note-plan.json` 检查点和
 完整草稿，再由 runner 在预留时间内执行表格规范化、三项确定性校验和一次有限修复；
 即使生成阶段到时，只要已保存新的合格草稿，也会保留并明确记录未完成的校验项。
 表格中的 Obsidian 链接会自动转义分隔符并缩短为页码别名，全空列会被删除；前人工作
@@ -85,10 +86,48 @@ python3 scripts/check-forge-paper-note.py
 论文正文及其参考文献表进行转述，不联网检索或打开被引论文；笔记会明确标注
 “仅依据本文转述，未独立核验”，后续方向的新颖性状态保持为 `unresolved`。
 
+### 中断、重试与内容保护
+
+- 模型只写候选工作区；保留原笔记快照，发布前核对原文是否被同时编辑。
+  有冲突时保留候选稿，原笔记不替换。位置可通过 `status` 输出或队列的
+  `forge_candidate_path` 找到。
+- `# 提问`、人工复核区、`user-notes` 和已合并精读块由 runner 保留。
+  同名图片内容改变时另存带内容版本的文件，不覆盖旧图片。
+- 计划和撰写是独立调用。重试复用同一来源版本的已保存计划；提取缓存继续复用。
+  仅文风/关键词提示不触发额外模型修复；实质失败最多做一次有界修复。
+- 命令面板新增“只校验并修复当前 Forge 草稿”，不重做全文分析。
+  命令行对应 `repair --note <相对路径>`，然后 `ingest-next --note <同一路径>`。
+- 队列写入和扫描使用同一台 Mac 的文件锁；请只指定一台 Mac 执行后台流水线。
+  iCloud 负责同步内容，不是多设备任务调度器。运行报告和候选稿仍保留在
+  `system/runtime/` 便于排查，且排除在私密备份之外。
+- 知识整合使用稳定论文身份和源声明 ID；精读日志、重复附件不计作独立论文。
+  语义相同与科学矛盾仍由审核后的整合阶段判断，不能仅凭哈希判定。
+
+### 元数据补全与备份
+
+普通同步只复制 PDF、发布元数据并入队。插件另有每小时 SI/JIF 补全任务，
+手动调用 `python3 system/zotero-sync/sync_zotero_doc.py --enrich`；辅助任务使用
+独立缓存和锁，不占用主 PDF 同步。JIF 需统计年份、同一期刊和官方页面摘录，
+缺少年份或只有通用目录链接不能作为新验证值。SI 的 `fetch_error` 与
+`not_found` 分开记录，前者保留失败原因并较早重试。
+
+可复用备份工具为 `scripts/backup_vault.py`，在**独立私密 Git 仓库**内使用：
+
+```bash
+python3 scripts/backup_vault.py --source /path/to/vault --repository /path/to/private-backup
+python3 scripts/backup_vault.py --repository /path/to/private-backup --verify-only
+```
+
+备份目录必须自备 `.backup-excludes` 排除凭据、插件私有状态、队列和 runtime。
+工具先创建并核验候选快照，遇到 iCloud 占位文件或大量删除会停止；保存文件哈希清单。
+即使没有新变化，也会重试未推送的提交，并核对远端 HEAD。恢复时先克隆至新目录并
+运行 `--verify-only`，不要覆盖使用中的 vault。配置本机路径后运行 `scan`，已有主笔记
+会恢复其 drafted/reviewed/integrated 状态，不因队列未备份而全部重复生成。
+
 ## 可选交互式全文精读
 
 每篇常规论文笔记会显示两个复选属性：`paragraph_reading` 用于人工选择值得
-精读的论文；勾选后插件自动启动并显示进度百分比。`paragraph_reading_figures`
+精读的论文；勾选后插件自动启动并显示当前阶段、已用时间和后台输出间隔。无法测量完成比例的 AI 阶段使用不定进度条，不显示估算百分比。`paragraph_reading_figures`
 保留为旧笔记的附加裁图开关，不控制当前单元直接相关的图表裁图。也可以在
 Obsidian 命令面板手动执行“开始或继续当前论文的交互式全文精读”。未勾选的论文
 不会被后台自动精读。
@@ -104,7 +143,7 @@ Obsidian 命令面板手动执行“开始或继续当前论文的交互式全�
 首次呈现单元后状态停在 `awaiting_initial_analysis`。填写初始理解并不会自动推进，
 必须点击 Obsidian 状态栏中的“提交 Uxx 初始理解”按钮；空内容会被拒绝并给出修改
 提示。后台随后按 AI 导师问题 → 可选分级提示 → 专家解释 → 用户重构 → 0–8 分评分
-推进，每次调用均显示阶段和百分比。得分至少 6/8 且不存在重大事实错误时，该单元
+推进，每次调用均显示真实阶段与等待时间。得分至少 6/8 且不存在重大事实错误时，该单元
 才进入待合并状态。人工文本始终原样保留。
 
 已有旧版精读日志若仍停在初始理解阶段，先运行一次“开始或继续当前论文的交互式

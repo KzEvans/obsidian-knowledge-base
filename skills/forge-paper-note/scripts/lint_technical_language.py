@@ -185,6 +185,15 @@ def load_plan(path_value: str) -> tuple[dict[str, Any], str]:
     return value, ""
 
 
+def has_asserted_avoided_term(text: str, term: str) -> bool:
+    for match in re.finditer(re.escape(term), text):
+        prefix = text[max(0, match.start() - 32):match.start()]
+        if re.search(r"(?:不应|不能|不要|避免|不得|并非|不是|不宜|勿|误译为)[^。；\n]{0,22}$|(?:not|avoid|incorrectly|do not)[^.!?\n]{0,22}$", prefix, re.IGNORECASE):
+            continue
+        return True
+    return False
+
+
 def main() -> int:
     args = parser().parse_args()
     note_path = Path(args.input).expanduser().resolve()
@@ -229,7 +238,7 @@ def main() -> int:
                 issues.append("terminology_avoid_not_list")
                 break
             if isinstance(avoid, list) and any(
-                isinstance(term, str) and term.strip() and term in text for term in avoid
+                isinstance(term, str) and term.strip() and has_asserted_avoided_term(text, term) for term in avoid
             ):
                 issues.append("avoided_term_found_in_note")
                 break

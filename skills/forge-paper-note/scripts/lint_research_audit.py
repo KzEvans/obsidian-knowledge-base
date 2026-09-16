@@ -361,12 +361,12 @@ def question_answer_pass(block: str, language: str) -> bool:
 def followup_pass(block: str, language: str, minimum_chars: int) -> tuple[bool, list[str]]:
     patterns = {
         "driving_gap": r"局限|缺口|未满足|脆弱假设|需求" if language == "zh-CN" else r"gap|limitation|unmet|fragile assumption|need",
-        "new_framing": r"新问题|新框架|重新定义|目标|因果问题" if language == "zh-CN" else r"new framing|reframe|objective|causal question",
+        "new_framing": r"新(?:的)?问题|新(?:的)?框架|重新定义|目标|因果问题" if language == "zh-CN" else r"new framing|reframe|objective|causal question",
         "adjacent_tool": r"相邻|借鉴|工具|原理|领域" if language == "zh-CN" else r"adjacent|borrow|tool|principle|field",
-        "experiment": r"首个实验|第一.*实验|实验设计|对照" if language == "zh-CN" else r"first experiment|experiment|control",
+        "experiment": r"首个.{0,12}实验|第一.{0,12}实验|实验设计|对照" if language == "zh-CN" else r"first experiment|experiment|control",
         "falsification": r"证伪|反驳|失败信号|不支持|支持信号" if language == "zh-CN" else r"falsif|refut|failure signal|support signal",
         "risk": r"风险|失败模式|技术难点" if language == "zh-CN" else r"risk|failure mode|technical challenge",
-        "novelty": r"新颖性|暂定|尚未检索|已有工作" if language == "zh-CN" else r"novelty|provisional|prior work|literature",
+        "novelty": r"新颖性|暂定|尚未检索|已有工作|novelty|unresolved|未(?:进行|做)?外部(?:文献)?检索" if language == "zh-CN" else r"novelty|provisional|prior work|literature",
     }
     missing = [name for name, pattern in patterns.items() if not re.search(pattern, block, re.IGNORECASE)]
     return compact_length(block) >= minimum_chars and not missing, missing

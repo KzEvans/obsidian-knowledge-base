@@ -36,7 +36,7 @@ For an experiment task, read the human-authored Markdown at `source_path`. Treat
 
 ## Produce a draft note
 
-Create or update exactly `note_path`. Preserve any existing `## 人工复核` section and any text between `<!-- user-notes:start -->` and `<!-- user-notes:end -->`.
+Create or update exactly `note_path` inside the supplied candidate workspace, not the live vault. Preserve `## 人工复核`, `# 提问`, `user-notes` marker blocks and merged `intensive-reading:Uxx` blocks. The runner checks the original note for concurrent edits before publication; conflicts retain the candidate without replacing the original.
 
 Use YAML frontmatter with these properties where applicable:
 
@@ -131,6 +131,11 @@ In paper drafts, explicitly label content as an author claim, a conclusion from 
 ### Timed Forge checkpoint contract
 
 When `runner_validation` is `true`, complete only generation phases A and B in this Codex session:
+
+The runner can split this into two invocations. `PHASE_OVERRIDE: plan` means
+perform only steps 1–2 and return; `PHASE_OVERRIDE: draft` means start from the
+persisted plan and perform steps 3–5. Do not restart the full plan during drafting.
+Extraction, both phases and final validation share one total 30-minute budget.
 
 1. Read the full page-delimited extract and build the required combined plan.
 2. Atomically write that JSON plan to `forge_note_plan_path` before drafting. If `forge_resume_plan_path` exists and matches the same source identity/hash, reuse and improve it instead of restarting.

@@ -16,6 +16,7 @@
           "impact_factor_year",
           "source_url",
           "source_kind",
+          "evidence_quote",
           "note"
         ],
         "properties": {
@@ -28,7 +29,8 @@
             "type": "string",
             "enum": ["publisher", "clarivate", "unavailable"]
           },
-          "note": {"type": "string"}
+          "note": {"type": "string"},
+          "evidence_quote": {"type": "string", "maxLength": 500}
         }
       }
     }

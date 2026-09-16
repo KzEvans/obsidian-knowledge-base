@@ -45,7 +45,7 @@ def compatible_python(explicit: str) -> str:
             timeout=15,
         )
         if result.returncode == 0:
-            return str(Path(candidate).expanduser().resolve())
+            return str(Path(candidate).expanduser().absolute())
     raise RuntimeError("No Python 3.10+ interpreter found; pass --python /absolute/path/to/python.")
 
 
@@ -81,6 +81,14 @@ def main() -> int:
     )
     if 'VERIFICATION_STATUSES = {"paper_characterization_only"}' not in audit_linter:
         print("Forge research-audit lint does not enforce paper_characterization_only", file=sys.stderr)
+        return 1
+
+    dependencies = subprocess.run(
+        [interpreter, "-c", "import pymupdf; from PIL import Image"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if dependencies.returncode:
+        print("Forge PDF/figure dependencies are unavailable in this interpreter: install PyMuPDF and Pillow into the configured environment", file=sys.stderr)
         return 1
 
     print(f"Forge Paper Note ready: {skill_dir}")

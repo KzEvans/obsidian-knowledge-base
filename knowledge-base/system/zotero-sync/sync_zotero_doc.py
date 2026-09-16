@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -233,7 +234,22 @@ def scan_knowledge_queue(vault: Path) -> None:
         log(f"knowledge queue scan skipped: {error}")
 
 
-def sync(config_path: Path) -> int:
+def sync(config_path: Path, enrich: bool = False) -> int:
+    config = read_json(config_path, {})
+    vault = Path(config["vault_path"]).expanduser().resolve()
+    key = hashlib.sha256(str(vault).encode()).hexdigest()[:24]
+    lock_path = Path.home() / "Library" / "Caches" / "obsidian-knowledge-base" / key / ("source-enrichment.lock" if enrich else "source-sync.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("Source sync/enrichment is already running; deferred")
+            return 0
+        return _sync(config_path, enrich)
+
+
+def _sync(config_path: Path, enrich: bool = False) -> int:
     config = read_json(config_path, None)
     if not isinstance(config, dict):
         raise RuntimeError(f"Invalid config: {config_path}")
@@ -277,13 +293,33 @@ def sync(config_path: Path) -> int:
     primary_parent_keys = {
         str(item.get("data", {}).get("parentItem") or "") for item in attachments
     }
-    automatic_metrics, automatic_metrics_changed = refresh_automatic_impact_factors(
-        config=config,
-        vault=vault,
-        parents=(parents[key] for key in sorted(primary_parent_keys) if key in parents),
-        state=state,
-        logger=log,
-    )
+    enrichment_path = SCRIPT_DIR / "enrichment-cache.json"
+    enrichment_state = read_json(enrichment_path, {"impact_factor_cache": state.get("impact_factor_cache", {})})
+    if enrich:
+        _, metrics_changed = refresh_automatic_impact_factors(
+            config=config,
+            vault=vault,
+            parents=(parents[key] for key in sorted(primary_parent_keys) if key in parents),
+            state=enrichment_state,
+            logger=log,
+        )
+        if metrics_changed or not enrichment_path.exists():
+            atomic_write_json(enrichment_path, enrichment_state)
+        _, _, stats = sync_supporting_information(
+            config=config, vault=vault, literature_dir=literature_dir, parents=parents,
+            main_parent_keys=primary_parent_keys, supplementary_attachments=supplementary_attachments,
+            source_path_resolver=lambda key: source_path_for_attachment(api_base, key), logger=log,
+        )
+        # Only auxiliary artifacts are written here. The next cheap acquisition
+        # cycle reads the cache and refreshes primary metadata under its own lock.
+        log(f"enrichment complete metrics_changed={metrics_changed} SI={stats}")
+        return 0
+    automatic_metrics = {
+        key: {field: record.get(field) for field in ("impact_factor", "impact_factor_year", "impact_factor_source", "impact_factor_retrieved_at")}
+        for key, record in enrichment_state.get("impact_factor_cache", {}).items()
+        if record.get("status") == "found" and record.get("impact_factor_year") and record.get("impact_factor_evidence")
+    }
+    automatic_metrics_changed = False
 
     synced_at = now_iso()
     active_entries: List[Dict[str, Any]] = []
@@ -390,23 +426,8 @@ def sync(config_path: Path) -> int:
         "schema_version": 1,
     }
 
-    supporting_manifest: Dict[str, Any] = {"items": []}
-    supporting_changed = False
+    supporting_manifest: Dict[str, Any] = read_json(literature_dir / "manifests" / "supporting-information.json", {"items": []})
     supporting_stats = {"available": 0, "downloaded": 0, "failed": 0}
-    try:
-        supporting_manifest, supporting_changed, supporting_stats = sync_supporting_information(
-            config=config,
-            vault=vault,
-            literature_dir=literature_dir,
-            parents=parents,
-            main_parent_keys=(entry.get("parent_key", "") for entry in active_entries),
-            supplementary_attachments=supplementary_attachments,
-            source_path_resolver=lambda attachment_key: source_path_for_attachment(api_base, attachment_key),
-            logger=log,
-        )
-        changed = changed or supporting_changed
-    except Exception as error:
-        log(f"SI sync failed without blocking primary PDFs: {error}")
 
     supporting_by_parent = {
         str(entry.get("parent_key", "")): list(entry.get("files", []))
@@ -460,9 +481,10 @@ def sync(config_path: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--enrich", action="store_true", help="Run deferred SI/JIF enrichment; normal sync uses cache only")
     args = parser.parse_args()
     try:
-        return sync(args.config.resolve())
+        return sync(args.config.resolve(), enrich=args.enrich)
     except Exception as error:
         log(f"sync skipped: {error}")
         return 1

@@ -151,7 +151,8 @@ def build_prompt(candidates: List[Dict[str, Any]]) -> str:
         "- Use only a direct official publisher journal page or an official Clarivate/JCR page.\n"
         "- Do not use Resurchify, Academic Accelerator, Wikipedia, SCImago, Google Scholar, "
         "OpenAlex citation statistics, CiteScore, SJR, or a five-year impact factor.\n"
-        "- Return the exact JIF year when the official source states it; otherwise use null.\n"
+        "- The journal, two-year JIF and exact JIF year must all be verified. If the year is not stated, return null for the factor.\n"
+        "- evidence_quote must be an exact excerpt of at most 25 words containing the year, value and Journal Impact Factor label; never invent or paraphrase evidence.\n"
         "- source_url must be the direct official evidence page, never a search-results URL.\n"
         "- If the current standard JIF cannot be verified from an allowed official source, return "
         "null with source_kind unavailable. Do not estimate.\n"
@@ -229,13 +230,24 @@ def validate_result(
     if not trusted_source_url(source_url, candidate.get("allowed_hosts", [])):
         return None
     year = str(item.get("impact_factor_year") or "").strip()
-    if year and not re.fullmatch(r"(?:19|20)\d{2}", year):
+    if not re.fullmatch(r"(?:19|20)\d{2}", year):
+        return None
+    normalize = lambda value: re.sub(r"\W+", "", str(value).casefold())
+    if normalize(item.get("journal")) != normalize(candidate.get("journal")):
+        return None
+    if any(fragment in source_url.casefold() for fragment in ("/search", "calls-for-papers", "/browse/")):
+        return None
+    evidence = str(item.get("evidence_quote") or "").strip()
+    if not evidence or year not in evidence or not re.search(r"impact\s+factor|\bJIF\b", evidence, re.IGNORECASE):
+        return None
+    if not any(float(number) == float(factor) for number in re.findall(r"\b\d+(?:\.\d+)?\b", evidence)):
         return None
     return {
         "impact_factor": float(factor),
         "impact_factor_year": year,
         "impact_factor_source": source_url,
         "impact_factor_retrieved_at": retrieved_at,
+        "impact_factor_evidence": evidence,
     }
 
 
@@ -275,7 +287,8 @@ def refresh_automatic_impact_factors(
         if manual.get("impact_factor") is not None:
             continue
         cached = cache.get(key, {})
-        if isinstance(cached, Mapping) and cached.get("status") == "found":
+        verified_cache = isinstance(cached, Mapping) and cached.get("status") == "found" and cached.get("impact_factor_year") and cached.get("impact_factor_evidence")
+        if verified_cache:
             resolved[key] = {
                 field: cached.get(field)
                 for field in (
@@ -285,7 +298,7 @@ def refresh_automatic_impact_factors(
                     "impact_factor_retrieved_at",
                 )
             }
-        if isinstance(cached, Mapping) and fresh(cached, found_days, retry_days):
+        if isinstance(cached, Mapping) and fresh(cached, found_days, retry_days) and (cached.get("status") != "found" or verified_cache):
             continue
         article_host = hostname(parent_data.get("url"))
         homepage, publisher = ("", "")

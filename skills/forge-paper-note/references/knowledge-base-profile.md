@@ -30,7 +30,7 @@ Use when the caller supplies `TASK_JSON`, `extract_path`, `source_pdf`, `note_pa
 1. Read the nearest applicable `AGENTS.md`, ingest workflow, task JSON, and result schema before source content.
 2. Treat the task metadata and exact `note_path` as authoritative.
 3. Read the complete page-delimited extract. Inspect the PDF whenever figures, tables, formulas, layout, or extraction ambiguity affect a claim.
-4. Write only paths authorized by the repository contract. In the current vault pattern, this is the task's note plus the draft section of the index.
+4. Write only paths authorized by the repository contract: the candidate workspace's task note, plan and exact image directory. The runner alone writes the live note and draft index after validation and an unchanged-original check.
 5. Leave source mirrors, Zotero exports, manifests, queues, human experiment notes, and canonical knowledge pages unchanged.
 6. Copy metadata fields exactly from the task. Preserve explicit null values; never substitute a different journal metric.
 7. Finish with the repository's required result object or schema.
@@ -139,3 +139,7 @@ Before rewriting an existing note:
 4. Detect source-hash drift and record it as a warning.
 5. Keep suspected paper typos, uncertain pages, unresolved novelty, missing SI evidence, and contradictory results in Human Review.
 6. Do not update canonical pages until the note is explicitly reviewed and an integration workflow is authorized.
+
+Also retain saved `# 提问` conversations and merged `intensive-reading:Uxx`
+blocks. The runner restores those blocks from the original snapshot, retains
+newly discovered review tasks, and invalidates review approval on regeneration.

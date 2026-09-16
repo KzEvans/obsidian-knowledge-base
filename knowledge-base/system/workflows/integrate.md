@@ -2,6 +2,10 @@
 
 Integrate exactly the supplied `NOTE_PATH`. The note must already have `status: reviewed`.
 
+The runner also requires `reviewed: true`, a matching
+`reviewed_content_sha256`, no open human-review checkboxes, and explicit acceptance
+of remaining validation warnings. An integration command cannot grant approval.
+
 `wiki/papers/close-reading/` contains auxiliary intensive-reading logs. Never
 integrate those files directly. A scored, verified unit must first pass the separate
 explicit merge gate; its corrections or non-duplicative increments then become part
@@ -48,5 +52,21 @@ Otherwise, keep the candidate association in the reviewed note without creating 
 8. Change the reviewed note frontmatter to `status: integrated`, `reviewed: true`, and add `integrated_at`.
 
 Canonical pages should normally contain: current understanding, mechanism or definition, evidence, limiting/contradictory evidence, linked papers, linked experiments, and open questions.
+
+## Claim identity and duplicate prevention
+
+- `CLAIMS_JSON` supplies source-specific `claim_id`, stable `paper_identity`, PDF
+  attachment hash, statement including conditions, and page evidence. Record the
+  ID as `<!-- kb-claim:<claim_id> -->` next to its evidence row or paragraph.
+- Search existing canonical pages for the ID before adding a claim. The same
+  primary paper, its intensive-reading log and a revised attachment are not three
+  independent sources. Count unique `paper_identity` values, not files.
+- Exact claim IDs support mechanical repeat detection, not semantic proof.
+  For paraphrases, inspect conditions, quantities and evidence before deciding
+  whether they repeat, support, qualify, correct or contradict an existing claim.
+- A corrected claim gets an explicit `corrects:<old-claim-id>` relation; keep the
+  previous conditioned claim and source history. Do not silently replace evidence.
+- Start with a small synthesis of two human-reviewed primary sources when
+  available. Never approve existing drafts just to satisfy this threshold.
 
 Finish with JSON matching `system/knowledge/result.schema.json`, using `operation: integrate` and `status: integrated`.

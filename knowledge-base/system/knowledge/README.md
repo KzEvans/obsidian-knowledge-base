@@ -26,7 +26,17 @@ the final five minutes by default: the generation session first persists a reusa
 `note-plan.json` checkpoint and complete draft, then the runner normalizes tables,
 runs all three Forge lints, and uses a short repair-only session only when time remains.
 If generation reaches its stage deadline after saving a changed draft, that draft is
-retained with explicit validation warnings instead of being discarded.
+retained with explicit validation warnings instead of being discarded. This budget
+includes PDF extraction. Planning and drafting are separate invocations; completed
+plans can be resumed. Drafts are written in a candidate workspace and published only
+if the original note is unchanged. Saved Q&A, human-review/user blocks and merged
+intensive-reading blocks are retained; changed images use new versioned names.
+
+Use `repair --note <path>` followed by `ingest-next --note <path>` to revalidate and
+perform one bounded repair without full generation. Style-only warnings do not
+trigger another model call. Integration requires a content-bound human review, not
+merely changing a status field. Only one designated Mac should run the pipeline;
+machine-local locks are not cross-device iCloud leases.
 
 Paper extraction uses MinerU by default. Its structured content list is regrouped by
 `page_idx`, preserving formulas, tables, figures, captions, and `## Page N` evidence
@@ -113,7 +123,8 @@ log lives at `wiki/papers/close-reading/<exact-primary-note-filename>`.
 At `awaiting_initial_analysis`, editing the user block does not advance the state.
 The user must click the visible `提交 Uxx 初始理解` control or run its command. The
 runner validates non-empty input before invoking Codex. Intensive-reading actions
-stream named milestones and percentages to the plugin progress display.
+stream named milestones and output activity to the plugin progress display. Unknown
+work ratios use an indeterminate bar with elapsed time, not estimated percentages.
 
 The primary paper note is the paper's sole integration source. The process log carries
 `integration_role: auxiliary` and `primary_source_id`, and the runner rejects attempts

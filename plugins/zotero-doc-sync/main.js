@@ -5,6 +5,14 @@ const path = require("path");
 module.exports = class ZoteroDocSyncPlugin extends Plugin {
   async onload() {
     this.busy = false;
+    this.syncBusy = false;
+    this.syncStatusItem = this.addStatusBarItem();
+    this.syncStatusItem.setAttribute("role", "status");
+    this.syncStatusItem.setAttribute("aria-live", "polite");
+    this.syncStatusItem.textContent = "Zotero：等待同步";
+    this.pipelineStatusItem = this.addStatusBarItem();
+    this.pipelineStatusItem.setAttribute("role", "status");
+    this.pipelineStatusItem.setAttribute("aria-live", "polite");
     this.paragraphReadingSelections = new Map();
     this.pluginData = (await this.loadData()) || {};
     if (!this.pluginData.lastLintAt) {
@@ -56,7 +64,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
 
     this.addCommand({
       id: "approve-and-integrate-current-note",
-      name: "审核通过并整合当前知识笔记",
+      name: "整合当前已完成人工审核的知识笔记",
       callback: () => this.approveAndIntegrateCurrent(),
     });
 
@@ -64,6 +72,19 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
       id: "retry-failed-knowledge-task",
       name: "重试最早的失败知识任务",
       callback: () => this.retryFailed(),
+    });
+
+    this.addCommand({
+      id: "repair-current-forge-draft",
+      name: "只校验并修复当前 Forge 草稿（不重新全文生成）",
+      callback: () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!this.isPrimaryPaper(file)) return new Notice("请先打开主论文草稿");
+        return this.withLock(true, "草稿校验与修复", async (onProgress) => {
+          await this.runPipeline(["repair", "--note", file.path]);
+          await this.runPipeline(["ingest-next", "--note", file.path], undefined, onProgress);
+        }, { progress: true });
+      },
     });
 
     this.addCommand({
@@ -114,11 +135,16 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
       this.refreshSubmitControl();
     });
 
-    this.registerInterval(window.setInterval(() => this.runCycle(false), 60 * 1000));
+    // Source refresh must not wait for a long-running Forge/intensive-reading job.
+    // Only the knowledge worker owns `busy`; source refresh owns `syncBusy`.
+    this.registerInterval(window.setInterval(() => this.syncSources(false), 60 * 1000));
+    this.registerInterval(window.setInterval(() => this.processNext(false), 60 * 1000));
+    this.registerInterval(window.setInterval(() => this.runEnrichment(), 60 * 60 * 1000));
     this.registerInterval(window.setInterval(() => this.maybeRunWeeklyLint(), 6 * 60 * 60 * 1000));
 
     window.setTimeout(() => this.runCycle(false), 3000);
     window.setTimeout(() => this.maybeRunWeeklyLint(), 15000);
+    window.setTimeout(() => this.runEnrichment(), 10000);
   }
 
   get basePath() {
@@ -199,14 +225,12 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     root.addClass("kb-progress-notice");
     const header = root.createDiv({ cls: "kb-progress-header" });
     const title = header.createSpan({ cls: "kb-progress-title", text: label });
-    const percent = header.createSpan({ cls: "kb-progress-percent", text: "0%" });
+    const percent = header.createSpan({ cls: "kb-progress-percent", text: "处理中" });
     const progress = root.createEl("progress", { cls: "kb-progress-track" });
     progress.max = 100;
-    progress.value = 0;
     progress.setAttribute("role", "progressbar");
     progress.setAttribute("aria-valuemin", "0");
     progress.setAttribute("aria-valuemax", "100");
-    progress.setAttribute("aria-valuenow", "0");
     const status = root.createDiv({ cls: "kb-progress-status", text: "正在启动…" });
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
@@ -214,12 +238,17 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     percent.setAttribute("aria-hidden", "true");
 
     const update = (event) => {
-      const value = Math.max(0, Math.min(100, Number(event?.percent || 0)));
-      progress.value = value;
-      progress.setAttribute("aria-valuenow", String(value));
-      percent.textContent = `${value}%`;
+      const value = typeof event?.percent === "number" ? Math.max(0, Math.min(100, event.percent)) : null;
+      if (value === null) {
+        progress.removeAttribute("value");
+        progress.removeAttribute("aria-valuenow");
+      } else {
+        progress.value = value;
+        progress.setAttribute("aria-valuenow", String(value));
+      }
+      percent.textContent = value === null ? "处理中" : `${value}%`;
       status.textContent = String(event?.message || "正在处理…");
-      progress.setAttribute("aria-label", `${label}：${status.textContent}，${value}%`);
+      progress.setAttribute("aria-label", `${label}：${status.textContent}`);
     };
     return {
       update,
@@ -237,7 +266,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     if (!line.startsWith("KB_PROGRESS ")) return null;
     try {
       const event = JSON.parse(line.slice("KB_PROGRESS ".length));
-      if (typeof event.percent !== "number") return null;
+      if (event.percent !== null && typeof event.percent !== "number") return null;
       return event;
     } catch (_error) {
       return null;
@@ -277,7 +306,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     });
   }
 
-  runPipeline(args, timeoutMs = 20 * 60 * 1000, onProgress) {
+  runPipeline(args, timeoutMs = 35 * 60 * 1000, onProgress) {
     return this.execPython(this.pipelineScript, args, timeoutMs, onProgress);
   }
 
@@ -298,39 +327,92 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     this.busy = true;
     this.refreshSubmitControl();
     const reporter = options.progress ? this.progressNotice(label) : null;
+    const startedAt = Date.now();
+    let stage = label;
+    let idleSeconds = null;
+    const stageLabels = {
+      source_extraction: "提取 PDF（计入 30 分钟）", planning: "阅读全文并构建计划",
+      plan_saved: "分析计划已保存", plan_resumed: "复用已有分析计划", drafting: "撰写候选稿",
+      generation_running: "准备分析", deterministic_validation: "确定性校验",
+      table_normalization: "整理表格", repair_running: "修复实质校验问题", draft_admitted: "草稿已保存，待人工审核",
+    };
+    const render = () => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const message = `${stage} · 已用 ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}${idleSeconds !== null ? ` · 距后台输出 ${idleSeconds} 秒` : ""}`;
+      this.pipelineStatusItem.textContent = message;
+      reporter?.update({ percent: null, message });
+    };
+    const onProgress = (event) => {
+      if (!event.activity_only) stage = stageLabels[event.stage] || event.message || stage;
+      idleSeconds = event.activity_only ? event.output_idle_seconds : null;
+      render();
+    };
+    render();
+    const timer = window.setInterval(render, 1000);
     if (showNotice && !reporter) new Notice(`${label}已开始`);
     try {
-      await operation(reporter?.update);
+      await operation(onProgress);
+      this.pipelineStatusItem.textContent = `${label}已完成`;
       if (reporter) reporter.complete(`${label}已完成`);
       else if (showNotice) new Notice(`${label}已完成`);
     } catch (error) {
       console.error(`[Knowledge Base] ${label}`, error);
       if (reporter) reporter.fail();
-      if (showNotice) {
-        new Notice(`${label}失败：${this.errorDetail(error)}`, 10000);
-      }
+      this.pipelineStatusItem.textContent = `${label}失败：${this.errorDetail(error)}`;
+      new Notice(`${label}失败：${this.errorDetail(error)}`, 10000);
     } finally {
+      window.clearInterval(timer);
       this.busy = false;
       this.refreshSubmitControl();
     }
   }
 
   async runCycle(showNotice) {
-    return this.withLock(showNotice, "同步和知识处理", async () => {
-      try {
-        await this.execPython(this.syncScript, [], 5 * 60 * 1000);
-      } catch (error) {
-        console.warn("[Knowledge Base] Zotero sync unavailable; continuing queued knowledge work", error);
-      }
-      await this.runPipeline(["ingest-next"]);
-    });
+    if (!(await this.syncSources(showNotice))) return;
+    return this.processNext(showNotice);
+  }
+
+  async syncSources(showNotice) {
+    if (this.syncBusy) {
+      if (showNotice) new Notice("Zotero 同步正在运行，请稍后再试");
+      return false;
+    }
+    this.syncBusy = true;
+    this.syncStatusItem.textContent = "Zotero：正在同步…";
+    if (showNotice) new Notice("Zotero 同步已开始");
+    try {
+      await this.execPython(this.syncScript, [], 5 * 60 * 1000);
+      this.syncStatusItem.textContent = `Zotero：最近同步 ${new Date().toLocaleTimeString()}`;
+      if (showNotice) new Notice("Zotero 同步已完成");
+    } catch (error) {
+      console.warn("[Knowledge Base] Zotero sync failed; knowledge worker remains independent", error);
+      const message = `Zotero 同步失败：${this.errorDetail(error)}`;
+      this.syncStatusItem.textContent = message;
+      if (showNotice) new Notice(message, 10000);
+    } finally {
+      this.syncBusy = false;
+    }
+    // Already mirrored sources can still be processed when Zotero is offline.
+    return true;
+  }
+
+  async runEnrichment() {
+    if (this.enrichmentBusy) return;
+    this.enrichmentBusy = true;
+    try {
+      await this.execPython(this.syncScript, ["--enrich"], 15 * 60 * 1000);
+    } catch (error) {
+      console.warn("[Knowledge Base] SI/JIF enrichment deferred", error);
+    } finally {
+      this.enrichmentBusy = false;
+    }
   }
 
   async processNext(showNotice) {
-    return this.withLock(showNotice, "知识笔记生成", async () => {
+    return this.withLock(showNotice, "知识笔记生成", async (onProgress) => {
       await this.runPipeline(["scan"]);
-      await this.runPipeline(["ingest-next"]);
-    });
+      await this.runPipeline(["ingest-next"], undefined, onProgress);
+    }, { progress: showNotice });
   }
 
   intensiveReadingContext(file = this.app.workspace.getActiveFile()) {
@@ -404,17 +486,11 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
       return;
     }
 
-    return this.withLock(true, "审核与知识整合", async () => {
-      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-        if (frontmatter.status !== "draft" && frontmatter.status !== "reviewed") {
-          throw new Error("当前笔记不是待审核草稿");
-        }
-        frontmatter.status = "reviewed";
-        frontmatter.reviewed = true;
-        frontmatter.reviewed_at = new Date().toISOString();
-      });
-      await this.runPipeline(["integrate", "--note", file.path]);
-    });
+    return this.withLock(true, "已审核知识整合", async (onProgress) => {
+      // The runner verifies the same content fingerprint as the chat review UI.
+      // This command must never turn an unreviewed draft into a reviewed source.
+      await this.runPipeline(["integrate", "--note", file.path], undefined, onProgress);
+    }, { progress: true });
   }
 
   async retryFailed() {

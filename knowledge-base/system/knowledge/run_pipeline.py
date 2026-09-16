@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import html
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -50,12 +53,14 @@ def log(message: str) -> None:
     print(f"[{now_iso()}] {message}", flush=True)
 
 
-def emit_progress(percent: int, message: str) -> None:
+def emit_progress(percent: Optional[int], message: str, **details: Any) -> None:
     """Emit one machine-readable progress event for interactive callers."""
 
     payload = {
-        "percent": max(0, min(100, int(percent))),
+        # Intermediate legacy percentages were stage labels, not measured work.
+        "percent": 100 if percent == 100 else None,
         "message": str(message).strip(),
+        **details,
     }
     print(f"KB_PROGRESS {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
@@ -252,14 +257,16 @@ def paragraph_reading_crop_script(skill_name: str) -> Path:
 
 def ensure_forge_python(config: Dict[str, Any]) -> str:
     configured = str(config.get("forge_python_path") or sys.executable).strip()
-    interpreter = Path(configured).expanduser().resolve()
+    # Resolving the venv's python symlink selects the base interpreter and loses
+    # its installed PDF/figure dependencies. Preserve the invocation path.
+    interpreter = Path(configured).expanduser().absolute()
     if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
         raise RuntimeError(f"Forge Paper Note Python is not executable: {interpreter}")
     result = subprocess.run(
         [str(interpreter), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=bounded_timeout(config, 15),
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "Could not inspect Forge Paper Note Python")
@@ -458,6 +465,7 @@ def paper_task(
         "id": f"{source_identity}:{sha256[:16]}",
         "kind": "paper",
         "parent_key": parent_key,
+        "paper_identity": stable_paper_identity(entry),
         "sha256": sha256,
         "source_identity": source_identity,
         "source_path": source_rel,
@@ -652,8 +660,14 @@ def sync_paper_metadata_frontmatter(note: Path, metadata: Dict[str, Any]) -> boo
 
 
 def scan_sources(config: Dict[str, Any], include_inactive: bool = False) -> int:
+    with pipeline_lock(config):
+        return _scan_sources(config, include_inactive)
+
+
+def _scan_sources(config: Dict[str, Any], include_inactive: bool = False) -> int:
     vault = config["vault"]
     queue = load_queue(config)
+    recover_interrupted_tasks(config, queue)
     known = existing_task_ids(queue)
     candidates: List[Dict[str, Any]] = []
 
@@ -695,6 +709,7 @@ def scan_sources(config: Dict[str, Any], include_inactive: bool = False) -> int:
     normalized = 0
     notes_refreshed = 0
     refresh_keys = (
+        "paper_identity",
         "impact_factor",
         "impact_factor_retrieved_at",
         "impact_factor_source",
@@ -731,6 +746,20 @@ def scan_sources(config: Dict[str, Any], include_inactive: bool = False) -> int:
                 if metadata_changed or controls_changed:
                     notes_refreshed += 1
             continue
+        if candidate.get("kind") == "paper":
+            restored = recover_existing_note(vault, candidate)
+            if not restored:
+                siblings = [item for item in queue["items"] if item.get("kind") == "paper" and stable_paper_identity(item) == candidate["paper_identity"] and item.get("status") != "superseded"]
+                if siblings:
+                    previous = siblings[-1]
+                    if previous.get("attachment_key") != candidate.get("attachment_key"):
+                        candidate["status"] = "duplicate_source"
+                        candidate["primary_task_id"] = previous["id"]
+                    elif previous.get("note_path"):
+                        candidate["note_path"] = previous["note_path"]
+                        candidate.update(paper_image_identity(previous["note_path"]))
+                        candidate["previous_source_id"] = previous["id"]
+                        previous["status"] = "superseded"
         supersede_older(queue, candidate["source_identity"], candidate["id"])
         queue["items"].append(candidate)
         known.add(candidate["id"])
@@ -768,6 +797,59 @@ def scan_sources(config: Dict[str, Any], include_inactive: bool = False) -> int:
     return added
 
 
+def stable_paper_identity(metadata: Dict[str, Any]) -> str:
+    doi = str(metadata.get("doi") or "").strip().casefold()
+    doi = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", doi)
+    if doi:
+        return "doi:" + doi
+    return "zotero:" + str(metadata.get("parent_key") or metadata.get("attachment_key") or metadata.get("source_identity") or "unknown")
+
+
+def recover_existing_note(vault: Path, candidate: Dict[str, Any]) -> bool:
+    """Rebuild program-owned queue state from backed-up primary notes, not logs."""
+    matches = []
+    for note in (vault / "wiki" / "papers").glob("*.md"):
+        fields = {key: unquote_yaml_scalar(value) for key, value in yaml_frontmatter_scalars(note.read_text(encoding="utf-8")).items()}
+        exact = fields.get("source_id") == candidate["id"]
+        same_version = fields.get("source_sha256") == candidate["sha256"] and (fields.get("zotero_attachment") == candidate.get("attachment_key") or wikilink_target(fields.get("source_pdf", "")) == candidate["source_path"])
+        if exact or same_version:
+            matches.append((note, fields))
+    if len(matches) > 1:
+        candidate["status"] = "needs_reconciliation"
+        candidate["last_error"] = "Multiple primary notes match the same source version; choose one before generation"
+        return True
+    if not matches:
+        return False
+    note, fields = matches[0]
+    candidate["note_path"] = note.relative_to(vault).as_posix()
+    candidate["display_title"] = note.stem
+    candidate["generated_date"] = fields.get("generated_date") or note.name[:10]
+    candidate.update(paper_image_identity(candidate["note_path"]))
+    candidate["status"] = {"draft": "drafted", "reviewed": "reviewed", "integrated": "integrated"}.get(fields.get("status", ""), "needs_reconciliation")
+    candidate["recovered_from_note_at"] = now_iso()
+    return True
+
+
+def claim_records(note_text: str, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Assign reproducible IDs to source-specific claims; do not infer equivalence."""
+    section = re.search(r"(?ms)^## 可验证的知识声明\s*\n(.*?)(?=^##? |\Z)", note_text)
+    if not section:
+        return []
+    records = []
+    for block in re.split(r"(?m)(?=^\s*(?:[-*+] |\d+[.)] ))", section.group(1)):
+        if not re.match(r"\s*(?:[-*+] |\d+[.)] )", block):
+            continue
+        evidence = re.findall(r"\[\[([^\]]+\.pdf#page=\d+)(?:\\?\|[^\]]*)?\]\]", block)
+        if not evidence:
+            continue
+        normalized = re.sub(r"\[\[[^\]]+\]\]|\^[a-zA-Z0-9-]+", "", block)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        identity = task.get("paper_identity") or stable_paper_identity(task)
+        claim_id = "claim-" + hashlib.sha256(f"{identity}\n{normalized}".encode()).hexdigest()[:16]
+        records.append({"claim_id": claim_id, "paper_identity": identity, "source_version": task.get("sha256"), "primary_note": task["note_path"], "statement_with_conditions": block.strip(), "evidence": evidence})
+    return records
+
+
 def process_exists(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -780,23 +862,81 @@ def process_exists(pid: int) -> bool:
 
 @contextmanager
 def pipeline_lock(config: Dict[str, Any]):
-    lock_path = config["vault"] / "system" / "runtime" / "knowledge-pipeline.lock"
+    # Advisory locks live on this machine, never in iCloud; process exit releases
+    # the lock even after a crash. Do not unlink the inode while another waiter
+    # could hold it. One designated Mac is the writer; this is not a cloud lease.
+    key = hashlib.sha256(str(config["vault"].resolve()).encode()).hexdigest()[:24]
+    root = Path(config.get("local_state_dir") or Path.home() / "Library" / "Caches" / "obsidian-knowledge-base")
+    lock_path = root / key / "pipeline.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if lock_path.exists():
+    with lock_path.open("a+") as handle:
         try:
-            lock = read_json(lock_path, {})
-            if process_exists(int(lock.get("pid", 0))):
-                raise RuntimeError("knowledge pipeline is already running")
-        except (ValueError, TypeError, json.JSONDecodeError):
-            pass
-        lock_path.unlink(missing_ok=True)
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump({"pid": os.getpid(), "started_at": now_iso()}, handle)
-    try:
-        yield
-    finally:
-        lock_path.unlink(missing_ok=True)
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("knowledge pipeline is already running") from error
+        try:
+            handle.seek(0)
+            handle.truncate()
+            json.dump({"pid": os.getpid(), "started_at": now_iso()}, handle)
+            handle.flush()
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def bounded_timeout(config: Dict[str, Any], requested: int) -> int:
+    deadline = config.get("_job_deadline")
+    remaining = remaining_deadline_seconds(deadline) if deadline is not None else requested
+    if remaining < 1:
+        raise RuntimeError("job_deadline_exceeded: no time remains for the next stage")
+    return min(requested, remaining)
+
+
+def run_process(command: List[str], *, timeout: int, **kwargs: Any) -> subprocess.CompletedProcess:
+    """Bound the whole child process group, retain output and emit honest liveness."""
+    kwargs.pop("capture_output", None)
+    kwargs.pop("text", None)
+    started = time.monotonic()
+    previous_signal = signal.getsignal(signal.SIGTERM)
+    with tempfile.TemporaryFile(mode="w+b") as stdout, tempfile.TemporaryFile(mode="w+b") as stderr:
+        process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True, **kwargs)
+        def stop_group(*_args: Any) -> None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        def terminate(signum: int, _frame: Any) -> None:
+            stop_group()
+            raise RuntimeError(f"cancelled: runner received signal {signum}")
+        signal.signal(signal.SIGTERM, terminate)
+        last_bytes = 0
+        last_output = started
+        try:
+            while process.poll() is None:
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    stop_group()
+                    process.wait()
+                    stdout.seek(0)
+                    stderr.seek(0)
+                    raise subprocess.TimeoutExpired(command, timeout, stdout.read().decode("utf-8", "replace"), stderr.read().decode("utf-8", "replace"))
+                try:
+                    process.wait(timeout=min(10, remaining))
+                except subprocess.TimeoutExpired:
+                    size = os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size
+                    now = time.monotonic()
+                    if size != last_bytes:
+                        last_output = now
+                        last_bytes = size
+                    emit_progress(None, "等待当前阶段完成", elapsed_seconds=int(now - started), output_idle_seconds=int(now - last_output), activity_only=True)
+            stdout.seek(0)
+            stderr.seek(0)
+            return subprocess.CompletedProcess(command, process.returncode, stdout.read().decode("utf-8", "replace"), stderr.read().decode("utf-8", "replace"))
+        finally:
+            # The CLI may exit while a tool subprocess remains alive.
+            stop_group()
+            process.wait()
+            signal.signal(signal.SIGTERM, previous_signal)
 
 
 def configured_environment(config: Dict[str, Any]) -> Dict[str, str]:
@@ -855,11 +995,11 @@ def extract_pdf_with_pdftotext(config: Dict[str, Any], task: Dict[str, Any]) -> 
     fd, temp_name = tempfile.mkstemp(prefix="knowledge-extract-", suffix=".txt")
     os.close(fd)
     try:
-        result = subprocess.run(
+        result = run_process(
             [config["pdftotext_path"], "-layout", "-enc", "UTF-8", str(source), temp_name],
             capture_output=True,
             text=True,
-            timeout=int(config.get("pdftotext_timeout_seconds", 180)),
+            timeout=bounded_timeout(config, int(config.get("pdftotext_timeout_seconds", 180))),
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "pdftotext failed")
@@ -1028,13 +1168,13 @@ def extract_pdf_with_mineru(config: Dict[str, Any], task: Dict[str, Any]) -> str
         output_root = Path(directory) / "output"
         command[command.index("OUTPUT_DIRECTORY")] = str(output_root)
         try:
-            result = subprocess.run(
+            result = run_process(
                 command,
                 capture_output=True,
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 text=True,
-                timeout=int(config.get("mineru_timeout_seconds", 1800)),
+                timeout=bounded_timeout(config, int(config.get("mineru_timeout_seconds", 1800))),
                 cwd=str(config["vault"]),
             )
         except FileNotFoundError as error:
@@ -1134,21 +1274,21 @@ def codex_command(
         prompt,
     ]
     environment = configured_environment(config)
-    return subprocess.run(
+    return run_process(
         command,
         capture_output=True,
         env=environment,
         stdin=subprocess.DEVNULL,
         text=True,
-        timeout=int(timeout_seconds or config.get("codex_timeout_seconds", 1200)),
+        timeout=bounded_timeout(config, int(timeout_seconds or config.get("codex_timeout_seconds", 1800))),
         cwd=str(vault),
     )
 
 
 def ingest_timeout_seconds(config: Dict[str, Any], task: Dict[str, Any]) -> int:
     if task.get("kind") == "paper" and task.get("redraft_requested_at"):
-        return int(config.get("redraft_timeout_seconds", 1800))
-    return int(config.get("codex_timeout_seconds", 1800))
+        return min(1800, int(config.get("redraft_timeout_seconds", 1800)))
+    return min(1800, int(config.get("codex_timeout_seconds", 1800)))
 
 
 def write_run_log(config: Dict[str, Any], operation: str, source_id: str, result: subprocess.CompletedProcess) -> Path:
@@ -1239,7 +1379,9 @@ def prepare_forge_runtime(
         "forge_validation_path": (runtime_relative / "validation.json").as_posix(),
     }
     task.pop("forge_resume_plan_path", None)
-    if previous_plan and previous_plan.is_file():
+    previous_checkpoint = read_json(vault / previous_runtime / "checkpoint.json", {}) if previous_runtime else {}
+    if (previous_plan and previous_plan.is_file()
+            and previous_checkpoint.get("source_sha256") == task.get("sha256")):
         paths["forge_resume_plan_path"] = previous_plan.relative_to(vault).as_posix()
     task.update(paths)
     task["runner_validation"] = True
@@ -1272,6 +1414,191 @@ def update_forge_checkpoint(
     checkpoint["stage"] = stage
     checkpoint["updated_at"] = now_iso()
     atomic_write_json(path, checkpoint)
+    emit_progress(None, stage.replace("_", " "), stage=stage)
+
+
+def protected_spans(text: str) -> List[tuple[int, int]]:
+    """Human review, saved Q&A, user blocks and explicitly merged evidence."""
+    spans = []
+    headings = list(re.finditer(r"(?m)^(#{1,6})\s+(.+?)\s*$", text))
+    for index, match in enumerate(headings):
+        if match.group(2) not in {"人工复核", "Human Review", "提问"}:
+            continue
+        end = next((following.start() for following in headings[index + 1:] if len(following.group(1)) <= len(match.group(1))), len(text))
+        spans.append((match.start(), end))
+    for pattern in (
+        r"<!-- user-notes:start -->.*?<!-- user-notes:end -->",
+        r"<!-- intensive-reading:([^:]+):start -->.*?<!-- intensive-reading:\1:end -->",
+    ):
+        spans.extend((m.start(), m.end()) for m in re.finditer(pattern, text, re.DOTALL))
+    merged: List[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def preserve_human_content(original: str, candidate: str) -> str:
+    if not original:
+        return candidate
+    original_spans = protected_spans(original)
+    if not original_spans:
+        return candidate
+    has_review = bool(re.search(r"(?m)^## (?:人工复核|Human Review)\s*$", original))
+    # Retain newly discovered review items as an additional, unchecked list.
+    old_review_items = set(re.findall(r"(?m)^\s*[-*+] \[[ xX]\] (.+)$", original))
+    new_review_items = []
+    for start, end in protected_spans(candidate):
+        block = candidate[start:end]
+        if has_review and block.startswith(("## 人工复核", "## Human Review")):
+            new_review_items.extend(item for item in re.findall(r"(?m)^\s*[-*+] \[[ xX]\] (.+)$", block) if item not in old_review_items)
+    for start, end in reversed(protected_spans(candidate)):
+        if candidate[start:end].startswith(("## 人工复核", "## Human Review")) and not has_review:
+            continue
+        candidate = candidate[:start] + candidate[end:]
+    blocks = [original[start:end].rstrip() for start, end in original_spans]
+    review_addendum = ""
+    if new_review_items:
+        review_addendum = "\n\n### 本次生成新增待复核\n\n" + "\n".join(f"- [ ] {item}" for item in dict.fromkeys(new_review_items))
+    for index, block in enumerate(blocks):
+        if block.startswith(("## 人工复核", "## Human Review")):
+            blocks[index] += review_addendum
+            review_addendum = ""
+            break
+    if review_addendum:
+        blocks.insert(0, "## 人工复核" + review_addendum)
+    result = candidate.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
+    if "<!-- user-notes:start -->" not in result:
+        result += "\n<!-- user-notes:start -->\n<!-- user-notes:end -->\n"
+    return result
+
+
+def candidate_workspace(config: Dict[str, Any], task: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[bytes]]:
+    vault = config["vault"]
+    runtime = vault / task["forge_runtime_dir"]
+    workspace = runtime / "workspace"
+    workspace.mkdir()
+    # Immutable source mirrors remain outside the child's writable workspace.
+    for name in ("sources", "extracts"):
+        if (vault / name).exists():
+            (workspace / name).symlink_to(vault / name, target_is_directory=True)
+    for relative in ("AGENTS.md", "system/workflows", "system/knowledge/result.schema.json", "wiki/index.md", task["note_path"], task["images_dir"]):
+        source, target = vault / relative, workspace / relative
+        if not source.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+    # Persisted plans and reports use the same relative paths in this workspace.
+    (workspace / task["forge_runtime_dir"]).mkdir(parents=True, exist_ok=True)
+    previous = task.get("forge_resume_plan_path")
+    if previous and (vault / previous).is_file():
+        destination = workspace / previous
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(vault / previous, destination)
+    original_path = vault / task["note_path"]
+    baseline = original_path.read_bytes() if original_path.is_file() else None
+    if baseline is not None:
+        atomic_write_bytes(runtime / "original-note.md", baseline)
+    task["forge_candidate_path"] = (workspace / task["note_path"]).relative_to(vault).as_posix()
+    return {**config, "vault": workspace}, baseline
+
+
+def collect_candidate_reports(config: Dict[str, Any], staged: Dict[str, Any], task: Dict[str, Any]) -> None:
+    for key in ("forge_note_plan_path", "forge_table_report_path", "forge_note_lint_path", "forge_research_lint_path", "forge_technical_lint_path", "forge_validation_path"):
+        relative = task.get(key)
+        if relative and (staged["vault"] / relative).is_file():
+            atomic_write_bytes(config["vault"] / relative, (staged["vault"] / relative).read_bytes())
+
+
+def prepare_candidate_note(note: Path, baseline: Optional[bytes]) -> None:
+    text = preserve_human_content((baseline or b"").decode("utf-8-sig"), note.read_text(encoding="utf-8-sig"))
+    atomic_write_text(note, text)
+    controls = yaml_frontmatter_scalars((baseline or b"").decode("utf-8-sig"))
+    updates: Dict[str, Any] = {"status": "draft", "reviewed": False, "reviewed_at": None, "reviewed_content_sha256": None, "review_warnings_accepted": None, "integrated_at": None}
+    for key in PAPER_READING_CONTROL_DEFAULTS:
+        if key in controls:
+            value = unquote_yaml_scalar(controls[key])
+            updates[key] = yaml_boolean(value) if key in {"paragraph_reading", "paragraph_reading_figures"} else (None if value in {"null", "~", ""} else value)
+    update_frontmatter_scalars(note, updates)
+    ensure_paper_reading_controls(note)
+
+
+def publish_candidate(config: Dict[str, Any], staged: Dict[str, Any], task: Dict[str, Any], baseline: Optional[bytes]) -> None:
+    note = config["vault"] / task["note_path"]
+    current = note.read_bytes() if note.exists() else None
+    if current != baseline:
+        raise RuntimeError(f"edit_conflict: original note changed; candidate retained at {task['forge_candidate_path']}")
+    candidate = staged["vault"] / task["note_path"]
+    text = candidate.read_text(encoding="utf-8")
+    # Existing image bytes are immutable. A replaced figure gets a versioned name;
+    # old links in human blocks and intensive-reading logs stay valid.
+    for source in sorted((staged["vault"] / task["images_dir"]).rglob("*")):
+        if not source.is_file() or source.is_symlink():
+            continue
+        relative = source.relative_to(staged["vault"])
+        target = config["vault"] / relative
+        if target.is_file() and file_sha256(target) != file_sha256(source):
+            renamed = relative.with_name(f"{source.stem}-{file_sha256(source)[:12]}{source.suffix}")
+            text = text.replace(relative.as_posix(), renamed.as_posix())
+            target = config["vault"] / renamed
+        if not target.exists():
+            atomic_write_bytes(target, source.read_bytes())
+    text = preserve_human_content((baseline or b"").decode("utf-8-sig"), text)
+    # Repeat immediately before replacement, after potentially slow asset copies.
+    if (note.read_bytes() if note.exists() else None) != baseline:
+        raise RuntimeError(f"edit_conflict: original note changed; candidate retained at {task['forge_candidate_path']}")
+    atomic_write_text(note, text)
+
+
+def classify_failure(message: str) -> str:
+    lower = message.casefold()
+    for name, patterns in (
+        ("quota_exhausted", ("out of credits", "insufficient_quota", "usage limit")),
+        ("authentication", ("unauthorized", "authentication", "401")),
+        ("edit_conflict", ("edit_conflict",)),
+        ("timeout", ("timed out", "timeout", "deadline")),
+        ("service_unavailable", ("404", "429", "502", "503", "connection", "network")),
+    ):
+        if any(pattern in lower for pattern in patterns):
+            return name
+    return "generation_or_validation"
+
+
+def generate_forge(config: Dict[str, Any], live_config: Dict[str, Any], task: Dict[str, Any], prompt: str) -> subprocess.CompletedProcess:
+    """Persist source/plan and drafting as separate, resumable invocations."""
+    plan_path = config["vault"] / task["forge_note_plan_path"]
+    previous = task.get("forge_resume_plan_path")
+    if previous:
+        previous_plan = read_json(config["vault"] / previous, {})
+        if isinstance(previous_plan, dict) and all(previous_plan.get(key) for key in ("prior_work_matrix", "question_answer_map", "followup", "terminology_ledger")):
+            atomic_write_json(plan_path, previous_plan)
+            update_forge_checkpoint(live_config, task, "plan_resumed")
+    if task.get("forge_repair_only"):
+        if not plan_path.is_file():
+            raise RuntimeError("repair_requires_plan: no resumable plan; explicitly redraft this note first")
+        update_forge_checkpoint(live_config, task, "validation_resumed")
+        return subprocess.CompletedProcess([], 0, "Resuming deterministic validation and bounded repair only", "")
+    generation_deadline = time.monotonic() + int(task["forge_generation_budget_seconds"])
+    if not plan_path.is_file():
+        update_forge_checkpoint(live_config, task, "planning")
+        budget = min(int(config.get("forge_plan_timeout_seconds", 720)), max(1, remaining_deadline_seconds(generation_deadline) // 2))
+        result = codex_command(config, prompt + "\n\nPHASE_OVERRIDE: plan. 本次只完成 Phase A；读取完整原文、持久化完整计划后立即返回，不写笔记、不裁图、不运行最终 lint。", f"last-plan-{safe_stem(task['id'])}", timeout_seconds=budget)
+        write_run_log(live_config, "ingest-plan", task["id"], result)
+        collect_candidate_reports(live_config, config, task)
+        if result.returncode != 0:
+            return result
+    plan = read_json(plan_path, None)
+    if not isinstance(plan, dict) or not plan:
+        raise RuntimeError("planning_incomplete: generation did not save a JSON note plan")
+    update_forge_checkpoint(live_config, task, "plan_saved")
+    collect_candidate_reports(live_config, config, task)
+    update_forge_checkpoint(live_config, task, "drafting")
+    return codex_command(config, prompt + "\n\nPHASE_OVERRIDE: draft. 计划已保存在 forge_note_plan_path；从 Phase B 开始，先读完整计划，按需回看证据和图。不要重复 Phase A 的计划构建，不运行最终 lint；保存完整草稿后立即返回。", f"last-ingest-{safe_stem(task['id'])}", timeout_seconds=max(1, remaining_deadline_seconds(generation_deadline)))
 
 
 def remaining_deadline_seconds(deadline: float) -> int:
@@ -1294,7 +1621,7 @@ def run_forge_script(
     timeout = min(max(1, int(config.get("forge_lint_timeout_seconds", 60))), remaining)
     interpreter = str(config.get("forge_python_path") or sys.executable)
     command = [interpreter, str(script), *arguments, "--output", str(output_path)]
-    result = subprocess.run(
+    result = run_process(
         command,
         capture_output=True,
         env=configured_environment(config),
@@ -1418,6 +1745,11 @@ def validate_forge_draft(
         and research_report.get("passes_research_audit") is True
         and technical_report.get("passed") is True
     )
+    warnings = forge_validation_warnings(reports)
+    # Style/keyword heuristics remain visible, but do not buy another model run.
+    blocking = [f"note:{gate}" for gate in ("passes_basic_structure", "passes_math_gate", "passes_plan_gate", "passes_substantive_content") if note_report.get(gate) is not True]
+    blocking.extend(f"research:{gate}" for gate in ("passes_frontmatter", "passes_required_headings", "passes_nonempty_sections", "passes_page_link_floor", "passes_extended_plan_contract") if research_report.get(gate) is not True)
+    blocking.extend(f"technical:{issue}" for issue in technical_report.get("issues", []) if issue not in {"avoided_term_found_in_note"})
     combined = {
         "status": "passed" if passed else "needs_repair",
         "passed": passed,
@@ -1430,7 +1762,9 @@ def validate_forge_draft(
             "research": task["forge_research_lint_path"],
             "technical": task["forge_technical_lint_path"],
         },
-        "warnings": forge_validation_warnings(reports),
+        "warnings": warnings,
+        "blocking_issues": blocking,
+        "style_or_manual_review": [warning for warning in warnings if warning not in blocking],
         "note_sha256": file_sha256(note),
         "validated_at": now_iso(),
     }
@@ -1489,8 +1823,17 @@ def ensure_paper_draft_index_entry(config: Dict[str, Any], task: Dict[str, Any])
 def set_task_failure(task: Dict[str, Any], error: str, status: str = "failed") -> None:
     task["attempts"] = int(task.get("attempts", 0)) + 1
     task["last_error"] = error[-4000:]
+    task["failure_kind"] = classify_failure(error)
     task["status"] = status
     task["updated_at"] = now_iso()
+
+
+def recover_interrupted_tasks(config: Dict[str, Any], queue: Dict[str, Any]) -> None:
+    interrupted = [item for item in queue["items"] if item.get("status") == "running"]
+    for item in interrupted:
+        set_task_failure(item, "interrupted: previous runner exited before admission; retained candidate/checkpoint can be inspected")
+    if interrupted:
+        save_queue(config, queue)
 
 
 def yaml_frontmatter_scalars(note_text: str) -> Dict[str, str]:
@@ -1826,15 +2169,26 @@ def validate_paragraph_reading_note(
     return state
 
 
-def ingest_next(config: Dict[str, Any]) -> int:
+def ingest_next(config: Dict[str, Any], note_value: Optional[str] = None) -> int:
     with pipeline_lock(config):
         queue = load_queue(config)
-        task = next((item for item in queue["items"] if item.get("status") == "pending"), None)
+        recover_interrupted_tasks(config, queue)
+        selected = vault_relative_note(config, note_value)[1] if note_value else None
+        task = next((item for item in queue["items"] if item.get("status") == "pending" and (selected is None or item.get("note_path") == selected)), None)
         if not task:
             log("ingest: no pending task")
             return 0
 
         log(f"ingest start id={task['id']} kind={task['kind']}")
+        task["status"] = "running"
+        task["started_at"] = now_iso()
+        task.pop("failure_kind", None)
+        save_queue(config, queue)
+        config = dict(config)
+        total_timeout = ingest_timeout_seconds(config, task)
+        config["_job_deadline"] = time.monotonic() + total_timeout
+        generation_config = config
+        baseline: Optional[bytes] = None
         try:
             forge_deadline: Optional[float] = None
             forge_warnings: List[str] = []
@@ -1843,21 +2197,30 @@ def ingest_next(config: Dict[str, Any]) -> int:
                 task["forge_python_path"] = ensure_forge_python(config)
                 generated_date = task.get("generated_date") or local_date()
                 task["generated_date"] = generated_date
-                task.update(paper_note_identity(task, generated_date))
+                identity = paper_note_identity(task, generated_date)
+                if task.get("note_path") and (config["vault"] / task["note_path"]).is_file():
+                    identity["note_path"] = task["note_path"]
+                    identity["display_title"] = Path(task["note_path"]).stem
+                    identity.update(paper_image_identity(task["note_path"]))
+                task.update(identity)
                 paper_images_dir(config, task, create=True)
-                save_queue(config, queue)
-                extract_path = extract_pdf(config, task)
-                task["extract_path"] = str(extract_path.relative_to(config["vault"]))
-                total_timeout = ingest_timeout_seconds(config, task)
-                reserve = min(
-                    max(0, int(config.get("forge_finalize_reserve_seconds", 300))),
-                    max(0, total_timeout - 1),
-                )
-                task["forge_generation_budget_seconds"] = max(1, total_timeout - reserve)
-                task["forge_finalize_reserve_seconds"] = reserve
                 prepare_forge_runtime(config, task, total_timeout)
                 save_queue(config, queue)
-                forge_deadline = time.monotonic() + total_timeout
+                update_forge_checkpoint(config, task, "source_extraction")
+                extract_path = extract_pdf(config, task)
+                task["extract_path"] = str(extract_path.relative_to(config["vault"]))
+                forge_deadline = config["_job_deadline"]
+                remaining = remaining_deadline_seconds(forge_deadline)
+                if remaining < 60:
+                    raise RuntimeError("job_deadline_exceeded: extraction cached; retry can resume without extracting again")
+                reserve = min(
+                    max(0, int(config.get("forge_finalize_reserve_seconds", 300))),
+                    max(0, remaining - 1),
+                )
+                task["forge_generation_budget_seconds"] = max(1, remaining - reserve)
+                task["forge_finalize_reserve_seconds"] = reserve
+                generation_config, baseline = candidate_workspace(config, task)
+                save_queue(config, queue)
             workflow = config["vault"] / "system" / "workflows" / "ingest.md"
             skill_instruction = ""
             if task["kind"] == "paper":
@@ -1885,13 +2248,13 @@ def ingest_next(config: Dict[str, Any]) -> int:
                 f"{skill_instruction}\n\n"
                 f"TASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}"
             )
-            note = config["vault"] / task["note_path"]
+            note = generation_config["vault"] / task["note_path"]
             note_hash_before = file_sha256(note) if note.is_file() else ""
             if task["kind"] == "paper":
                 update_forge_checkpoint(config, task, "generation_running")
             try:
-                result = codex_command(
-                    config,
+                result = generate_forge(generation_config, config, task, prompt) if task["kind"] == "paper" else codex_command(
+                    generation_config,
                     prompt,
                     f"last-ingest-{safe_stem(task['id'])}",
                     timeout_seconds=(
@@ -1932,6 +2295,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                         result.stderr.strip() or result.stdout.strip() or "Codex ingest failed"
                     )
                 forge_warnings.append(f"generation:returncode_{result.returncode}_draft_saved")
+                task["failure_kind"] = classify_failure(result.stderr or result.stdout)
             if task["kind"] == "paper" and result is None and not note_changed:
                 raise RuntimeError(
                     "Forge generation reached its deadline before saving a changed draft; "
@@ -1943,7 +2307,8 @@ def ingest_next(config: Dict[str, Any]) -> int:
             if not note.is_file():
                 raise RuntimeError(f"Codex did not create {task['note_path']}")
             if task["kind"] == "paper":
-                ensure_paper_reading_controls(note)
+                prepare_candidate_note(note, baseline)
+                update_frontmatter_scalars(note, {"source_id": task["id"], "source_sha256": task["sha256"], "paper_identity": stable_paper_identity(task), "source_pdf": f"[[{task['source_path']}]]", "zotero_attachment": task.get("attachment_key"), "zotero_item": task.get("parent_key")})
             note_text = note.read_text(encoding="utf-8", errors="ignore")
             note_head = note_text[:2000]
             if not re.search(r"(?m)^status:\s*['\"]?draft['\"]?\s*$", note_head):
@@ -1951,29 +2316,17 @@ def ingest_next(config: Dict[str, Any]) -> int:
             if task["kind"] == "paper":
                 validate_impact_factor_properties(note_text, task)
                 validate_paper_reading_controls(note_text)
-                validate_paper_image_contract(config, task, note_text)
+                validate_paper_image_contract(generation_config, task, note_text)
                 expected_heading = f"# {task['display_title']}"
                 if not re.search(rf"(?m)^{re.escape(expected_heading)}\s*$", note_text):
                     raise RuntimeError(
                         f"Generated note title does not match '{task['display_title']}': {task['note_path']}"
                     )
-                ensure_paper_draft_index_entry(config, task)
-                index_text = (config["vault"] / "wiki" / "index.md").read_text(
-                    encoding="utf-8", errors="ignore"
-                )
-                targets = [task["note_path"], task["note_path"].removesuffix(".md")]
-                matching_links = sum(
-                    index_text.count(f"[[{target}|{task['display_title']}]]") for target in targets
-                )
-                if matching_links != 1:
-                    raise RuntimeError(
-                        f"Draft index must contain exactly one matching title link: {task['note_path']}"
-                    )
-
                 validation: Dict[str, Any]
                 try:
                     assert forge_deadline is not None
-                    validation = validate_forge_draft(config, task, note, forge_deadline)
+                    update_forge_checkpoint(config, task, "deterministic_validation")
+                    validation = validate_forge_draft(generation_config, task, note, forge_deadline)
                 except (RuntimeError, subprocess.TimeoutExpired) as error:
                     validation = {
                         "status": "not_completed",
@@ -1982,7 +2335,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                         "note_sha256": file_sha256(note),
                     }
                     atomic_write_json(
-                        config["vault"] / task["forge_validation_path"], validation
+                        generation_config["vault"] / task["forge_validation_path"], validation
                     )
                 remaining = remaining_deadline_seconds(forge_deadline)
                 repair_minimum = max(
@@ -1992,7 +2345,8 @@ def ingest_next(config: Dict[str, Any]) -> int:
                     1,
                     int(config.get("forge_post_repair_validation_reserve_seconds", 30)),
                 )
-                if not validation.get("passed") and remaining >= repair_minimum + repair_reserve:
+                if (validation.get("blocking_issues") and remaining >= repair_minimum + repair_reserve
+                        and task.get("failure_kind") not in {"quota_exhausted", "authentication", "service_unavailable"}):
                     update_forge_checkpoint(
                         config,
                         task,
@@ -2018,7 +2372,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                     )
                     try:
                         repair_result = codex_command(
-                            config,
+                            generation_config,
                             repair_prompt,
                             f"last-ingest-repair-{safe_stem(task['id'])}",
                             timeout_seconds=repair_timeout,
@@ -2049,7 +2403,8 @@ def ingest_next(config: Dict[str, Any]) -> int:
                         raise RuntimeError(
                             f"Source-of-truth file changed during Forge repair: {task['source_path']}"
                         )
-                    ensure_paper_reading_controls(note)
+                    prepare_candidate_note(note, baseline)
+                    update_frontmatter_scalars(note, {"source_id": task["id"], "source_sha256": task["sha256"], "paper_identity": stable_paper_identity(task), "source_pdf": f"[[{task['source_path']}]]", "zotero_attachment": task.get("attachment_key"), "zotero_item": task.get("parent_key")})
                     repaired_text = note.read_text(encoding="utf-8", errors="ignore")
                     if not re.search(
                         r"(?m)^status:\s*['\"]?draft['\"]?\s*$", repaired_text[:2000]
@@ -2059,7 +2414,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                         )
                     validate_impact_factor_properties(repaired_text, task)
                     validate_paper_reading_controls(repaired_text)
-                    validate_paper_image_contract(config, task, repaired_text)
+                    validate_paper_image_contract(generation_config, task, repaired_text)
                     expected_heading = f"# {task['display_title']}"
                     if not re.search(
                         rf"(?m)^{re.escape(expected_heading)}\s*$", repaired_text
@@ -2069,7 +2424,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                             f"{task['note_path']}"
                         )
                     try:
-                        validation = validate_forge_draft(config, task, note, forge_deadline)
+                        validation = validate_forge_draft(generation_config, task, note, forge_deadline)
                     except (RuntimeError, subprocess.TimeoutExpired) as error:
                         validation = {
                             "status": "not_completed_after_repair",
@@ -2078,7 +2433,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                             "note_sha256": file_sha256(note),
                         }
                         atomic_write_json(
-                            config["vault"] / task["forge_validation_path"], validation
+                            generation_config["vault"] / task["forge_validation_path"], validation
                         )
                 task["forge_validation_status"] = (
                     "passed" if validation.get("passed") else "draft_with_warnings"
@@ -2089,7 +2444,17 @@ def ingest_next(config: Dict[str, Any]) -> int:
                 task["forge_validation_warnings"] = list(
                     dict.fromkeys([*forge_warnings, *current_validation_warnings])
                 )[:100]
-                task["forge_note_sha256"] = file_sha256(note)
+                task["forge_blocking_issues"] = validation.get("blocking_issues", ["validation_incomplete"] if not validation.get("passed") else [])
+                update_frontmatter_scalars(note, {
+                    "validation_status": task["forge_validation_status"],
+                    "validation_warnings": json.dumps(task["forge_validation_warnings"], ensure_ascii=False),
+                })
+                collect_candidate_reports(config, generation_config, task)
+                publish_candidate(config, generation_config, task, baseline)
+                ensure_paper_draft_index_entry(config, task)
+                task["forge_note_sha256"] = file_sha256(config["vault"] / task["note_path"])
+                validation.update({"candidate_sha256": validation.get("note_sha256"), "note_sha256": task["forge_note_sha256"], "published_at": now_iso()})
+                atomic_write_json(generation_config["vault"] / task["forge_validation_path"], validation)
                 update_forge_checkpoint(
                     config,
                     task,
@@ -2116,6 +2481,7 @@ def ingest_next(config: Dict[str, Any]) -> int:
                 f"- Validation report: `{task.get('forge_validation_path', '')}`",
             )
             log(f"ingest complete note={task['note_path']}")
+            emit_progress(100, "草稿已保存，等待人工审核")
             return 0
         except ValueError as error:
             status = "needs_ocr" if str(error).startswith("needs_ocr:") else "failed"
@@ -2128,6 +2494,9 @@ def ingest_next(config: Dict[str, Any]) -> int:
             save_queue(config, queue)
             log(f"ingest failed id={task['id']} error={error}")
             return 1
+        finally:
+            if generation_config is not config:
+                collect_candidate_reports(config, generation_config, task)
 
 
 def vault_relative_note(config: Dict[str, Any], note_value: str) -> tuple[Path, str]:
@@ -2516,6 +2885,29 @@ def note_status(path: Path) -> str:
     return match.group(1).strip() if match else ""
 
 
+def review_content_hash(text: str) -> str:
+    text = text.replace("\r\n", "\n")
+    match = re.match(r"\A---\n(.*?)\n---", text, re.DOTALL)
+    if match:
+        fields = re.sub(r"(?m)^(?:status|reviewed|reviewed_at|reviewed_with|reviewed_content_sha256|review_warnings_accepted|integrated_at):[^\n]*\n?", "", match.group(1))
+        text = "---\n" + fields.rstrip("\n") + "\n---" + text[match.end():]
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def validate_review_gate(text: str) -> None:
+    fields = yaml_frontmatter_scalars(text)
+    if not yaml_boolean(fields.get("reviewed", "false")) or unquote_yaml_scalar(fields.get("status", "")) != "reviewed":
+        raise RuntimeError("Complete human review first: status: reviewed and reviewed: true are both required")
+    if unquote_yaml_scalar(fields.get("reviewed_content_sha256", "")) != review_content_hash(text):
+        raise RuntimeError("Review is missing or stale; the note changed after review")
+    for start, end in protected_spans(text):
+        if text[start:end].startswith(("## 人工复核", "## Human Review")) and re.search(r"(?m)^\s*[-*+] \[ \]", text[start:end]):
+            raise RuntimeError("Unresolved human-review checklist items remain")
+    has_warnings = unquote_yaml_scalar(fields.get("validation_warnings", "")) not in {"", "[]", "null", "~"}
+    if (unquote_yaml_scalar(fields.get("validation_status", "")) != "passed" or has_warnings) and not yaml_boolean(fields.get("review_warnings_accepted", "false")):
+        raise RuntimeError("Validation warnings require explicit human acceptance for this note version")
+
+
 def integrate_note(config: Dict[str, Any], note_rel: str) -> int:
     with pipeline_lock(config):
         vault = config["vault"]
@@ -2534,15 +2926,18 @@ def integrate_note(config: Dict[str, Any], note_rel: str) -> int:
             raise RuntimeError("Only paper or experiment draft notes can be integrated")
         if not note.is_file() or note_status(note) != "reviewed":
             raise RuntimeError("The note must exist and have status: reviewed")
+        validate_review_gate(note.read_text(encoding="utf-8"))
 
         queue = load_queue(config)
         matching = [item for item in queue["items"] if item.get("note_path") == relative]
         task = matching[-1] if matching else {"id": relative, "title": note.stem, "note_path": relative}
         workflow = vault / "system" / "workflows" / "integrate.md"
+        claims = claim_records(note.read_text(encoding="utf-8"), task)
         prompt = (
             "执行已审核知识笔记的整合任务。严格读取并遵守 AGENTS.md 与 "
             f"{workflow.relative_to(vault)}。只整合指定笔记，保留来源和页码，不得修改原始资料。\n\n"
-            f"NOTE_PATH: {relative}\nTASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}"
+            f"NOTE_PATH: {relative}\nTASK_JSON:\n{json.dumps(task, ensure_ascii=False, indent=2)}\n"
+            f"CLAIMS_JSON:\n{json.dumps(claims, ensure_ascii=False, indent=2)}"
         )
         result = codex_command(config, prompt, f"last-integrate-{safe_stem(task['id'])}")
         run_log = write_run_log(config, "integrate", task["id"], result)
@@ -2592,6 +2987,11 @@ def lint_wiki(config: Dict[str, Any]) -> int:
 
 
 def retry_failed(config: Dict[str, Any]) -> int:
+    with pipeline_lock(config):
+        return _retry_failed(config)
+
+
+def _retry_failed(config: Dict[str, Any]) -> int:
     queue = load_queue(config)
     task = next((item for item in queue["items"] if item.get("status") == "failed"), None)
     if not task:
@@ -2605,7 +3005,7 @@ def retry_failed(config: Dict[str, Any]) -> int:
     return 0
 
 
-def queue_paper_redraft(config: Dict[str, Any], note_value: str) -> int:
+def queue_paper_redraft(config: Dict[str, Any], note_value: str, repair_only: bool = False) -> int:
     """Requeue one exact existing primary paper note for a reviewed regeneration."""
 
     with pipeline_lock(config):
@@ -2625,6 +3025,7 @@ def queue_paper_redraft(config: Dict[str, Any], note_value: str) -> int:
         task = matches[-1]
         previous_status = str(task.get("status", "unknown"))
         task["status"] = "pending"
+        task["forge_repair_only"] = repair_only
         task["redraft_requested_at"] = now_iso()
         task["redraft_previous_status"] = previous_status
         task["updated_at"] = now_iso()
@@ -2678,6 +3079,9 @@ def show_status(config: Dict[str, Any]) -> int:
                 "counts": counts,
                 "paragraph_reading_counts": paragraph_reading_counts,
                 "total": len(queue["items"]),
+                "drafts_with_warnings": sum(item.get("forge_validation_status") == "draft_with_warnings" for item in queue["items"]),
+                "running": [{"id": item["id"], "started_at": item.get("started_at"), "checkpoint": read_json(config["vault"] / item["forge_checkpoint_path"], {}) if item.get("forge_checkpoint_path") else {}} for item in queue["items"] if item.get("status") == "running"],
+                "failures": [{"id": item["id"], "kind": item.get("failure_kind"), "candidate": item.get("forge_candidate_path"), "error": item.get("last_error")} for item in queue["items"] if item.get("status") in {"failed", "needs_reconciliation"}],
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -2691,7 +3095,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     scan_parser = subparsers.add_parser("scan", help="Queue new or changed sources")
     scan_parser.add_argument("--include-inactive", action="store_true")
-    subparsers.add_parser("ingest-next", help="Draft the oldest pending source")
+    ingest_parser = subparsers.add_parser("ingest-next", help="Draft the oldest pending source")
+    ingest_parser.add_argument("--note", help="Process only this exact queued primary note")
     paragraph_parser = subparsers.add_parser(
         "paragraph-read",
         help="Advance one interactive stage for a human-selected paper",
@@ -2716,6 +3121,8 @@ def main() -> int:
         help="Requeue one existing primary paper note for Forge regeneration",
     )
     redraft_parser.add_argument("--note", required=True)
+    repair_parser = subparsers.add_parser("repair", help="Revalidate and repair an existing Forge draft without full regeneration")
+    repair_parser.add_argument("--note", required=True)
     subparsers.add_parser(
         "cancel-redrafts",
         help="Cancel all queued or failed redrafts and restore their previous states",
@@ -2729,7 +3136,7 @@ def main() -> int:
             scan_sources(config, include_inactive=args.include_inactive)
             return 0
         if args.command == "ingest-next":
-            return ingest_next(config)
+            return ingest_next(config, args.note)
         if args.command == "paragraph-read":
             return paragraph_read_paper(config, args.note, args.action)
         if args.command == "paragraph-merge":
@@ -2742,6 +3149,8 @@ def main() -> int:
             return retry_failed(config)
         if args.command == "redraft":
             return queue_paper_redraft(config, args.note)
+        if args.command == "repair":
+            return queue_paper_redraft(config, args.note, repair_only=True)
         if args.command == "cancel-redrafts":
             cancel_paper_redrafts(config)
             return 0

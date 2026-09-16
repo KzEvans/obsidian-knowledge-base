@@ -22,6 +22,13 @@ SPEC.loader.exec_module(AUTOMATIC)
 
 
 class AutomaticImpactFactorTest(unittest.TestCase):
+    def test_jif_requires_year_matching_journal_and_specific_evidence(self):
+        candidate = {"journal": "Example Journal", "allowed_hosts": ["nature.com"]}
+        item = {"journal": "Example Journal", "impact_factor": 4.9, "impact_factor_year": "2025", "source_kind": "publisher", "source_url": "https://www.nature.com/example/metrics", "evidence_quote": "2025 Journal Impact Factor: 4.9"}
+        self.assertIsNotNone(AUTOMATIC.validate_result(item, candidate, "now"))
+        for overrides in ({"impact_factor_year": ""}, {"journal": "Another Journal"}, {"source_url": "https://www.nature.com/browse/calls-for-papers"}, {"evidence_quote": "2025 CiteScore: 4.9"}, {"evidence_quote": "2025 Journal Impact Factor: 9.4"}):
+            self.assertIsNone(AUTOMATIC.validate_result({**item, **overrides}, candidate, "now"))
+
     def test_metric_key_normalizes_issn(self):
         self.assertEqual(
             AUTOMATIC.metric_key({"ISSN": "1525-7797, 1526-4602"}),
@@ -67,6 +74,7 @@ class AutomaticImpactFactorTest(unittest.TestCase):
                     "source_url": "https://www.nature.com/example/",
                     "source_kind": "publisher",
                     "note": "Official journal metrics page",
+                    "evidence_quote": "2025 Journal Impact Factor: 4.9",
                 }
             ]
         }
@@ -98,6 +106,7 @@ class AutomaticImpactFactorTest(unittest.TestCase):
                     "impact_factor_year": "2025",
                     "impact_factor_source": "https://www.nature.com/example/",
                     "impact_factor_retrieved_at": checked,
+                    "impact_factor_evidence": "2025 Journal Impact Factor: 4.9",
                 }
             }
         }

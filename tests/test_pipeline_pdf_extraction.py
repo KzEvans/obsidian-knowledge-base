@@ -76,7 +76,7 @@ class PipelinePdfExtractionTest(unittest.TestCase):
                 )
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with mock.patch.object(PIPELINE.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(PIPELINE, "run_process", side_effect=fake_run):
                 destination = PIPELINE.extract_pdf(config, task)
 
             markdown = destination.read_text(encoding="utf-8")
@@ -110,7 +110,7 @@ class PipelinePdfExtractionTest(unittest.TestCase):
                 Path(command[-1]).write_text("Page one\fPage two", encoding="utf-8")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with mock.patch.object(PIPELINE.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(PIPELINE, "run_process", side_effect=fake_run):
                 destination = PIPELINE.extract_pdf(config, task)
 
             markdown = destination.read_text(encoding="utf-8")
@@ -123,7 +123,7 @@ class PipelinePdfExtractionTest(unittest.TestCase):
             config, task = self.make_fixture(directory)
             config["mineru_fallback_to_pdftotext"] = False
             failure = subprocess.CompletedProcess([], 1, "", "model unavailable")
-            with mock.patch.object(PIPELINE.subprocess, "run", return_value=failure):
+            with mock.patch.object(PIPELINE, "run_process", return_value=failure):
                 with self.assertRaisesRegex(RuntimeError, "model unavailable"):
                     PIPELINE.extract_pdf(config, task)
 
