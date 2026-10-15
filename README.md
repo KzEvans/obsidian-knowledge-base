@@ -6,11 +6,13 @@
 
 ## 目录
 
-- `plugins/codex-note-chat/`：在当前笔记中打开可移动、八方向缩放的紧凑问答窗，按需加入来源 PDF、选中文本和出链笔记，并支持人工复核及写回对话。
+- `plugins/codex-note-chat/`：在当前笔记中打开可移动、八方向缩放的紧凑问答窗，按需加入来源 PDF、选中文本、出链和本地相关知识片段，并支持人工复核及写回对话。
 - `plugins/zotero-doc-sync/`：定期同步 Zotero collection，并驱动知识任务队列。
+- Doc 子分类递归映射到 `sources/literature/pdf/<分类>/` 和 `wiki/papers/<分类>/`；已有论文迁移时保留正文、图片与任务状态，并更新链接。只整理目录时使用同步器的 `--organize-only`，新论文暂存等待显式生成。
 - `knowledge-base/system/zotero-sync/`：自动发现、校验并缓存 PDF Supporting Information，供 Forge Paper Note 按需核对。
 - `plugins/pdf-selection-translator/`：在 Obsidian PDF 阅读器中翻译选中文本；包含 TypeScript 源码和构建产物。
 - `knowledge-base/`：Zotero PDF 镜像、PDF 文本提取、草稿生成、人工审核、知识整合和健康检查脚本。
+- `knowledge-base/system/workflows/knowledge-context.md`：本地跨来源检索、关联与整理线索；`system/knowledge/purpose.md` 是用户维护的空白研究目标模板。
 - `skills/forge-paper-note/`：常规论文笔记生成 Skill，以及确定性的提取、图片、审计与保存脚本。
 - `skills/paper-reading/`：保留的上游 Mode A Skill，不修改其原始版本。
 - `skills/paper-intensive-reading/`：基于 Mode A 改造的全文逐段原文/翻译交替阅读、PDF 配图裁切、交互验证与显式合并 Skill。
@@ -55,6 +57,53 @@ python3 system/knowledge/run_pipeline.py ingest-next
 - 论文属性自动获取并保留影响因子、统计年份、官方来源和核验时间；缺失时写 `null`，不以其他引用指标替代。
 - `config.json`、`data.json`、队列状态、日志和生成内容已由 `.gitignore` 排除。
 
+## 本地相关知识与关联整理
+
+问答窗中的“加入相关知识”默认关闭。开启后，runner 按本轮问题和当前笔记
+检索本地相关笔记或知识页，最多返回 4 个结果；问答加入相关章节片段，保留
+原页码、来源、关联理由及审核状态，总量不超过 16,000 字。草稿只供线索，
+关键结论仍需核对原始 PDF。人工复核只用当前笔记与其来源，不混入其他论文。
+
+命令行入口（在 vault 根目录运行）：
+
+```bash
+python3 system/knowledge/run_pipeline.py knowledge-context --question '需要比较的问题' --note 'wiki/papers/分类/当前笔记.md' --limit 4
+python3 system/knowledge/run_pipeline.py knowledge-map --report
+python3 system/knowledge/run_pipeline.py compare-evidence --question '需要比较的问题' --note 'wiki/papers/分类/当前笔记.md' --report
+python3 system/knowledge/run_pipeline.py maintain-concepts --report
+python3 system/knowledge/run_pipeline.py maintain-questions --report
+```
+
+关联报告写入 `system/reports/local-knowledge-map.md`，列出本地链接、共享实体、
+重名/未解析链接及重复声明等整理线索，不调用模型或自动修正文献与规范页。
+关联不表示证据互相支持或科研新颖性。在 Obsidian 命令面板运行“查看知识关联与整理线索”即可生成并打开报告；
+检索 JSON 契约和报告规则见 [knowledge-context.md](knowledge-base/system/workflows/knowledge-context.md)。
+
+命令面板另有“生成跨论文证据对比”“查看同义概念整理建议”和“更新研究问题整理报告”。
+比较命令先输入问题，再生成保留各源声明、条件与页码的报告；另外两项报告只检查显式名称映射和问题的本地证据覆盖。
+三项均不调用模型、不修改规范页，生成暂停时仍可使用。草稿仅供线索，正式跨来源对比须有至少两项当前有效审核的独立主来源；支持、限定或矛盾仍由证据审阅判定。
+用户维护的 `system/knowledge/concept-aliases.json` 及概念页 `aliases` 提供显式同义映射，报告不自动合并或删除。
+详细规则见 [knowledge-maintenance.md](knowledge-base/system/workflows/knowledge-maintenance.md)。
+
+用户可填写 [purpose.md](knowledge-base/system/knowledge/purpose.md) 中的研究目标。
+模板不预填个人方向；普通问答和审核后整合最多读取 6,000 字用于聚焦。
+研究目标、关联检索和报告不进入论文笔记生成流程。
+
+审核后的科学整合在候选工作区执行：模型只更新七类规范知识目录，保留声明标记、
+源笔记及原 PDF 页码/实验位置。runner 校验候选与并发编辑后发布，确定性更新
+源笔记状态和 `wiki/index.md`；源正文保持原样，规范页指向源笔记的链接提供
+Obsidian 反向导航。操作规则见 [integrate.md](knowledge-base/system/workflows/integrate.md)。
+多源整合使用 runner 提供的当前已审核来源声明包，每条声明保留自身来源、条件与页码；比较/问题页更新保留人工状态并写明下一步核验，不自动判断科研新颖性。
+
+本地 Python 检索独立适配了固定上游源码中的题名/短语匹配、查询命中种子的一跳图扩展和 Adamic–Adar 共享邻居降权。
+图扩展限制种子和结果名额，常规 top 4 至多加入一个一跳结果；关系分本身不产生查询种子。
+审核后整合仍由现有一次模型调用生成完整候选，再由 runner 合并 `sources/tags/related/aliases`、恢复原身份与问题状态元数据、删除完全重复的证据块并验证。
+旧声明的条件保持原样；新纠正需要新声明 ID。失败保留现有页与候选，不增加第二次归并模型，也不退回直接覆盖。
+固定源码与独立适配说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+可用 `scripts/evaluate-knowledge-retrieval.py` 对预先定义的私有相关性案例运行受控基线/当前模块比较，固定 top 4，输出 Recall@4、首命中、MRR@4、全部排名及零匹配负例结果。
+实际私库案例放 runtime；公开文档只提供通用格式。报告保留无改善、退步和负例失败，检索相关性标注不代表用户金标准或论文结论验证。用法见 `knowledge-context.md`。
+
 ## PDF 解析
 
 论文默认由 MinerU 解析双栏版面、公式、表格、图像和扫描页。流水线读取
@@ -78,9 +127,10 @@ python3 scripts/check-forge-paper-note.py
 该环境还需安装 PyMuPDF 与 Pillow；运行检查时可用 `--python /path/to/venv/bin/python` 指定同一解释器。保留虚拟环境调用路径，不要替换为其符号链接指向的基础解释器。
 该 skill 复用了 DeepPaperNote 的确定性单论文流水线，并吸收了 PaperForge 的研究推理思想；两者均在下方保留来源说明。
 
-单篇 Forge 笔记生成上限为30分钟，包含 MinerU 提取、独立计划与撰写调用和最终校验。流程会先保存可复用的 `note-plan.json` 检查点和
-完整草稿，再由 runner 在预留时间内执行表格规范化、三项确定性校验和一次有限修复；
-即使生成阶段到时，只要已保存新的合格草稿，也会保留并明确记录未完成的校验项。
+单篇 Forge 笔记生成上限为30分钟墙钟时间，包含休眠、MinerU 提取、计划、撰写和校验。
+计划先落盘，正文逐节原子保存，再补可选配图；10分钟没有当前阶段的计划/正文文件更新就停止。
+未完成正文留在候选工作区，不能作为完整笔记发布；完整草稿再由 runner 执行表格规范化和三项确定性校验。
+自动模型修复默认关闭，校验警告保留给人工复核或显式修复命令。
 表格中的 Obsidian 链接会自动转义分隔符并缩短为页码别名，全空列会被删除；前人工作
 表使用可点击的紧凑引用标签，不再逐行塞入完整参考文献和重复核验声明。前人工作、创新背景和后续方向只依据当前
 论文正文及其参考文献表进行转述，不联网检索或打开被引论文；笔记会明确标注
@@ -93,8 +143,12 @@ python3 scripts/check-forge-paper-note.py
   `forge_candidate_path` 找到。
 - `# 提问`、人工复核区、`user-notes` 和已合并精读块由 runner 保留。
   同名图片内容改变时另存带内容版本的文件，不覆盖旧图片。
-- 计划和撰写是独立调用。重试复用同一来源版本的已保存计划；提取缓存继续复用。
-  仅文风/关键词提示不触发额外模型修复；实质失败最多做一次有界修复。
+- 计划和撰写是独立调用。显式重试复用同一来源版本的计划、未完成正文、已裁图片及提取缓存；原笔记被人工编辑后不会恢复旧候选正文。
+- `forge_token_budget: null` 取消论文和各阶段的 token 限制，并显式关闭该子任务的 CLI rollout budget；仍记录可观测用量。
+  设置正整数可重新启用总预算和阶段配额。预算统计不是精确计费额度；30分钟期限与10分钟产物停滞保护独立保留。
+  仅论文子任务关闭无限重连、持续目标和子代理；连续重连超过1次由 runner 中止，失败不自动重新入队。
+- 模型调用前再次核对已有主笔记，完成凭据保存在本机缓存而非 iCloud；队列回退不会自动重做同一版本。
+  凭据存在但笔记缺失时进入 `needs_reconciliation`，先恢复文件或明确选择重新生成。
 - 命令面板新增“只校验并修复当前 Forge 草稿”，不重做全文分析。
   命令行对应 `repair --note <相对路径>`，然后 `ingest-next --note <同一路径>`。
 - 队列写入和扫描使用同一台 Mac 的文件锁；请只指定一台 Mac 执行后台流水线。
@@ -181,6 +235,10 @@ python3 scripts/check-paper-intensive-reading.py
 
 相关 Skill 的固定上游版本、MIT 许可证位置和完整 BibTeX 见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+本地知识检索与规范候选归并的算法还独立适配了
+[nashsu/llm_wiki](https://github.com/nashsu/llm_wiki)。相关功能在本项目中独立实现，
+未复制其代码表达或提示词；固定源码、适配范围与上游 GPL-3.0 许可证说明见同一 notices 文件。
 
 > Han, Feijiang. *PaperForge*. GitHub repository. <https://github.com/FeijiangHan/PaperForge>.
 

@@ -2,6 +2,26 @@
 
 This repository vendors the three Codex skills used by the knowledge pipeline.
 
+## LLM Wiki: independently adapted algorithms
+
+The local retrieval and canonical-candidate normalization independently adapt
+algorithmic strategies inspected in [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki),
+commit `48fd970e206a02a6d2028d1dbfc41b7a0345bf0b`:
+
+- [search.rs](https://github.com/nashsu/llm_wiki/blob/48fd970e206a02a6d2028d1dbfc41b7a0345bf0b/src-tauri/src/commands/search.rs): phrase/title matching and bounded query-seeded one-hop retrieval.
+- [graph-relevance.ts](https://github.com/nashsu/llm_wiki/blob/48fd970e206a02a6d2028d1dbfc41b7a0345bf0b/src/lib/graph-relevance.ts): direct-link/source relationships and inverse-degree weighting of shared neighbors using Adamic–Adar.
+- [page-merge.ts](https://github.com/nashsu/llm_wiki/blob/48fd970e206a02a6d2028d1dbfc41b7a0345bf0b/src/lib/page-merge.ts): deterministic array-field union and restoration of existing identity metadata around a complete candidate.
+
+The upstream application is published under
+[GNU GPL version 3](https://github.com/nashsu/llm_wiki/blob/48fd970e206a02a6d2028d1dbfc41b7a0345bf0b/LICENSE).
+The adaptation is independently written Python using this repository's evidence,
+review, and candidate-publication contracts; upstream code expressions, prompts,
+skill prose, binaries, and application runtime are not copied or vendored.
+LLM Wiki is not a runtime dependency. This batch adds neither vector retrieval nor
+reciprocal-rank fusion. Canonical normalization adds no model call and retains the
+existing single complete-candidate invocation. A merge/validation failure keeps
+the existing live page rather than using upstream incoming-body overwrite fallback.
+
 ## DeepPaperNote
 
 `skills/forge-paper-note/` reuses the deterministic single-paper pipeline and

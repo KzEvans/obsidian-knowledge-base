@@ -84,8 +84,56 @@ def api_json(api_base: str, path: str) -> Any:
     return json.loads(api_get(api_base, path).decode("utf-8"))
 
 
+def api_list(api_base: str, path: str) -> List[Dict[str, Any]]:
+    result = []
+    while True:
+        page = api_json(api_base, f"{path}{'&' if '?' in path else '?'}limit=100&start={len(result)}")
+        result.extend(page)
+        if len(page) < 100:
+            return result
+
+
+def collection_tree(api_base: str, root_key: str) -> Dict[str, str]:
+    """Map the configured collection and all descendants to safe relative folders."""
+    collections = api_list(api_base, "users/0/collections?format=json")
+    paths = {root_key: ""}
+    remaining = {item["key"]: item.get("data", {}) for item in collections if item["key"] != root_key}
+    while remaining:
+        children = {key: data for key, data in remaining.items() if data.get("parentCollection") in paths}
+        if not children:
+            break
+        names = {}
+        for key, data in children.items():
+            name = re.sub(r'[\\/:*?"<>|\[\]#\x00-\x1f]', "_", str(data.get("name") or key)).strip(" .") or key
+            while len(name.encode("utf-8")) > 150:
+                name = name[:-1]
+            if not paths[data["parentCollection"]] and name.casefold() in {"images", "close-reading"}:
+                name += f" ({key})"
+            names[key] = name
+        for key, data in children.items():
+            name = names[key]
+            if sum(names[other].casefold() == name.casefold() and children[other]["parentCollection"] == data["parentCollection"] for other in children) > 1:
+                name += f" ({key})"
+            paths[key] = (Path(paths[data["parentCollection"]]) / name).as_posix()
+            del remaining[key]
+    return paths
+
+
+def collection_items(api_base: str, paths: Dict[str, str]) -> List[Dict[str, Any]]:
+    items = {}
+    for key in paths:
+        for item in api_list(api_base, f"users/0/collections/{quote(key)}/items?format=json&include=data"):
+            items[item["key"]] = item
+    return list(items.values())
+
+
+def item_collection_paths(parent: Dict[str, Any], paths: Dict[str, str]) -> List[str]:
+    selected = {paths[key] for key in parent.get("data", {}).get("collections", []) if key in paths}
+    return sorted(selected or {""}, key=lambda path: (-len(Path(path).parts), path.casefold(), path))
+
+
 def resolve_collection(api_base: str, configured_name: str, configured_key: str) -> str:
-    collections = api_json(api_base, "users/0/collections?format=json")
+    collections = api_list(api_base, "users/0/collections?format=json")
     for collection in collections:
         if collection.get("key") == configured_key and collection.get("data", {}).get("name") == configured_name:
             return configured_key
@@ -192,8 +240,8 @@ def build_index(
         "",
         f"最后同步：`{synced_at}`",
         "",
-        "| 文献 | 年份 | 作者 | PDF | SI | Zotero |",
-        "|---|---:|---|---|---|---|",
+        "| 分类 | 文献 | 年份 | 作者 | PDF | SI | Zotero |",
+        "|---|---|---:|---|---|---|---|",
     ]
     for entry in sorted(entries, key=lambda item: (item.get("year", ""), item.get("title", "")), reverse=True):
         title = markdown_escape(entry.get("title", "Untitled"))
@@ -209,18 +257,19 @@ def build_index(
         else:
             si_link = "—"
         zotero_link = f"[打开](zotero://select/library/items/{entry['parent_key']})"
-        lines.append(f"| {title} | {year} | {authors} | {pdf_link} | {si_link} | {zotero_link} |")
+        category = markdown_escape("、".join(path or "Doc" for path in entry.get("collection_paths", [])) or "Doc")
+        lines.append(f"| {category} | {title} | {year} | {authors} | {pdf_link} | {si_link} | {zotero_link} |")
     lines.append("")
     return "\n".join(lines)
 
 
-def scan_knowledge_queue(vault: Path) -> None:
+def scan_knowledge_queue(vault: Path, defer_new: bool = False) -> None:
     runner = vault / "system" / "knowledge" / "run_pipeline.py"
     if not runner.is_file():
         return
     try:
         result = subprocess.run(
-            [sys.executable, str(runner), "scan"],
+            [sys.executable, str(runner), "scan", *(["--defer-new"] if defer_new else [])],
             capture_output=True,
             text=True,
             timeout=60,
@@ -234,7 +283,7 @@ def scan_knowledge_queue(vault: Path) -> None:
         log(f"knowledge queue scan skipped: {error}")
 
 
-def sync(config_path: Path, enrich: bool = False) -> int:
+def sync(config_path: Path, enrich: bool = False, organize_only: bool = False) -> int:
     config = read_json(config_path, {})
     vault = Path(config["vault_path"]).expanduser().resolve()
     key = hashlib.sha256(str(vault).encode()).hexdigest()[:24]
@@ -246,10 +295,16 @@ def sync(config_path: Path, enrich: bool = False) -> int:
         except BlockingIOError:
             log("Source sync/enrichment is already running; deferred")
             return 0
+        # Serialize publication and organization against the minute knowledge worker.
+        if organize_only:
+            sys.path.insert(0, str(vault / "system" / "knowledge"))
+            import run_pipeline
+            with run_pipeline.pipeline_lock({"vault": vault}):
+                return _sync(config_path, enrich, organize_only=True)
         return _sync(config_path, enrich)
 
 
-def _sync(config_path: Path, enrich: bool = False) -> int:
+def _sync(config_path: Path, enrich: bool = False, organize_only: bool = False) -> int:
     config = read_json(config_path, None)
     if not isinstance(config, dict):
         raise RuntimeError(f"Invalid config: {config_path}")
@@ -268,10 +323,8 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
 
     state = read_json(state_path, {"attachments": {}})
     state.setdefault("attachments", {})
-    items = api_json(
-        api_base,
-        f"users/0/collections/{quote(collection_key)}/items?format=json&include=data",
-    )
+    paths = collection_tree(api_base, collection_key)
+    items = collection_items(api_base, paths)
     parents = {
         item["key"]: item
         for item in items
@@ -332,6 +385,7 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
         or not manifest_path.exists()
         or not index_path.exists()
         or not bib_path.exists()
+        or read_json(manifest_path, {}).get("collections") != paths
     )
     active_keys = set()
 
@@ -352,7 +406,11 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
                 data.get("filename") or source.name,
                 attachment_key,
             )
-            destination = pdf_dir / destination_name
+            categories = item_collection_paths(parent, paths)
+            category = previous.get("collection_path")
+            if category not in categories or len(Path(category).parts) < len(Path(categories[0]).parts):
+                category = categories[0]
+            destination = pdf_dir / category / destination_name
             source_fingerprint = data.get("md5") or f"{source.stat().st_size}:{source.stat().st_mtime_ns}"
             needs_copy = not destination.exists() or previous.get("source_fingerprint") != source_fingerprint
 
@@ -379,6 +437,9 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
                 "attachment_version": attachment.get("version"),
                 "content_type": data.get("contentType"),
                 "creators": creator_names(parent),
+                "collection_path": category,
+                "collection_paths": categories,
+                "generation_deferred": previous.get("generation_deferred", organize_only),
                 "destination": str(destination.relative_to(vault)),
                 "destination_name": destination_name,
                 "doi": parent_data.get("DOI", ""),
@@ -393,6 +454,10 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
                 "year": parent_year(parent),
                 "zotero_select": f"zotero://select/library/items/{parent_key}",
             }
+            old_paths = list(previous.get("previous_destinations", []))
+            if previous.get("destination") and previous["destination"] != entry["destination"]:
+                old_paths.append(previous["destination"])
+            entry["previous_destinations"] = sorted(set(old_paths) - {entry["destination"]})
             comparable_keys = [key for key in entry if key != "synced_at"]
             entry_changed = needs_copy or any(previous.get(key) != entry.get(key) for key in comparable_keys)
             if entry_changed:
@@ -410,6 +475,29 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
                 changed = True
             entry["active"] = False
 
+    # Keep older source versions, but follow the current paper's classification.
+    by_doi = {str(entry.get("doi", "")).strip().casefold(): entry for entry in active_entries if entry.get("doi")}
+    for entry in state["attachments"].values():
+        current = by_doi.get(str(entry.get("doi", "")).strip().casefold())
+        if entry.get("active") or not current:
+            continue
+        category = current["collection_path"]
+        old = str(entry.get("destination", ""))
+        destination = pdf_dir / category / entry["destination_name"]
+        relative = destination.relative_to(vault).as_posix()
+        if old != relative and (vault / old).is_file():
+            if destination.exists() and file_sha256(destination) != entry["sha256"]:
+                raise RuntimeError(f"Collection destination already contains different content: {relative}")
+            if not destination.exists():
+                copy_atomically(vault / old, destination)
+            entry["previous_destinations"] = sorted(set(entry.get("previous_destinations", []) + [old]) - {relative})
+            entry["destination"] = relative
+            changed = True
+        if entry.get("collection_path") != category:
+            entry["collection_path"] = category
+            entry["collection_paths"] = current["collection_paths"]
+            changed = True
+
     state.update(
         {
             "collection_key": collection_key,
@@ -421,6 +509,7 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
     manifest = {
         "collection_key": collection_key,
         "collection_name": collection_name,
+        "collections": paths,
         "generated_at": synced_at,
         "items": sorted(state["attachments"].values(), key=lambda item: item.get("attachment_key", "")),
         "schema_version": 1,
@@ -448,11 +537,11 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
 
     bibliography = None
     try:
-        bibliography = api_get(
-            api_base,
-            f"users/0/collections/{quote(collection_key)}/items?format=bibtex",
+        parent_keys = sorted(parents)
+        bibliography = b"\n".join(api_get(
+            api_base, f"users/0/items?itemKey={','.join(parent_keys[offset:offset + 50])}&format=bibtex&limit=100",
             accept="application/x-bibtex",
-        )
+        ) for offset in range(0, len(parent_keys), 50))
         if not bib_path.exists() or bib_path.read_bytes() != bibliography:
             changed = True
     except Exception as error:
@@ -468,7 +557,11 @@ def _sync(config_path: Path, enrich: bool = False) -> int:
         atomic_write_bytes(index_path, index_content)
         atomic_write_json(manifest_path, manifest)
         atomic_write_json(state_path, state)
-    scan_knowledge_queue(vault)
+    if organize_only:
+        import run_pipeline
+        run_pipeline._scan_sources(run_pipeline.load_config(), defer_new=True)
+    else:
+        scan_knowledge_queue(vault)
     log(
         f"complete collection={collection_name!r} primary_PDFs={len(attachments)} "
         f"copied={copied} unchanged={unchanged} failed={failed} "
@@ -482,9 +575,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--enrich", action="store_true", help="Run deferred SI/JIF enrichment; normal sync uses cache only")
+    parser.add_argument("--organize-only", action="store_true", help="Sync collection folders and hold newly discovered papers without generation")
     args = parser.parse_args()
     try:
-        return sync(args.config.resolve(), enrich=args.enrich)
+        return sync(args.config.resolve(), enrich=args.enrich, organize_only=args.organize_only)
     except Exception as error:
         log(f"sync skipped: {error}")
         return 1

@@ -16,6 +16,15 @@ The caller supplies exactly one `TASK_JSON`. Process only that source.
 
 For a paper task, read the task metadata and its `extract_path`. Page headings in the extract correspond to PDF pages. Inspect the original PDF only when extraction is ambiguous or figures/tables are essential.
 
+Read each required rule/reference once per generation invocation and reuse it.
+Do not inspect linter source during model generation; the runner applies the
+documented validation contracts. Never print image binary or Base64 into shell
+output, stdout, or text-tool results. Use a local image viewer/tool for one focused
+pass through pages or crops needed to resolve concrete evidence ambiguities;
+revisit only for a new specific unresolved question. Keep uncertain assets as
+placeholders with review items. Optional publication figure preparation belongs
+after the complete cited-text checkpoint in the draft phase.
+
 For `前人工作与不足`, novelty context, adjacent literature, and follow-up
 calibration, use only the current paper's body and printed reference list. Do not use
 web search, browser tools, literature APIs, publisher pages, or externally opened
@@ -44,6 +53,7 @@ Use YAML frontmatter with these properties where applicable:
 ---
 type: paper
 status: draft
+generation_stage: writing
 source_id: "task id"
 source_sha256: "sha256"
 title: "source title"
@@ -137,11 +147,20 @@ perform only steps 1–2 and return; `PHASE_OVERRIDE: draft` means start from th
 persisted plan and perform steps 3–5. Do not restart the full plan during drafting.
 Extraction, both phases and final validation share one total 30-minute budget.
 
-1. Read the full page-delimited extract and build the required combined plan.
-2. Atomically write that JSON plan to `forge_note_plan_path` before drafting. If `forge_resume_plan_path` exists and matches the same source identity/hash, reuse and improve it instead of restarting.
-3. Inspect the two or three most decisive visuals first. Additional visual work must not delay a complete saved draft.
-4. Save the complete note within `forge_generation_budget_seconds`; the runner writes the index entry.
-5. Return the required result object immediately after the save. Do not run table normalization or any Forge lint script; the runner reserves the final budget for those steps and a separate bounded repair.
+1. Resolve the task identity and admitted plan path, then immediately atomically save an initial JSON plan to `forge_note_plan_path` with the supplied source identity/hash and `generation_stage: planning`. Read the full page-delimited corpus and build the required combined plan, saving meaningful new evidence or planning components atomically as they are completed. Keep unknown evidence unknown and the stage `planning` until complete; visual work must not postpone these checkpoints.
+2. After the full corpus has been read and all required fields and ledgers are complete, atomically save the plan as `generation_stage: ready_for_drafting`. If `forge_resume_plan_path` matches the same source identity/hash, continue an incomplete `planning` checkpoint in the plan phase rather than restarting. Only a complete plan permits the draft phase; a complete legacy plan without a stage marker remains usable when accepted by the runner's completeness check.
+3. In the draft phase, read the saved plan once and resume any existing candidate text and images. Immediately save a note skeleton with `generation_stage: writing`, then atomically save after each completed section. Finish the cited text before optional visual crops. Use placeholders until a figure has been visually verified.
+4. Save the complete note within `forge_generation_budget_seconds`, then set `generation_stage: ready_for_validation`. Never set this for a skeleton or partial note. The runner retains unfinished notes in the candidate workspace without publishing them to `wiki/papers/`.
+5. Return immediately after the save. Do not reread all rules, restart source analysis, run final lint, spawn agents, or create a continuing goal. The runner owns deterministic validation. Automatic model-based repair is disabled by default; an explicit repair request permits one bounded repair.
+
+The 30-minute wall-clock budget includes extraction, planning, drafting, validation,
+and sleep. Ten minutes without a change to the current phase's plan/note stops the
+child even if its console is active. A positive `forge_token_budget` enables a shared
+token budget across invocations; `null` disables both runner and CLI token limits.
+Usage recording remains enabled and is not an exact billing measure. Failed/stopped tasks require an explicit retry; do not repeatedly
+invoke the runner from a parent conversation or goal. Sources and human notes stay
+unchanged. Same-version completed notes are reconciled before model calls, including
+queue rollback; only an explicit new redraft request permits regeneration.
 
 Do not present runner-owned validation as passed. A generation timeout after a changed draft has been saved may still be admitted as `status: draft` with explicit validation warnings; the review gate remains closed.
 

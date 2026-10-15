@@ -1,6 +1,6 @@
 ---
 name: forge-paper-note
-description: Generate or regenerate a durable, evidence-grounded knowledge-base note for one academic paper. Use when the user provides a title, DOI, arXiv ID, URL, Zotero item, local PDF, TASK_JSON, extract_path, source_pdf, or note_path and asks for a deep-reading, critique, reproduction plan, research extension, or Obsidian/vault paper note. Combines full-PDF acquisition, metadata and figure handling, PDF-page citations, claim-evidence boundaries, reconstruction of author reasoning, fragile-assumption analysis, counterexamples, follow-up ideas, wiki links, review gates, and safe save semantics in Chinese or English.
+description: "Create or regenerate an evidence-grounded paper note for an Obsidian vault, portable knowledge base, or supplied TASK_JSON. Use when a durable note with PDF-page evidence and research-audit fields is requested; conversational questions and staged learning use their own reading skills."
 ---
 
 # Forge Paper Note
@@ -26,7 +26,7 @@ Turn one paper into a note that is pleasant to reread, auditable at claim level,
 2. If the user requests an Obsidian/vault note without a task contract, use the **vault profile**. Resolve configuration through `references/user-configuration.md`, create a paper-local `images/` directory, and save with the bundled pipeline.
 3. If no vault is available or the user requests a portable artifact, use the **workspace profile** and save under the configured workspace output root.
 
-Always read `references/research-audit.md`, `references/technical-language-audit.md`, and `references/knowledge-base-profile.md` before planning the note. Read other references only when their named stage needs them.
+Read `references/research-audit.md`, `references/technical-language-audit.md`, and `references/knowledge-base-profile.md` once per invocation before substantive planning. Reuse those instructions through the invocation; read other references only when their named stage needs them. During model generation, do not inspect linter source code to infer requirements. In runner-managed runs, use the documented field contracts and leave validation to the runner.
 
 ## Current-paper-only literature context
 
@@ -41,36 +41,40 @@ Always read `references/research-audit.md`, `references/technical-language-audit
 
 Follow these checkpointed phases. Do not present a partial run as complete.
 
-When the runner supplies `PHASE_OVERRIDE: plan`, perform only Phase A and return
-after saving the complete JSON plan. With `PHASE_OVERRIDE: draft`, use that saved
-plan and perform Phase B; revisit source evidence as needed without rebuilding
-the entire plan. These invocations share one runner-owned 30-minute deadline,
-including PDF extraction and final validation. A runner candidate workspace is
+When the runner supplies `PHASE_OVERRIDE: plan`, perform only Phase A, save its
+incremental checkpoints, and return after the complete JSON plan is saved as
+`generation_stage: ready_for_drafting`. With `PHASE_OVERRIDE: draft`, use that saved
+complete plan and perform Phase B; revisit source evidence as needed without rebuilding
+the entire plan. By default, these invocations share one runner-owned 30-minute deadline,
+including PDF extraction and final validation. When the user explicitly authorizes
+a different wall-clock limit, use TASK_JSON.forge_job_timeout_seconds as that
+single shared deadline; keep the artifact-idle guard and never extend it yourself.
+A runner candidate workspace is
 not the live vault: keep all writes inside that workspace and leave publication,
 human-content preservation, image versioning, and conflict detection to the runner.
 
 ### Phase A: source and plan checkpoint
 
-1. Resolve the output language (`zh-CN` or `en`), run profile, paper identity, strongest local PDF, page-delimited extract, and admitted save target.
-2. Read the complete paper corpus, including abstract, introduction, related work, method, experiments/results, discussion, limitations, conclusion, and relevant appendix pages.
+1. Resolve the output language (`zh-CN` or `en`), run profile, paper identity, strongest local PDF, page-delimited extract, and admitted save target. If `TASK_JSON.forge_note_plan_path` is supplied, immediately atomically save an initial JSON checkpoint there with the supplied source identity/hash and `generation_stage: planning`. Preserve unknown fields as unknown; do not invent evidence to fill the checkpoint.
+2. Read the complete paper corpus, including abstract, introduction, related work, method, experiments/results, discussion, limitations, conclusion, and relevant appendix pages. Atomically update the plan after each meaningful evidence or planning component, keeping `generation_stage: planning` while reading or analysis is incomplete. Do not delay these saves for visual inspection or optional figure preparation.
 3. Select two to five closest works cited by the paper using only the current paper's characterization and printed reference entry. Set every verification status to `paper_characterization_only`.
 4. Establish the central claim, decisive evidence, strongest comparison, and highest-cost fragile assumption.
 5. Build the compact JSON `note_plan` with every field required by `references/research-audit.md` and `references/technical-language-audit.md`. Run grounding checks and freeze terminology, protocol, and measurement ledgers before prose drafting.
-6. If `TASK_JSON.forge_note_plan_path` is supplied, atomically save the plan there immediately. Treat this as the resumable checkpoint; on a retry, reuse `TASK_JSON.forge_resume_plan_path` when its source identity and hash still match.
+6. Set `generation_stage: ready_for_drafting` only after the complete corpus has been read, all required planning fields are complete, and grounding and technical ledgers are ready. Atomically save that complete plan to `TASK_JSON.forge_note_plan_path`. On an explicit retry, reuse `TASK_JSON.forge_resume_plan_path` when its source identity and hash still match: continue an incomplete `planning` checkpoint in Phase A, and reuse a complete plan for Phase B. A partial plan is never drafting-ready. A complete legacy plan without a stage marker remains usable when the runner accepts it as complete.
 
 ### Phase B: draft and save checkpoint
 
-7. Plan all major figure/table slots. Visually inspect the two or three most decisive candidates first; inspect more only when an unresolved scientific ambiguity requires it. A placeholder is preferable to delaying the complete draft for a marginal image.
-8. Draft the complete note using the merged structure below. For experimental materials papers, use reproducible numbered preparation steps and domain-native subsection labels.
+7. Reuse the saved plan, candidate text, and existing images. In a runner-managed draft phase, immediately save a note skeleton with `generation_stage: writing`; keep atomic section-by-section checkpoints. Read each required rule/reference once per session, not before every step.
+8. Draft the complete cited text using the merged structure below before optional visual work. For experimental materials papers, use reproducible numbered preparation steps and domain-native subsection labels. Keep figure/table placeholders until the selected asset has been visually inspected.
 9. Add page links, selected visuals, compact tables, evidence-based inference markers, candidate wiki links, verifiable claims, and review items. Inspect the PDF wherever extraction, layout, formulas, units, or plots are ambiguous.
-10. Save the complete note to the admitted target before optional polishing. In a timed pipeline run, never postpone this save for extra visual inspection, stylistic rewriting, or lint repair.
+10. Save the complete note to the admitted target before optional polishing. For runner-managed runs, set `generation_stage: ready_for_validation` only after the complete text is saved. Unfinished text stays marked `writing` in the candidate workspace, ready for an explicit resume. Never postpone text checkpoints for extra visual inspection, stylistic rewriting, or lint repair.
 
 ### Phase C: deterministic validation and bounded repair
 
 11. For a normal vault/workspace run, run `lint_note.py`, `lint_research_audit.py --plan-file <note_plan> --require-plan`, and `lint_technical_language.py --plan-file <note_plan> --require-plan`; fix failed gates and rerun.
 12. When `TASK_JSON.runner_validation` is true, stop after the Phase B save and return the requested result object. The deterministic runner owns table normalization, all three lints, final hash capture, and any separate bounded repair invocation. Do not duplicate those operations inside the generation session.
-13. In a repair-only invocation, change only failures named in the supplied lint reports. Reuse the saved note and plan; do not restart acquisition, full visual review, or the complete analysis workflow.
-14. Perform the source-versus-target technical-language, quality, and readability reviews before the final admitted save. Verify the final saved bytes against the lint hash.
+13. Model-based repair requires an explicit runner repair invocation; do not start another session yourself. Change only failures named in the supplied lint reports. Reuse the saved note and plan; do not restart acquisition, full visual review, or the complete analysis workflow. On budget exhaustion, failure, or no artifact progress, save available checkpoints and stop; do not create a continuing goal or repeatedly retry from a parent session.
+14. In self-managed vault/workspace runs, perform source-versus-target technical-language, quality, and readability reviews before the final admitted save. Verify saved bytes against the final lint hash; rerun affected validation only after a relevant edit. Runner-managed invocations obey step 12 instead of duplicating runner validation or publication.
 
 Use the copied deterministic scripts for acquisition, extraction, planning, linting, figures, and save operations. Keep paper understanding and prose model-led.
 
@@ -140,13 +144,15 @@ Read `references/research-audit.md` for the exact planning fields and subsection
 
 ## Figures, tables, and retrieval quality
 
+- Never print image binary or Base64 data in shell output, stdout, or text-tool results. Inspect local images with an image viewer/tool. Use one focused visual pass through only the pages or crops needed to resolve a concrete evidence ambiguity; revisit a region only for a new specific unresolved question. If identity or readability remains uncertain, retain a placeholder and review item.
+- In Phase A, plan visuals from the source text and captions, with bounded visual checks only where a claim depends on them. Prepare optional publication figures in Phase B after saving the complete cited text.
 - Use placeholder-first handling for every major figure or table.
 - Prefer one mechanism figure, one setup/data figure, and one decisive result figure or table.
 - Explain why each visual matters and retain the original figure/table number.
 - Use compact Markdown tables for comparisons involving three or more systems, settings, materials, datasets, metrics, or ablation rows.
 - Keep a table to two through five meaningful columns, remove columns empty in every body row, and keep each cell to one compact claim. Move explanation immediately below the table when a cell would become paragraph-length.
 - Use short headers, compact author-year or sample labels, and one final evidence column containing only short clickable links. Never paste a full PDF path, full reference entry, or repeated verification boilerplate into every row.
-- Before saving, run `scripts/normalize_markdown_tables.py --input <note> --write`. Then treat every `table_*` issue from `lint_note.py` as a readability failure that must be repaired.
+- In self-managed vault/workspace runs, normalize tables before validation with `scripts/normalize_markdown_tables.py --input <note> --write` and repair `table_*` lint failures. When `TASK_JSON.runner_validation` is true, the runner owns normalization and lint; generation saves the complete draft and returns as specified in Phase C.
 - Record graph-read estimates as approximate and distinguish them from values printed in the paper.
 - Keep images in the paper-local `images/` directory; do not embed temp paths.
 

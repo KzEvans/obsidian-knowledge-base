@@ -12,22 +12,39 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function element() {
-  return {
-    textContent: "", style: {}, dataset: {},
-    setAttribute() {}, addClass() {}, addEventListener() {},
-    createEl: element,
+function element(tag = "", options = {}) {
+  const result = {
+    tag, textContent: options.text || "", value: "", style: {}, dataset: {}, events: {}, children: [],
+    setAttribute() {}, addClass() {},
+    addEventListener(event, callback) { this.events[event] = callback; },
+    focus() { this.focused = true; },
+    empty() { this.children = []; },
+    createEl(childTag, childOptions) {
+      const child = element(childTag, childOptions);
+      this.children.push(child);
+      return child;
+    },
   };
+  return result;
 }
 
 async function fixture() {
   const notices = [];
   const intervals = [];
   const timeouts = [];
+  const commands = new Map();
+  const modals = [];
   const context = {
     require(name) {
       if (name === "obsidian") {
-        return { Plugin: class {}, Notice: class { constructor(text) { notices.push(text); } } };
+        return {
+          Plugin: class {}, Notice: class { constructor(text) { notices.push(text); } },
+          Modal: class {
+            constructor(app) { this.app = app; this.contentEl = element(); }
+            open() { modals.push(this); this.onOpen(); }
+            close() { this.closed = true; this.onClose(); }
+          },
+        };
       }
       return require(name);
     },
@@ -44,23 +61,202 @@ async function fixture() {
   const plugin = new context.module.exports();
   Object.assign(plugin, {
     addStatusBarItem: element,
-    addCommand() {}, addRibbonIcon() {}, registerEvent() {}, registerInterval() {},
+    addCommand(command) { commands.set(command.id, command); }, addRibbonIcon() {}, registerEvent() {}, registerInterval() {},
     loadData: async () => ({ lastLintAt: Date.now() }), saveData: async () => {},
     progressNotice: () => ({ update() {}, complete() {}, fail() {} }),
     app: {
       vault: { adapter: { getBasePath: () => "/fixture" } },
       workspace: { on() {}, onLayoutReady() {}, getActiveFile: () => null },
-      metadataCache: { on() {} },
+      metadataCache: { on() {}, getFileCache: () => ({}) },
     },
     execPython: async () => { throw new Error("Unexpected Python invocation in test"); },
   });
   await plugin.onload();
-  const minuteTimers = intervals.filter(timer => timer.ms === 60000);
-  assert.equal(minuteTimers.length, 2, "source and knowledge workers need separate timers");
-  return { plugin, notices, timeouts, syncTick: minuteTimers[0].callback, workerTick: minuteTimers[1].callback };
+  const sourceTimers = intervals.filter(timer => timer.ms === 3 * 60 * 60 * 1000);
+  const workerTimers = intervals.filter(timer => timer.ms === 60000);
+  assert.equal(sourceTimers.length, 1, "Zotero sources must refresh every three hours");
+  assert.equal(workerTimers.length, 1, "only the local knowledge worker polls every minute");
+  return { plugin, notices, timeouts, commands, modals, syncTick: sourceTimers[0].callback, workerTick: workerTimers[0].callback };
 }
 
-test("minute refresh continues during long generation without overlapping knowledge jobs", async () => {
+test("collection notes retain primary-paper commands while logs and images remain excluded", async () => {
+  const { plugin } = await fixture();
+  assert.equal(plugin.isPrimaryPaper({ path: "wiki/papers/DEA/Subtopic/Paper.md" }), true);
+  assert.equal(plugin.isPrimaryPaper({ path: "wiki/papers/自适应聚合物网络/Paper.md" }), true);
+  for (const path of ["wiki/papers/images/Paper.md", "wiki/papers/close-reading/Paper.md", "wiki/papers/../Paper.md"]) {
+    assert.equal(plugin.isPrimaryPaper({ path }), false);
+  }
+});
+
+test("paper ingestion allows the configured job deadline plus five minutes", async () => {
+  const { plugin } = await fixture();
+  plugin.app.vault.adapter.read = async (configPath) => {
+    assert.equal(configPath, "system/knowledge/config.json");
+    return JSON.stringify({ forge_job_timeout_seconds: 3600 });
+  };
+  const onProgress = () => {};
+  plugin.execPython = async (script, args, timeout, progress) => {
+    assert.equal(script, plugin.pipelineScript);
+    assert.equal(args[0], "ingest-next");
+    assert.equal(timeout, 65 * 60000);
+    assert.equal(progress, onProgress);
+    return "done";
+  };
+  assert.equal(await plugin.runPipeline(["ingest-next"], undefined, onProgress), "done");
+});
+
+test("paper ingestion keeps the 35-minute default when no job deadline is configured", async () => {
+  const { plugin } = await fixture();
+  plugin.app.vault.adapter.read = async () => "{}";
+  plugin.execPython = async (_script, _args, timeout) => {
+    assert.equal(timeout, 35 * 60000);
+  };
+  await plugin.runPipeline(["ingest-next"]);
+});
+
+test("paper ingestion keeps the 35-minute default when its configuration is missing", async () => {
+  const { plugin } = await fixture();
+  plugin.app.vault.adapter.read = async () => { throw new Error("File not found"); };
+  plugin.execPython = async (_script, _args, timeout) => {
+    assert.equal(timeout, 35 * 60000);
+  };
+  await plugin.runPipeline(["ingest-next"]);
+});
+
+test("explicit pipeline timeouts are preserved without reading Forge configuration", async () => {
+  const { plugin } = await fixture();
+  plugin.app.vault.adapter.read = async () => assert.fail("Explicit timeout must bypass configuration");
+  plugin.execPython = async (_script, _args, timeout) => {
+    assert.equal(timeout, 30000);
+  };
+  await plugin.runPipeline(["ingest-next"], 30000);
+});
+
+test("local knowledge report opens the returned report without model health checking or ingestion", async () => {
+  const { plugin } = await fixture();
+  const opened = [];
+  plugin.app.workspace.openLinkText = async (...args) => opened.push(args);
+  plugin.execPython = async (_script, args, timeout) => {
+    assert.deepEqual(Array.from(args), ["knowledge-map", "--report"]);
+    assert.equal(timeout, 30000);
+    return JSON.stringify({ report_path: "system/reports/local-knowledge-map.md" });
+  };
+  await plugin.showKnowledgeMap();
+  assert.deepEqual(opened, [["system/reports/local-knowledge-map.md", "", true]]);
+});
+
+test("evidence comparison command opens a real question modal and rejects empty input", async () => {
+  const { plugin, commands, modals, notices } = await fixture();
+  assert.equal(commands.get("compare-evidence").name, "生成跨论文证据对比");
+  let calls = 0;
+  plugin.execPython = async () => { calls++; };
+  commands.get("compare-evidence").callback();
+  assert.equal(modals.length, 1);
+  const modal = modals[0];
+  const input = modal.contentEl.children.find(child => child.tag === "textarea");
+  const submit = modal.contentEl.children.find(child => child.tag === "button");
+  assert.ok(input && submit, "The registered command must expose an input and report button");
+  input.value = "   ";
+  await submit.events.click();
+  assert.equal(calls, 0);
+  assert.equal(modal.closed, undefined);
+  assert.ok(notices.includes("请输入要比较的问题"));
+});
+
+test("comparison modal submits a question with its current primary-paper anchor and opens its report", async () => {
+  const { plugin, commands, modals } = await fixture();
+  const opened = [];
+  plugin.app.workspace.getActiveFile = () => ({ path: "wiki/papers/自适应聚合物网络/Paper.md" });
+  plugin.app.vault.adapter.read = async () => JSON.stringify({ ingest_paused: true });
+  plugin.app.workspace.openLinkText = async (...args) => opened.push(args);
+  plugin.execPython = async (_script, args, timeout) => {
+    assert.deepEqual(Array.from(args), ["compare-evidence", "--question", "比较应力松弛条件",
+      "--note", "wiki/papers/自适应聚合物网络/Paper.md", "--report"]);
+    assert.equal(timeout, 30000);
+    return JSON.stringify({ report_path: "system/reports/evidence-comparison.md" });
+  };
+  commands.get("compare-evidence").callback();
+  const modal = modals[0];
+  modal.contentEl.children.find(child => child.tag === "textarea").value = "  比较应力松弛条件  ";
+  await modal.contentEl.children.find(child => child.tag === "button").events.click();
+  assert.equal(modal.closed, true);
+  assert.deepEqual(opened, [["system/reports/evidence-comparison.md", "", true]]);
+  assert.equal(plugin.busy, false);
+});
+
+test("comparison accepts experiment anchors and omits canonical or auxiliary notes", async () => {
+  for (const activePath of ["wiki/experiments/Experiment.md", "wiki/concepts/Concept.md",
+    "wiki/papers/close-reading/Paper.md", "wiki/papers/images/Image.md", "wiki/papers/../Outside.md"]) {
+    const { plugin } = await fixture();
+    plugin.app.workspace.getActiveFile = () => ({ path: activePath });
+    plugin.app.workspace.openLinkText = async () => {};
+    plugin.execPython = async (_script, args, timeout) => {
+      assert.equal(args[0], "compare-evidence");
+      assert.equal(timeout, 30000);
+      assert.equal(args.includes("--note"), activePath === "wiki/experiments/Experiment.md");
+      return JSON.stringify({ report_path: "system/reports/evidence-comparison.md" });
+    };
+    await plugin.compareEvidence("比较问题");
+  }
+});
+
+test("concept and question report commands remain available while generation is paused", async () => {
+  const { plugin, commands } = await fixture();
+  plugin.app.vault.adapter.read = async () => JSON.stringify({ ingest_paused: true });
+  const opened = [], invoked = [];
+  plugin.app.workspace.openLinkText = async (...args) => opened.push(args);
+  const paths = {
+    "maintain-concepts": "system/reports/concept-maintenance.md",
+    "maintain-questions": "system/reports/research-question-maintenance.md",
+  };
+  plugin.execPython = async (_script, args, timeout) => {
+    assert.ok(args[0] in paths, "Reports must not invoke ingest, lint or approval");
+    assert.deepEqual(Array.from(args), [args[0], "--report"]);
+    assert.equal(timeout, 30000);
+    assert.equal(plugin.busy, true);
+    invoked.push(args[0]);
+    return JSON.stringify({ report_path: paths[args[0]] });
+  };
+  assert.equal(commands.get("maintain-concepts").name, "查看同义概念整理建议");
+  assert.equal(commands.get("maintain-questions").name, "更新研究问题整理报告");
+  await commands.get("maintain-concepts").callback();
+  await commands.get("maintain-questions").callback();
+  assert.deepEqual(invoked, ["maintain-concepts", "maintain-questions"]);
+  assert.deepEqual(opened, [[paths["maintain-concepts"], "", true], [paths["maintain-questions"], "", true]]);
+  assert.equal(plugin.busy, false);
+});
+
+test("report consumers surface invalid JSON or unexpected paths and release the lock", async () => {
+  for (const output of ["not JSON", JSON.stringify({ report_path: "wiki/concepts/Unrelated.md" })]) {
+    const { plugin, commands, notices } = await fixture();
+    plugin.app.workspace.openLinkText = async () => assert.fail("Invalid report must not open");
+    plugin.execPython = async () => output;
+    await commands.get("maintain-concepts").callback();
+    assert.equal(plugin.busy, false);
+    assert.ok(notices.some(text => text.includes("失败")));
+  }
+});
+
+test("report commands respect the existing knowledge lock without starting another subprocess", async () => {
+  const { plugin, commands, notices } = await fixture();
+  plugin.busy = true;
+  plugin.execPython = async () => assert.fail("Busy report must not start another job");
+  await commands.get("maintain-questions").callback();
+  assert.ok(notices.some(text => text.includes("知识库任务正在运行")));
+  assert.equal(plugin.busy, true);
+});
+
+test("other pipeline commands keep the 35-minute default without reading Forge configuration", async () => {
+  const { plugin } = await fixture();
+  plugin.app.vault.adapter.read = async () => assert.fail("Non-ingest commands must bypass Forge configuration");
+  plugin.execPython = async (_script, args, timeout) => {
+    assert.equal(args[0], "scan");
+    assert.equal(timeout, 35 * 60000);
+  };
+  await plugin.runPipeline(["scan"]);
+});
+
+test("three-hour source refresh remains independent of minute knowledge polling", async () => {
   const { plugin, syncTick, workerTick } = await fixture();
   const generation = deferred();
   const generating = deferred();

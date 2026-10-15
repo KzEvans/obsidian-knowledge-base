@@ -27,13 +27,28 @@ Read this file for every run. Select exactly one profile and keep its save and m
 
 Use when the caller supplies `TASK_JSON`, `extract_path`, `source_pdf`, `note_path`, or repository workflow instructions.
 
-1. Read the nearest applicable `AGENTS.md`, ingest workflow, task JSON, and result schema before source content.
+1. Read the nearest applicable `AGENTS.md`, ingest workflow, task JSON, and result schema once per invocation before source content. Reuse the loaded rules; do not inspect linter source during generation. The runner owns deterministic validation.
 2. Treat the task metadata and exact `note_path` as authoritative.
 3. Read the complete page-delimited extract. Inspect the PDF whenever figures, tables, formulas, layout, or extraction ambiguity affect a claim.
 4. Write only paths authorized by the repository contract: the candidate workspace's task note, plan and exact image directory. The runner alone writes the live note and draft index after validation and an unchanged-original check.
 5. Leave source mirrors, Zotero exports, manifests, queues, human experiment notes, and canonical knowledge pages unchanged.
 6. Copy metadata fields exactly from the task. Preserve explicit null values; never substitute a different journal metric.
 7. Finish with the repository's required result object or schema.
+
+When the runner supplies a plan path, save an initial atomic JSON checkpoint with
+the supplied source identity/hash and `generation_stage: planning` as soon as the
+task and save target are resolved. Update it after each meaningful evidence or
+planning component. Mark it `ready_for_drafting` only after reading the complete
+corpus and completing every required planning field. Resume a matching partial
+plan in Phase A; never treat it as a complete plan or enter Phase B from it. A
+complete legacy plan without a stage marker may be reused when accepted by the
+runner's completeness check.
+
+Inspect local images with an image viewer/tool, never by printing binary or Base64
+into shell output or text-tool results. Limit visual review to a focused pass for
+concrete source ambiguities; keep unresolved assets as placeholders. Optional
+publication figure preparation follows the complete cited-text checkpoint in
+Phase B.
 
 For prior-work entries in every profile, use the target paper's own characterization
 and printed bibliography only. Mark them `paper_characterization_only` and visibly

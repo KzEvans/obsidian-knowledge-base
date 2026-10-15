@@ -1,4 +1,4 @@
-const { Notice, Plugin } = require("obsidian");
+const { Modal, Notice, Plugin } = require("obsidian");
 const { execFile } = require("child_process");
 const path = require("path");
 
@@ -94,6 +94,34 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "show-local-knowledge-map",
+      name: "查看知识关联与整理线索",
+      callback: () => this.showKnowledgeMap(),
+    });
+
+    this.addCommand({
+      id: "compare-evidence",
+      name: "生成跨论文证据对比",
+      callback: () => this.openEvidenceComparison(),
+    });
+
+    this.addCommand({
+      id: "maintain-concepts",
+      name: "查看同义概念整理建议",
+      callback: () => this.openKnowledgeReport(
+        ["maintain-concepts", "--report"], "同义概念整理建议", "system/reports/concept-maintenance.md"
+      ),
+    });
+
+    this.addCommand({
+      id: "maintain-questions",
+      name: "更新研究问题整理报告",
+      callback: () => this.openKnowledgeReport(
+        ["maintain-questions", "--report"], "研究问题整理报告", "system/reports/research-question-maintenance.md"
+      ),
+    });
+
+    this.addCommand({
       id: "show-knowledge-queue-status",
       name: "显示知识任务队列状态",
       callback: () => this.showQueueStatus(),
@@ -137,7 +165,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
 
     // Source refresh must not wait for a long-running Forge/intensive-reading job.
     // Only the knowledge worker owns `busy`; source refresh owns `syncBusy`.
-    this.registerInterval(window.setInterval(() => this.syncSources(false), 60 * 1000));
+    this.registerInterval(window.setInterval(() => this.syncSources(false), 3 * 60 * 60 * 1000));
     this.registerInterval(window.setInterval(() => this.processNext(false), 60 * 1000));
     this.registerInterval(window.setInterval(() => this.runEnrichment(), 60 * 60 * 1000));
     this.registerInterval(window.setInterval(() => this.maybeRunWeeklyLint(), 6 * 60 * 60 * 1000));
@@ -160,7 +188,8 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
   }
 
   isPrimaryPaper(file) {
-    return Boolean(file && /^wiki\/papers\/[^/]+\.md$/.test(file.path));
+    return Boolean(file && /^wiki\/papers\/(?!images\/|close-reading\/).+\.md$/.test(file.path)
+      && !file.path.split("/").includes(".."));
   }
 
   isChecked(value) {
@@ -306,7 +335,21 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     });
   }
 
-  runPipeline(args, timeoutMs = 35 * 60 * 1000, onProgress) {
+  async runPipeline(args, timeoutMs, onProgress) {
+    if (timeoutMs === undefined) {
+      timeoutMs = 35 * 60 * 1000;
+      if (args[0] === "ingest-next") {
+        try {
+          const config = JSON.parse(await this.app.vault.adapter.read("system/knowledge/config.json"));
+          const seconds = config.forge_job_timeout_seconds;
+          if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) {
+            timeoutMs = (seconds + 300) * 1000;
+          }
+        } catch (_error) {
+          // Missing or unreadable configuration retains the existing 35-minute limit.
+        }
+      }
+    }
     return this.execPython(this.pipelineScript, args, timeoutMs, onProgress);
   }
 
@@ -417,7 +460,8 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
 
   intensiveReadingContext(file = this.app.workspace.getActiveFile()) {
     if (!file) return null;
-    if (/^wiki\/papers\/[^/]+\.md$/.test(file.path)) {
+    // Collection folders mirror Zotero; the runner accepts nested primary notes.
+    if (this.isPrimaryPaper(file)) {
       return {
         active: file,
         primary: file,
@@ -430,7 +474,7 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     const match = rawSource.match(/^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]$/);
     if (!match) return null;
     const primary = this.app.vault.getAbstractFileByPath(match[1]);
-    if (!primary || !/^wiki\/papers\/[^/]+\.md$/.test(primary.path)) return null;
+    if (!this.isPrimaryPaper(primary)) return null;
     return { active: file, primary, logPath: file.path };
   }
 
@@ -513,6 +557,73 @@ module.exports = class ZoteroDocSyncPlugin extends Plugin {
     if (Date.now() - Number(this.pluginData.lastLintAt || 0) >= weekMs) {
       await this.runLint(false);
     }
+  }
+
+  async showKnowledgeMap() {
+    return this.withLock(true, "知识关联与整理线索", async () => {
+      const output = await this.runPipeline(["knowledge-map", "--report"], 30 * 1000);
+      const payload = JSON.parse(output.trim());
+      if (payload.report_path !== "system/reports/local-knowledge-map.md") {
+        throw new Error("知识关联检查未返回预期的报告路径");
+      }
+      await this.app.workspace.openLinkText(payload.report_path, "", true);
+    });
+  }
+
+  openEvidenceComparison() {
+    const plugin = this;
+    class EvidenceComparisonModal extends Modal {
+      onOpen() {
+        this.contentEl.createEl("h2", { text: "生成跨论文证据对比" });
+        this.contentEl.createEl("p", { text: "输入需要比较的问题。报告保留各来源的证据、条件和审核状态。" });
+        const input = this.contentEl.createEl("textarea", { attr: { rows: "4", "aria-label": "证据对比问题" } });
+        input.style.width = "100%";
+        const submit = this.contentEl.createEl("button", { text: "生成报告", cls: "mod-cta" });
+        submit.type = "button";
+        submit.addEventListener("click", async () => {
+          const question = input.value.trim();
+          if (!question) {
+            new Notice("请输入要比较的问题");
+            input.focus();
+            return;
+          }
+          this.close();
+          await plugin.compareEvidence(question);
+        });
+        input.focus();
+      }
+
+      onClose() {
+        this.contentEl.empty();
+      }
+    }
+    new EvidenceComparisonModal(this.app).open();
+  }
+
+  async compareEvidence(question) {
+    const trimmed = String(question || "").trim();
+    if (!trimmed) {
+      new Notice("请输入要比较的问题");
+      return;
+    }
+    const args = ["compare-evidence", "--question", trimmed];
+    const file = this.app.workspace.getActiveFile();
+    const experiment = file && /^wiki\/experiments\/(?!images\/|close-reading\/).+\.md$/.test(file.path)
+      && !file.path.split("/").includes("..");
+    if (this.isPrimaryPaper(file) || experiment) args.push("--note", file.path);
+    args.push("--report");
+    return this.openKnowledgeReport(args, "跨论文证据对比", "system/reports/evidence-comparison.md");
+  }
+
+  async openKnowledgeReport(args, label, expectedPath) {
+    return this.withLock(true, label, async () => {
+      const output = await this.runPipeline(args, 30 * 1000);
+      const payload = JSON.parse(output.trim());
+      if (payload.report_path !== expectedPath) {
+        throw new Error(`${label}未返回预期的报告路径`);
+      }
+      await this.app.workspace.openLinkText(payload.report_path, "", true);
+    });
   }
 
   async showQueueStatus() {

@@ -1,11 +1,25 @@
 # Zotero Doc 自动同步
 
-Obsidian 的本地插件每 60 秒检查一次 Zotero 的 `Doc` 分类，将 PDF 镜像到
-`sources/literature/pdf/`，并更新：
+Obsidian 的本地插件每 3 小时检查一次 Zotero 的 `Doc` 分类及全部子分类，将 PDF 镜像到
+`sources/literature/pdf/<分类路径>/`，并更新：
 
 - `sources/literature/references.bib`
 - `sources/literature/index.md`
 - `sources/literature/manifests/zotero-doc.json`
+
+论文主笔记使用对应的 `wiki/papers/<分类路径>/`。Doc 本层条目仍放根目录。
+同一条目属于多个分类时优先采用最深分类；同深度保持已有归属，否则按分类名称排序选一个，索引列出全部分类，主笔记只保留一份。
+目录调整保留已有笔记文件名、人工内容、图片目录和任务状态，并同步修正 PDF/笔记引用。
+已移出 Zotero 的来源保留；与当前论文匹配的旧 PDF 版本跟随分类，内容不同的版本不会被覆盖。
+
+只整理分类并暂存新论文，不启动生成：
+
+```bash
+python3 system/zotero-sync/sync_zotero_doc.py --organize-only
+```
+
+此次新发现的论文记为 `awaiting_generation`，后续普通同步不会释放它们。
+明确选择生成时，用 `python3 system/knowledge/run_pipeline.py queue-held --id <task-id>` 将单篇送入队列。
 
 每条论文元数据还会携带期刊影响因子、统计年份、官方来源链接与核验时间。
 同步器不会用 CiteScore 或其他引用指标冒充 Journal Impact Factor。它按以下优先级读取：

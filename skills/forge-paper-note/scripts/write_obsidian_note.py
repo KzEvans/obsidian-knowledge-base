@@ -830,7 +830,7 @@ def main() -> None:
             )
 
     asset_dir = resolve_note_asset_dir(target_path, args.asset_subdir)
-    asset_subdir = asset_dir.relative_to(target_path.parent).as_posix()
+    asset_subdir = Path(os.path.relpath(asset_dir, target_path.parent)).as_posix()
     asset_directory_existed = asset_dir.exists()
     ensure_parent(target_path)
     paper_id = (

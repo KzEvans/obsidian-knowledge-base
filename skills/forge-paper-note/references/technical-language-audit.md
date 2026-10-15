@@ -71,6 +71,12 @@ Allowed `measurement_ledger[].acquisition_type` values are:
 
 Use `not reported` for a missing symbol, unit, duration, replicate count, specimen basis, or control. Do not replace it with a conventional value from domain knowledge.
 
+Acquisition categories describe evidence actually present; they are not a quota.
+Do not invent a measured, fitted, or derived quantity to satisfy a checker. For a
+review, attribute cited measurements to the original work as characterized by the
+review; do not describe them as experiments performed by the review authors.
+Theoretical and experimental papers likewise need not contain every category.
+
 ## 2. Protocol translation
 
 Translate each protocol clause as an operational record:

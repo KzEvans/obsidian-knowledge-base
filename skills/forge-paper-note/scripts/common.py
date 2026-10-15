@@ -2555,6 +2555,15 @@ def require_path_within(root: str | Path, path: str | Path, field: str) -> Path:
 
 
 def resolve_note_asset_dir(note_path: str | Path, asset_subdir: str) -> Path:
+    # Classified KB notes share the existing per-paper image root. Permit only
+    # that exact sibling directory; arbitrary parent traversal remains invalid.
+    note = Path(note_path).resolve()
+    for root in note.parents:
+        if root.name == "papers" and root.parent.name == "wiki":
+            expected = root / "images" / note.stem
+            if not Path(asset_subdir).is_absolute() and (note.parent / asset_subdir).resolve() == expected.resolve():
+                return require_path_within(root, expected, "asset_subdir")
+            break
     asset_subdir_parts = safe_relative_path_parts(asset_subdir, "asset_subdir")
     if not asset_subdir_parts:
         raise RuntimeError(

@@ -25,9 +25,9 @@ class PipelineSafetyTests(unittest.TestCase):
                 self.assertEqual(P.ensure_forge_python({"forge_python_path": str(interpreter)}), str(interpreter))
 
     def test_shared_deadline_includes_extraction(self):
-        config = {"_job_deadline": time.monotonic() + 3}
+        config = {"_job_deadline": time.time() + 3}
         self.assertLessEqual(P.bounded_timeout(config, 1800), 3)
-        config["_job_deadline"] = time.monotonic() - 1
+        config["_job_deadline"] = time.time() - 1
         with self.assertRaisesRegex(RuntimeError, "deadline"):
             P.bounded_timeout(config, 180)
 
@@ -128,6 +128,7 @@ class PipelineSafetyTests(unittest.TestCase):
             task = P.paper_task({"destination": str(source.relative_to(vault)), "attachment_key": "TEST", "parent_key": "PARENT", "title": "Example", "creators": ["A"]}, vault)
             task.update(P.paper_note_identity(task, "2026-09-05"))
             task["generated_date"] = "2026-09-05"
+            task["redraft_requested_at"] = "2026-09-05T12:00:00+00:00"
             note = vault / task["note_path"]
             note.parent.mkdir(parents=True)
             original = "---\ntype: paper\nstatus: draft\nreviewed: false\n---\n# Original\n## 人工复核\n- [x] Old check\n# 提问\nQ：human question\nA：saved answer\n"
@@ -143,7 +144,7 @@ class PipelineSafetyTests(unittest.TestCase):
                 self.assertIn("_job_deadline", staged)
                 candidate = staged["vault"] / current["note_path"]
                 candidate.parent.mkdir(parents=True, exist_ok=True)
-                candidate.write_text("---\ntype: paper\nstatus: draft\nimpact_factor: null\nimpact_factor_year: null\nimpact_factor_source: null\nimpact_factor_retrieved_at: null\n" + f"images_dir: {current['images_dir']}\n---\n# {current['display_title']}\nNew body\n## 人工复核\n- [ ] New issue\n")
+                candidate.write_text("---\ntype: paper\nstatus: draft\ngeneration_stage: ready_for_validation\nimpact_factor: null\nimpact_factor_year: null\nimpact_factor_source: null\nimpact_factor_retrieved_at: null\n" + f"images_dir: {current['images_dir']}\n---\n# {current['display_title']}\nNew body\n## 人工复核\n- [ ] New issue\n")
                 return subprocess.CompletedProcess([], 0, "saved", "")
             with mock.patch.object(P, "ensure_paper_skills", return_value=["forge-paper-note"]), mock.patch.object(P, "ensure_forge_python", return_value=sys.executable), mock.patch.object(P, "extract_pdf", return_value=extract), mock.patch.object(P, "generate_forge", side_effect=fake_generation), mock.patch.object(P, "validate_forge_draft", return_value={"passed": False, "warnings": ["note:style"], "blocking_issues": []}), mock.patch.object(P, "codex_command") as repair:
                 self.assertEqual(P.ingest_next(config), 0)
@@ -159,7 +160,7 @@ class PipelineSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             vault = Path(root)
             config = {"vault": vault}
-            task = {"id": "paper:ONE:hash", "sha256": "hash", "forge_generation_budget_seconds": 30, "forge_note_plan_path": "plan.json", "forge_resume_plan_path": "previous.json"}
+            task = {"id": "paper:ONE:hash", "sha256": "hash", "note_path": "note.md", "forge_generation_budget_seconds": 30, "forge_note_plan_path": "plan.json", "forge_resume_plan_path": "previous.json"}
             (vault / "previous.json").write_text(json.dumps({key: {"exists": True} for key in ("prior_work_matrix", "question_answer_map", "followup", "terminology_ledger")}))
             with mock.patch.object(P, "codex_command", return_value=subprocess.CompletedProcess([], 0, "", "")) as codex:
                 P.generate_forge(config, config, task, "task prompt")

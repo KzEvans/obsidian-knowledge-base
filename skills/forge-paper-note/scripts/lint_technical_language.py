@@ -129,6 +129,22 @@ def reported_form_present(reported_form: str, human_review: str) -> bool:
     return bool(needle) and needle in normalize_reported_form(human_review)
 
 
+def measurement_issues(measurements: Any, minimum: int) -> list[str]:
+    """Validate actual evidence, never demand an acquisition type absent in a paper.
+
+    Reviews may contain only attributed quantities; theoretical and experimental
+    papers also need not contain both direct measurement and fitted parameters.
+    """
+    if not items_valid(measurements, MEASUREMENT_FIELDS):
+        return ["measurement_ledger_invalid"]
+    issues = []
+    if len(measurements) < minimum:
+        issues.append("measurement_ledger_too_small")
+    if any(str(item["acquisition_type"]) not in ACQUISITION_TYPES for item in measurements):
+        issues.append("measurement_acquisition_type_invalid")
+    return issues
+
+
 def heading_blocks(text: str) -> dict[str, str]:
     matches = list(HEADING_RE.finditer(text))
     blocks: dict[str, str] = {}
@@ -251,19 +267,8 @@ def main() -> int:
     elif protocols is not None and not protocol_items_valid(protocols):
         issues.append("protocol_ledger_invalid")
 
-    if not items_valid(measurements, MEASUREMENT_FIELDS):
-        issues.append("measurement_ledger_invalid")
-        acquisition_types: set[str] = set()
-    else:
-        acquisition_types = {str(item["acquisition_type"]) for item in measurements}
-        if len(measurements) < args.minimum_measurements:
-            issues.append("measurement_ledger_too_small")
-        if not acquisition_types.issubset(ACQUISITION_TYPES):
-            issues.append("measurement_acquisition_type_invalid")
-        if "measured" not in acquisition_types:
-            issues.append("measured_quantity_missing")
-        if not ({"fitted", "derived"} & acquisition_types):
-            issues.append("fitted_or_derived_quantity_missing")
+    issues.extend(measurement_issues(measurements, args.minimum_measurements))
+    acquisition_types = {str(item["acquisition_type"]) for item in measurements} if items_valid(measurements, MEASUREMENT_FIELDS) else set()
 
     if not isinstance(warnings, list) or not all(
         isinstance(item, dict) and all(nonempty(item.get(field)) for field in UNIT_WARNING_FIELDS)

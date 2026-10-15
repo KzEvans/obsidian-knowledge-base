@@ -14,6 +14,16 @@ import lint_technical_language  # noqa: E402
 
 
 class ForgeLintContractTest(unittest.TestCase):
+    def test_measurement_types_follow_evidence_not_a_required_mix(self):
+        for category in ("author_interpretation", "derived", "measured"):
+            items = [{key: "not reported" for key in lint_technical_language.MEASUREMENT_FIELDS}]
+            items[0].update(acquisition_type=category, source_pages=[1])
+            self.assertEqual(lint_technical_language.measurement_issues(items, 1), [])
+        items[0]["acquisition_type"] = "invented"
+        self.assertIn("measurement_acquisition_type_invalid", lint_technical_language.measurement_issues(items, 1))
+        del items[0]["source_pages"]
+        self.assertIn("measurement_ledger_invalid", lint_technical_language.measurement_issues(items, 1))
+
     def tearDown(self):
         lint_note.configure_output_language("zh-CN", "canonical")
 

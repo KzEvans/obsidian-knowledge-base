@@ -335,6 +335,17 @@
   margin: 0;
 }
 
+.codex-note-chat-knowledge-status {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.codex-note-chat-knowledge-status.is-error {
+  color: var(--text-error);
+}
+
 .codex-note-chat-review {
   flex: 0 0 auto;
   justify-content: space-between;
