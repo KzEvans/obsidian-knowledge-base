@@ -1,0 +1,244 @@
+import { randomBytes } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { sha256Bytes } from './hash';
+import type { Manifest, StoredDocument, TranslationFile } from './types';
+
+export const STORE_DIR = '.research';
+
+/** Read access for every module (docs/contracts.md §5). */
+export interface StoreReader {
+  list(): Promise<string[]>;
+  shaForPath(vaultPath: string): Promise<string | undefined>;
+  manifest(sha: string): Promise<Manifest | undefined>;
+  document(sha: string): Promise<StoredDocument | undefined>;
+  translations(sha: string): Promise<TranslationFile | undefined>;
+  readRaw(sha: string, relativePath: string): Promise<Uint8Array>;
+  readDerived(sha: string, relativePath: string): Promise<Uint8Array | undefined>;
+  assetUrl(sha: string, assetPath: string): string;
+  /** iCloud conflict copies such as `manifest 2.json` in the paper directory. */
+  conflicts(sha: string): Promise<string[]>;
+}
+
+/** Only the pipeline (library) receives this. */
+export interface StoreWriter extends StoreReader {
+  writeManifest(sha: string, manifest: Manifest): Promise<void>;
+  /** Raw files are write-once: an existing file is an error, never overwritten. */
+  writeRaw(sha: string, files: Record<string, Uint8Array>): Promise<void>;
+  writeDerived(sha: string, relativePath: string, bytes: Uint8Array): Promise<void>;
+  writeDocument(sha: string, document: StoredDocument): Promise<void>;
+  writeTranslations(sha: string, file: TranslationFile): Promise<void>;
+  setPath(vaultPath: string, sha: string | null): Promise<void>;
+  paths(): Promise<Record<string, string>>;
+  /** Move a conflict copy aside after you chose which version to keep. */
+  archiveConflict(sha: string, fileName: string): Promise<void>;
+}
+
+export class StoreError extends Error {
+  constructor(message: string, readonly kind: 'corrupt' | 'exists' | 'invalid-path') { super(message); }
+}
+
+interface IndexFile { schemaVersion: 1; paths: Record<string, string> }
+
+const SHA = /^[0-9a-f]{64}$/;
+const CONFLICT = /^(manifest|document|translation\.zh|index|raw|derived)( \d+)(\.json)?$/;
+const TEMP = /\.tmp-[0-9a-f]{12}$/;
+
+export interface FileStoreOptions {
+  /** Absolute vault path. */
+  basePath: string;
+  /** Turns a vault-relative path into a URL the renderer can load (adapter.getResourcePath). */
+  resourcePath: (vaultRelativePath: string) => string;
+  /** Reads a vault file for hashing when the path index has no entry. */
+  readVaultFile: (vaultPath: string) => Promise<ArrayBuffer>;
+}
+
+export class FileStore implements StoreWriter {
+  private readonly root: string;
+  private index?: Promise<IndexFile>;
+  private indexWrite: Promise<void> = Promise.resolve();
+
+  constructor(private readonly options: FileStoreOptions) {
+    this.root = path.join(options.basePath, STORE_DIR);
+  }
+
+  async list(): Promise<string[]> {
+    try {
+      return (await fs.readdir(path.join(this.root, 'papers'))).filter(name => SHA.test(name)).sort();
+    } catch (error) {
+      if (isMissing(error)) return [];
+      throw error;
+    }
+  }
+
+  async shaForPath(vaultPath: string): Promise<string | undefined> {
+    const known = (await this.loadIndex()).paths[vaultPath];
+    if (known) return known;
+    try { return await sha256Bytes(await this.options.readVaultFile(vaultPath)); }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
+  }
+
+  async manifest(sha: string): Promise<Manifest | undefined> { return this.readJson(this.file(sha, 'manifest.json')); }
+  async document(sha: string): Promise<StoredDocument | undefined> { return this.readJson(this.file(sha, 'document.json')); }
+  async translations(sha: string): Promise<TranslationFile | undefined> { return this.readJson(this.file(sha, 'translation.zh.json')); }
+
+  async readRaw(sha: string, relativePath: string): Promise<Uint8Array> {
+    return fs.readFile(this.file(sha, 'raw', relativePath));
+  }
+
+  async readDerived(sha: string, relativePath: string): Promise<Uint8Array | undefined> {
+    try { return await fs.readFile(this.file(sha, 'derived', relativePath)); }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
+  }
+
+  assetUrl(sha: string, assetPath: string): string {
+    const relative = safeRelative(assetPath);
+    return this.options.resourcePath([STORE_DIR, 'papers', checkSha(sha), relative].join('/'));
+  }
+
+  async conflicts(sha: string): Promise<string[]> {
+    try { return (await fs.readdir(this.paperDir(sha))).filter(name => CONFLICT.test(name)).sort(); }
+    catch (error) { if (isMissing(error)) return []; throw error; }
+  }
+
+  async writeManifest(sha: string, manifest: Manifest): Promise<void> {
+    if (manifest.sha256 !== sha) throw new StoreError('manifest 的 sha256 与目录不一致。', 'invalid-path');
+    await this.writeJson(this.file(sha, 'manifest.json'), manifest);
+  }
+
+  async writeRaw(sha: string, files: Record<string, Uint8Array>): Promise<void> {
+    for (const [name, bytes] of Object.entries(files)) {
+      const target = this.file(sha, 'raw', name);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      const temp = tempName(target);
+      await writeSynced(temp, bytes);
+      try {
+        // link() fails when the target exists, so raw files are never replaced.
+        await fs.link(temp, target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          const existing = await fs.readFile(target);
+          if (!Buffer.from(existing).equals(Buffer.from(bytes))) throw new StoreError(`原始文件已存在且内容不同：raw/${name}`, 'exists');
+        } else throw error;
+      } finally {
+        await fs.rm(temp, { force: true });
+      }
+    }
+  }
+
+  async writeDerived(sha: string, relativePath: string, bytes: Uint8Array): Promise<void> {
+    await atomicWrite(this.file(sha, 'derived', relativePath), bytes);
+  }
+
+  async writeDocument(sha: string, document: StoredDocument): Promise<void> {
+    await this.writeJson(this.file(sha, 'document.json'), document);
+  }
+
+  async writeTranslations(sha: string, file: TranslationFile): Promise<void> {
+    await this.writeJson(this.file(sha, 'translation.zh.json'), file);
+  }
+
+  async paths(): Promise<Record<string, string>> {
+    return { ...(await this.loadIndex()).paths };
+  }
+
+  setPath(vaultPath: string, sha: string | null): Promise<void> {
+    if (sha !== null) checkSha(sha);
+    // Serialize index writes; each one starts from the latest in-memory state.
+    const write = this.indexWrite.then(async () => {
+      const index = await this.loadIndex();
+      if (sha === null) delete index.paths[vaultPath];
+      else index.paths[vaultPath] = sha;
+      await this.writeJson(path.join(this.root, 'index.json'), index);
+    });
+    this.indexWrite = write.catch(() => undefined);
+    return write;
+  }
+
+  async archiveConflict(sha: string, fileName: string): Promise<void> {
+    if (!CONFLICT.test(fileName)) throw new StoreError(`不是冲突副本：${fileName}`, 'invalid-path');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const destination = path.join(this.root, 'conflicts', stamp, checkSha(sha));
+    await fs.mkdir(destination, { recursive: true });
+    await fs.rename(path.join(this.paperDir(sha), fileName), path.join(destination, fileName));
+  }
+
+  /** Remove temp files left by an interrupted write. */
+  async removeStaleTemps(sha: string): Promise<void> {
+    const directory = this.paperDir(sha);
+    let names: string[];
+    try { names = await fs.readdir(directory, { recursive: true }); }
+    catch (error) { if (isMissing(error)) return; throw error; }
+    await Promise.all(names.filter(name => TEMP.test(name)).map(name => fs.rm(path.join(directory, name), { force: true })));
+  }
+
+  private loadIndex(): Promise<IndexFile> {
+    this.index ??= this.readJson<IndexFile>(path.join(this.root, 'index.json'))
+      .then(index => index ?? { schemaVersion: 1, paths: {} });
+    return this.index;
+  }
+
+  private paperDir(sha: string): string {
+    return path.join(this.root, 'papers', checkSha(sha));
+  }
+
+  private file(sha: string, ...parts: string[]): string {
+    return path.join(this.paperDir(sha), ...parts.map(safeRelative));
+  }
+
+  private async readJson<T>(file: string): Promise<T | undefined> {
+    let text: string;
+    try { text = await fs.readFile(file, 'utf8'); }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
+    try { return JSON.parse(text) as T; }
+    catch { throw new StoreError(`解析存储文件损坏：${path.relative(this.root, file)}`, 'corrupt'); }
+  }
+
+  private writeJson(file: string, value: unknown): Promise<void> {
+    return atomicWrite(file, Buffer.from(JSON.stringify(value, null, 2) + '\n', 'utf8'));
+  }
+}
+
+export async function atomicWrite(file: string, bytes: Uint8Array): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const temp = tempName(file);
+  try {
+    await writeSynced(temp, bytes);
+    await fs.rename(temp, file);
+  } catch (error) {
+    await fs.rm(temp, { force: true });
+    throw error;
+  }
+}
+
+async function writeSynced(file: string, bytes: Uint8Array): Promise<void> {
+  const handle = await fs.open(file, 'wx');
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+function tempName(file: string): string {
+  return `${file}.tmp-${randomBytes(6).toString('hex')}`;
+}
+
+function checkSha(sha: string): string {
+  if (!SHA.test(sha)) throw new StoreError(`无效的 sha256：${sha.slice(0, 80)}`, 'invalid-path');
+  return sha;
+}
+
+/** Relative paths only, no traversal; always POSIX separators. */
+function safeRelative(relativePath: string): string {
+  const normalized = path.posix.normalize(relativePath.replace(/\\/g, '/'));
+  if (!normalized || normalized === '.' || normalized.startsWith('/') || normalized === '..' || normalized.startsWith('../')) {
+    throw new StoreError(`非法的存储路径：${relativePath.slice(0, 200)}`, 'invalid-path');
+  }
+  return normalized;
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}

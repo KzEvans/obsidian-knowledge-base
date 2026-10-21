@@ -1,0 +1,37 @@
+{
+  "name": "paper-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zotero sync, MinerU parsing, Qwen-MT translation, single-column bilingual reading and on-demand paper notes in one Obsidian plugin.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@12.14.0",
+  "engines": {
+    "node": "26.12.0"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint --max-warnings 0 src tests scripts *.mjs",
+    "test": "tsx --test --import ./tests/setup.ts \"tests/**/*.test.ts\"",
+    "scan": "node scripts/precommit-scan.mjs",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm scan",
+    "deploy": "node scripts/deploy.mjs"
+  },
+  "dependencies": {
+    "fflate": "0.8.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.5",
+    "eslint-plugin-obsidianmd": "0.4.2",
+    "linkedom": "0.18.13",
+    "obsidian": "1.14.4",
+    "pdfjs-dist": "5.3.31",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.0"
+  }
+}

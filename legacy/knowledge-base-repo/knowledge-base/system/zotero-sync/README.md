@@ -1,0 +1,94 @@
+# Zotero Doc 自动同步
+
+Obsidian 的本地插件每 3 小时检查一次 Zotero 的 `Doc` 分类及全部子分类，将 PDF 镜像到
+`sources/literature/pdf/<分类路径>/`，并更新：
+
+- `sources/literature/references.bib`
+- `sources/literature/index.md`
+- `sources/literature/manifests/zotero-doc.json`
+
+论文主笔记使用对应的 `wiki/papers/<分类路径>/`。Doc 本层条目仍放根目录。
+同一条目属于多个分类时优先采用最深分类；同深度保持已有归属，否则按分类名称排序选一个，索引列出全部分类，主笔记只保留一份。
+目录调整保留已有笔记文件名、人工内容、图片目录和任务状态，并同步修正 PDF/笔记引用。
+已移出 Zotero 的来源保留；与当前论文匹配的旧 PDF 版本跟随分类，内容不同的版本不会被覆盖。
+
+只整理分类并暂存新论文，不启动生成：
+
+```bash
+python3 system/zotero-sync/sync_zotero_doc.py --organize-only
+```
+
+此次新发现的论文记为 `awaiting_generation`，后续普通同步不会释放它们。
+明确选择生成时，用 `python3 system/knowledge/run_pipeline.py queue-held --id <task-id>` 将单篇送入队列。
+
+每条论文元数据还会携带期刊影响因子、统计年份、官方来源链接与核验时间。
+同步器不会用 CiteScore 或其他引用指标冒充 Journal Impact Factor。它按以下优先级读取：
+
+1. Zotero 父条目的 `Extra` 字段；
+2. `system/zotero-sync/config.json` 中的本地 `impact_factors` 表；
+3. 通过 Codex live web search 查找出版社官方期刊页或 Clarivate/JCR 页面；
+4. 无法从上述官方来源核实时写入空值，由笔记属性显示为 `null`。
+
+自动结果按 ISSN 缓存，默认每轮最多查询 2 本期刊、90 天刷新一次；失败结果
+14 天后重试，避免每分钟同步时反复联网。新增多本期刊时会在后续轮次逐步补齐。
+刷新失败会保留上一次已核验数值。同步后的数值会自动回填到
+已经生成的论文笔记；如果上游没有值，同步器不会清空笔记里已有的人工填写值。
+
+自动查询默认开启，可在 `automatic_impact_factor` 中调整刷新周期、重试周期、
+单批期刊数与超时时间。它复用 `system/knowledge/config.json` 中已经配置的 Codex
+CLI 路径，不需要新增 API key。
+
+推荐在 Zotero `Extra` 中保存：
+
+```text
+Impact Factor: 5.5
+Impact Factor Year: 2024
+Impact Factor Source: Journal Citation Reports
+```
+
+也可以按期刊全名、缩写或 ISSN 配置本地回退值：
+
+```json
+"impact_factors": {
+  "Journal name or ISSN": {
+    "impact_factor": 5.5,
+    "year": "2024",
+    "source": "Journal Citation Reports"
+  }
+}
+```
+
+同步器也会识别 Zotero 中已有的 SI 子附件，并通过结构化仓储或论文正式页面
+发现可公开下载的 PDF Supporting Information。验证为 PDF 后，它们会独立缓存到
+`sources/literature/si/<Zotero parent key>/`，来源、哈希、检查时间和失败原因记录在
+`sources/literature/manifests/supporting-information.json`。SI 失败不会阻断主论文同步，
+未找到时会按 `retry_days` 延迟重试，已找到的文件按 `refresh_days` 检查更新。
+
+SI 不会作为新论文加入知识队列，也不会默认进入模型上下文。Forge Paper Note 仅在主文
+明确指向 SI 且某个具体方法、数值、图表或推导无法从主文核实时，才读取相关 SI 页。
+
+Zotero 和 Obsidian 必须处于运行状态，并启用“允许其他应用与 Zotero 通信”。
+Zotero 没有运行时，同步会安全退出，下一轮自动重试。
+若 Zotero 的 BibTeX 转换器单次报错，程序会保留上一版 `references.bib`，同时继续
+更新 PDF、SI、索引、清单和知识队列；下一轮会自动重试参考文献导出。
+
+同步完成后，程序会将新 PDF 加入知识队列，并自动处理一条待办任务：提取
+PDF 文本、调用 Codex、生成 `wiki/papers/` 下的待审核草稿。草稿只有在
+在对话插件中完成当前版本的人工审核后，再执行“整合当前已完成人工审核的知识笔记”，才会更新正式概念和关系页。整合命令不会自动授予审核。
+
+普通同步只读取 SI/JIF 缓存，不等待联网补全。`--enrich` 是独立辅助任务，
+只更新 SI 清单与 `enrichment-cache.json`，插件每小时调用；下次普通同步回填元数据。
+影响因子新验证值必须具备同一期刊、统计年份和直接官方证据摘录。SI 的
+`fetch_error` 保留网络失败原因，与成功检索但 `not_found` 分开记录。
+草稿文件名、一级标题及索引别名统一为 `YYYY-MM-DD - 第一作者 - 文献标题`，
+其中日期为草稿首次开始生成的本地日期。
+
+手动执行一次（从 vault 根目录运行）：
+
+```bash
+python3 system/zotero-sync/sync_zotero_doc.py
+```
+
+也可以在 Obsidian 命令面板运行：
+
+`Zotero Doc Sync: 立即同步 Zotero Doc 分类`

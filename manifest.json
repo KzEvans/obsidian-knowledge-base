@@ -1,0 +1,9 @@
+{
+  "id": "paper-workbench",
+  "name": "Paper Workbench",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Zotero sync, MinerU parsing, Qwen-MT translation, single-column bilingual reading and on-demand paper notes.",
+  "author": "kzevans",
+  "isDesktopOnly": true
+}

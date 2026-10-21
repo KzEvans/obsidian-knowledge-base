@@ -1,0 +1,16 @@
+node_modules/
+/main.js
+*.tsbuildinfo
+.DS_Store
+*.log
+.env
+.env.*
+data.json
+coverage/
+# Real papers, golden snapshots and local runs never enter the repo.
+tests/golden/snapshots/
+tests/golden/papers/
+tests/e2e/results/
+.research/
+*.pdf
+!tests/fixtures/*.pdf
