@@ -17,5 +17,8 @@ DeepPaperNote, PaperForge, paper-reading-skill). That code is not built into the
 
 ## Note-writing guidance
 
-The `skills/paper-note` section on plain writing will cite its source here once it is written
-(see docs/architecture.md and the note-skill work).
+`skills/paper-note/references/plain-writing.md` (the "说人话" rules) is an original summary,
+written for paper notes, of ideas from [Humanizer-zh](https://github.com/op7418/Humanizer-zh)
+by 歸藏 (op7418), commit `f4518a8eab97b8bfebc66a89d34320a89bef6930` (2026-09-23), MIT License,
+Copyright (c) 2026 歸藏. No text is copied; the examples are new. Humanizer-zh credits
+blader/humanizer, hardikpandya/stop-slop and Wikipedia's "Signs of AI writing" as its own sources.
