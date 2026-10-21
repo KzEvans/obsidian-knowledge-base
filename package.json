@@ -12,8 +12,8 @@
   "scripts": {
     "build": "tsc --noEmit && node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint --max-warnings 0 src tests scripts *.mjs",
-    "test": "tsx --test --import ./tests/setup.ts \"tests/**/*.test.ts\"",
+    "lint": "eslint --max-warnings 0 src tests skills scripts *.mjs",
+    "test": "tsx --test --import ./tests/setup.ts \"tests/**/*.test.ts\" \"skills/**/*.test.ts\"",
     "scan": "node scripts/precommit-scan.mjs",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm scan",
     "deploy": "node scripts/deploy.mjs"

@@ -1,7 +1,8 @@
 import { build } from 'esbuild';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 
-const production = process.argv.includes('--production') || !process.argv.includes('--dev');
+const production = !process.argv.includes('--dev');
 
 await build({
   entryPoints: ['src/main.ts'],
@@ -17,3 +18,7 @@ await build({
   loader: { '.md': 'text' },
   logLevel: 'info',
 });
+
+// Each module owns its stylesheet, so parallel work never edits one shared file.
+const STYLES = ['src/core/styles.css', 'src/library/styles.css', 'src/agent/styles.css', 'src/reader/styles.css', 'src/reader/selection/styles.css'];
+writeFileSync('styles.css', STYLES.map(file => `/* ${file} */\n${readFileSync(file, 'utf8').trim()}\n`).join('\n'));

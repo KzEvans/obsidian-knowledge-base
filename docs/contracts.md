@@ -293,3 +293,14 @@ function leafId(leaf): string;       // 事件载荷里的 leafId
 | DashScope API Key | `paper-workbench-dashscope-key` |
 
 日志、错误信息、manifest 中出现的字符串都经过 `redact()`：替换已知密钥的值、`Bearer …`、`sk-…` 形式的串，以及 URL 中的签名查询参数。
+
+## 9. 笔记 skill 与 lint（`skills/paper-note/`）
+
+- `skills/paper-note/index.ts` 导出 `PAPER_NOTE_SKILL: string`：传给 CLI 的完整指令文本（SKILL.md 加需要的 references，由 note-skill 拼接）。构建时 `.md` 作为文本打包；测试中由 `tests/setup.ts` 以同样方式加载。
+- `skills/paper-note/lint.ts` 导出 `lintNote(markdown, options?): { ok, problems: { rule, message, line?, section? }[], length }`。agent 在生成后调用；"检查当前笔记"命令也调用它。签名已冻结，规则由 note-skill 实现。
+- 模板的 9 个二级标题（按顺序）：摘要翻译、研究背景、前人工作与不足、作者的思考路径、本文内容与创新点、论点与证据、Takeaways、Follow-up ideas、与现有知识的候选关联。
+- "摘要翻译"一节由 agent 程序填入（取 `role: "abstract"` 块的译文），模型输出时该节留空标记 `<!-- abstract-translation -->`，agent 替换。
+
+## 10. 样式
+
+每个模块有自己的 `styles.css`（`src/<module>/styles.css`），构建时按 core、library、agent、reader、selection 的顺序合并为根目录 `styles.css`。类名一律以 `pw-` 开头。

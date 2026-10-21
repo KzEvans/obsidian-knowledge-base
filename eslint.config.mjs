@@ -22,7 +22,7 @@ export default tseslint.config(
   },
   {
     // node:test's test() returns a promise the runner tracks itself.
-    files: ['tests/**/*.ts'],
+    files: ['tests/**/*.ts', 'skills/**/*.test.ts'],
     rules: {
       '@typescript-eslint/no-floating-promises': 'off',
       // Tests run in Node, where popout-window rules do not apply.
