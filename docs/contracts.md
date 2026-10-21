@@ -115,82 +115,148 @@ interface Segment {
 
 ## 5. core 接口
 
+以下是 `src/core/` 中实际导出的接口，代码是最终依据。模块只从 `src/core/` 引用，彼此不引用。
+
+### 5.1 模块入口（`module.ts`）
+
+每个模块的 `index.ts` 导出：
+
 ```ts
-// store.ts
-interface StoreReader {
-  shaForPath(vaultPath: string): Promise<string | undefined>;   // 先查 index.json，查不到再算哈希
-  manifest(sha: string): Promise<Manifest | undefined>;
-  document(sha: string): Promise<StoredDocument | undefined>;
-  translations(sha: string): Promise<TranslationFile | undefined>;
-  assetUrl(sha: string, assetPath: string): string;             // app.vault.adapter.getResourcePath
-  conflicts(sha: string): Promise<string[]>;                     // iCloud 冲突副本文件名
-}
-interface StoreWriter extends StoreReader {
-  writeManifest(sha: string, manifest: Manifest): Promise<void>;
-  writeRaw(sha: string, files: Record<string, Uint8Array>): Promise<void>;   // 目标已存在则抛错
-  writeDerived(sha: string, relativePath: string, bytes: Uint8Array): Promise<void>;
-  writeDocument(sha: string, doc: StoredDocument): Promise<void>;
-  writeTranslations(sha: string, file: TranslationFile): Promise<void>;
-  setPath(vaultPath: string, sha: string | null): Promise<void>;
-}
+export interface XxxSettings { … }                         // 本模块在 data.json 中的设置切片
+export function readSettings(saved: unknown): XxxSettings;  // 容忍缺失和非法字段，回落默认值
+export function register(context: ModuleContext<XxxSettings>): ModuleHandle;   // library 收到 LibraryContext
 
-// derive.ts
-function derive(input: { sha: string; raw: RawFiles; pdf: PdfDocumentProxy; previous?: StoredDocument }): Promise<{ document: StoredDocument; derived: Record<string, Uint8Array> }>;
-const NORMALIZER_VERSION: number;
+interface ModuleHandle { settingsSection?: SettingsSection; dispose?(): void }
+interface SettingsSection { title: string; render(container: HTMLElement): void }
 
-// mineru.ts
-interface MinerUClient {
-  requestUpload(sha: string): Promise<{ batchId: string; uploadUrl: string }>;
-  upload(uploadUrl: string, pdf: ArrayBuffer): Promise<void>;
-  poll(batchId: string): Promise<{ state: "pending" | "running" | "converting" | "done" | "failed"; zipUrl?: string; progress?: { done: number; total: number } }>;
-  download(zipUrl: string): Promise<Record<string, Uint8Array>>;   // 已做路径安全和大小检查
-}
-
-// qwen-mt.ts
-interface TranslateRequest { text: string; model: string; terms: Term[]; timeoutMs: number; signal?: AbortSignal }
-function translate(request: TranslateRequest): Promise<string>;   // 失败抛 QwenMtError | PlaceholderMismatchError
-interface Term { source: string; target: string }
-
-// queue.ts
-interface TaskQueue {
-  enqueue<T>(key: string, run: (signal: AbortSignal) => Promise<T>, options?: { priority?: boolean }): Promise<T>;
-  cancel(key: string): void;
-  pause(): void; resume(): void;
-  readonly paused: boolean;
-}
-
-// services.ts
-interface PipelineControl {
-  status(sha: string): Promise<Manifest | undefined>;
-  requestParse(vaultPath: string): Promise<void>;    // 文献库外 PDF，调用前由 reader 征得你同意
-  prioritize(sha: string): void;
-  retry(sha: string): void;
-  cancel(sha: string): void;
-}
-interface AgentRunner {                                // 影响因子自动查询
-  runReadOnly(prompt: string, options: { timeoutMs: number; signal?: AbortSignal; outputSchema?: object }): Promise<string>;
-}
-interface PdfToolbar {
-  register(button: { id: string; order: number; icon: string; label: string; onClick(leaf: WorkspaceLeaf): void; isActive?(leaf: WorkspaceLeaf): boolean }): () => void;
-}
-interface Services {
-  pipeline?: PipelineControl;
-  agent?: AgentRunner;
-  pdfToolbar: PdfToolbar;
-}
-
-// 模块入口
-interface ModuleContext<S> {
-  plugin: Plugin;
-  events: EventBus;
-  services: Services;
-  store: StoreReader;            // library 额外拿到 StoreWriter
-  settings: S;
-  saveSettings(): Promise<void>;
-  secrets: SecretAccess;
-  log: Logger;                   // 自动脱敏
+interface ModuleContext<S, Store extends StoreReader = StoreReader> {
+  app: App; plugin: Plugin;
+  events: EventBus; services: Services;
+  store: Store;                    // library 是 StoreWriter，其余是 StoreReader
+  settings: S; saveSettings(): Promise<void>;
+  core: Readonly<CoreSettings>;    // { qwenMtEndpoint, glossary }
+  secrets: SecretAccess;           // get/set('mineru' | 'dashscope')
+  qwenMt: QwenMtClient;
+  log: Logger;                     // 自动脱敏
+  vaultPath: string; pluginDir: string;
 }
 ```
+
+命令、视图、事件监听都用 `context.plugin` 注册（`addCommand`、`registerEvent`、`registerDomEvent`），插件卸载时自动清理；`dispose` 只处理这之外的资源。
+
+### 5.2 解析存储（`store.ts`）
+
+```ts
+interface StoreReader {
+  list(): Promise<string[]>;                                  // 所有论文的 sha
+  shaForPath(vaultPath: string): Promise<string | undefined>; // 先查 index.json，查不到再读文件算哈希（不写回）
+  manifest(sha): Promise<Manifest | undefined>;
+  document(sha): Promise<StoredDocument | undefined>;
+  translations(sha): Promise<TranslationFile | undefined>;
+  readRaw(sha, relativePath): Promise<Uint8Array>;
+  readDerived(sha, relativePath): Promise<Uint8Array | undefined>;
+  assetUrl(sha, assetPath): string;                           // assetPath 取自 document.assets[*].path
+  conflicts(sha): Promise<string[]>;                          // 例如 ["manifest 2.json"]
+}
+interface StoreWriter extends StoreReader {
+  writeManifest(sha, manifest): Promise<void>;                 // manifest.sha256 必须等于 sha
+  writeRaw(sha, files: Record<string, Uint8Array>): Promise<void>;   // 已存在且内容不同 → StoreError('exists')
+  writeDerived(sha, relativePath, bytes): Promise<void>;
+  writeDocument(sha, document): Promise<void>;
+  writeTranslations(sha, file): Promise<void>;
+  setPath(vaultPath, sha | null): Promise<void>;               // 串行化写 index.json
+  paths(): Promise<Record<string, string>>;
+  archiveConflict(sha, fileName): Promise<void>;               // 移到 .research/conflicts/<时间>/<sha>/
+}
+```
+
+损坏的 JSON 抛 `StoreError('corrupt')`，不当作不存在。路径越界或 sha 非法抛 `StoreError('invalid-path')`。
+
+### 5.3 规范化（`derive.ts`、`crop-canvas.ts`、`pdf.ts`）
+
+```ts
+const NORMALIZER_VERSION: number;   // 当前为 1；改规则时加一
+function derive(input: {
+  sha: string;
+  raw: { names: string[]; read(name: string): Promise<Uint8Array> };
+  pdf: AuditPdf;                    // openPdf() 的结果
+  cropper: Cropper;                 // createCanvasCropper(pdf, () => createEl('canvas'), scale)
+  existingDerived?: (asset: string) => Promise<Uint8Array | undefined>;   // 已有裁图直接复用
+}): Promise<{ document: StoredDocument; derived: Record<string, Uint8Array> }>;   // derived 的键是 derived/ 下的路径
+
+function openPdf(bytes: ArrayBuffer | Uint8Array): Promise<PdfDocument>;   // 调用方负责 destroy()
+```
+
+裁图规则：表格一律从原 PDF 裁图（`source-tables-v1/<blockId>.png`）；没有图片资源的图和公式裁图（`fallback-v2/<blockId>.png`）；图片题注区域涂白。
+
+### 5.4 外部服务客户端
+
+```ts
+// mineru.ts —— 只管 HTTP，调度在 library
+interface MinerUClient {
+  requestUpload(sha): Promise<{ batchId: string; uploadUrl: string }>;
+  upload(uploadUrl, pdf: ArrayBuffer): Promise<void>;
+  poll(batchId): Promise<{ state: 'pending' | 'running' | 'converting' | 'done' | 'failed'; zipUrl?; progress?: { done; total }; error? }>;
+  download(zipUrl): Promise<Record<string, Uint8Array>>;   // 结果包全部成员，已做路径与大小检查
+}
+function createMinerUClient(http: Http, token: () => string | null): MinerUClient;
+class MinerUError { retryable: boolean; status?: number }
+const MAX_PDF_BYTES, MAX_PDF_PAGES;
+
+// qwen-mt.ts
+interface QwenMtClient { translate(request: { text; model; terms: Term[]; timeoutMs; signal? }): Promise<string> }
+const FULL_TEXT_MODEL = 'qwen-mt-plus', SELECTION_MODEL = 'qwen-mt-flash';
+class QwenMtError { retryable: boolean; status?: number }
+class PlaceholderMismatchError {}               // 可重试，绝不写入
+function termsKey(text, terms): string;          // 写入 translation.zh.json 的 termsKey
+function termsFor(text, terms): Term[];
+
+// http.ts
+type Http = (request: RequestUrlParam) => Promise<{ status; text; arrayBuffer; json }>;
+function obsidianHttp(requestUrl): Http;
+```
+
+### 5.5 任务执行（`queue.ts`）
+
+```ts
+class TaskQueue {
+  constructor(concurrency: number);
+  enqueue<T>(key, run: (signal: AbortSignal) => Promise<T>, options?: { priority?: boolean }): Promise<T>;  // 同一 key 重复入队直接拒绝
+  prioritize(key); cancel(key); pause(); resume(); clear();
+  readonly paused: boolean; readonly size: number; has(key): boolean;
+}
+function withRetry<T>(run: (attempt) => Promise<T>, options?: { delays?; signal?; isRetryable?(error); onRetry?(attempt, error, delayMs) }): Promise<T>;
+const RETRY_DELAYS_MS = [2 s, 8 s, 30 s, 2 min, 10 min];
+class CancelledError {}
+function attemptsOf(error): number;
+```
+
+### 5.6 跨模块服务（`services.ts`）和工具栏
+
+```ts
+interface Services { pipeline?: PipelineControl; agent?: AgentRunner; pdfToolbar: PdfToolbar }
+interface PipelineControl {          // library 在 register 时赋值 context.services.pipeline
+  status(sha): Promise<Manifest | undefined>;
+  requestParse(vaultPath): Promise<void>;     // 文献库外 PDF，reader 先征得你同意
+  prioritize(sha): void; retry(sha): void; cancel(sha): void;
+}
+interface AgentRunner {              // agent 赋值 context.services.agent，library 用于影响因子查询
+  runReadOnly(prompt, options: { timeoutMs; signal?; outputSchema?: object; allowWebSearch?: boolean }): Promise<string>;
+}
+interface PdfToolbar {
+  register(button: { id; order; icon; label; onClick(leaf, element); update?(leaf, element) }): () => void;
+  refresh(): void;
+}
+function leafId(leaf): string;       // 事件载荷里的 leafId
+```
+
+工具栏序号：阅读模式 10，划线翻译 20。
+
+### 5.7 其他
+
+- `hash.ts`：`sha256Bytes`（分片让出主线程）、`sha256Text`、`segmentHash`、`normalizeSegmentText`。
+- `secrets.ts`：`redact`、`errorMessage`、`registerSecretForRedaction`。
+- `obsidian-internal.d.ts`：Obsidian 和 pdf.js 缺失类型的唯一位置。
 
 ## 6. 事件总线
 

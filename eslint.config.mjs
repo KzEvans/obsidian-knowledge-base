@@ -28,6 +28,7 @@ export default tseslint.config(
       // Tests run in Node, where popout-window rules do not apply.
       'obsidianmd/no-global-this': 'off',
       'obsidianmd/prefer-window-timers': 'off',
+      'obsidianmd/hardcoded-config-path': 'off',
     },
   },
   {
