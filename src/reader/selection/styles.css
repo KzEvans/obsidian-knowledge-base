@@ -1,1 +1,160 @@
-/* Styles for this module. Prefix classes with pw-. */
+/* 划线翻译：工具栏开关与选区弹窗 */
+.pw-selection-toggle.is-enabled {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+
+.pw-selection-toggle.is-enabled:hover {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent-hover);
+}
+
+.pw-selection-popup {
+  position: fixed;
+  z-index: var(--layer-popover, 1000);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 140px;
+  overflow: hidden;
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--background-primary) 96%, transparent);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l, 12px);
+  box-shadow: var(--shadow-l);
+  backdrop-filter: blur(12px);
+  animation: pw-selection-popup-in 120ms ease-out;
+}
+
+.pw-selection-popup-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 4px 5px 4px 11px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pw-selection-popup-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold, 600);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pw-selection-popup-title-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--interactive-accent);
+}
+
+.pw-selection-popup-title-icon svg,
+.pw-selection-error-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.pw-selection-popup-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  align-items: center;
+}
+
+.pw-selection-popup-actions .clickable-icon {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+}
+
+.pw-selection-popup-body {
+  min-height: 52px;
+  padding: 13px 14px 15px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  font-size: var(--font-text-size);
+  line-height: 1.65;
+  scrollbar-width: thin;
+}
+
+.pw-selection-result {
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: pre-wrap;
+}
+
+.pw-selection-loading,
+.pw-selection-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--text-muted);
+}
+
+.pw-selection-spinner {
+  width: 14px;
+  height: 14px;
+  margin-top: 4px;
+  flex: 0 0 auto;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--interactive-accent);
+  border-radius: 50%;
+  animation: pw-selection-spin 700ms linear infinite;
+}
+
+.pw-selection-error {
+  color: var(--text-error);
+}
+
+.pw-selection-error-icon {
+  display: inline-flex;
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+
+.pw-selection-retry {
+  display: block;
+  margin: 12px 0 0 25px;
+}
+
+.pw-selection-settings-note {
+  max-width: 720px;
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+@keyframes pw-selection-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pw-selection-popup-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.99);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pw-selection-popup {
+    animation: none;
+  }
+
+  .pw-selection-spinner {
+    animation-duration: 1.4s;
+  }
+}
