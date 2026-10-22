@@ -88,7 +88,7 @@ export function register(ctx: ModuleContext): ModuleHandle
   - 状态栏和阅读模式给出提示，列出冲突文件；
   - 提供保留当前或副本的操作，由你确认后把另一份移到 `.research/conflicts/<时间>/`；manifest 的 batch 历史、raw 哈希和来源路径只增不减，以免旧副本触发重复上传。
 - **`raw/` 不可修改。** 写一次后不再碰。规范化版本升级时从 `raw/` 离线重建 `document.json` 和 `derived/`，绝不重新上传。
-- **路径索引：** `.research/index.json` 记录 vault 路径 → sha256。library 在 PDF 的 `rename`、`delete`、`create` 事件里维护它，reader 打开 PDF 时先查索引，查不到再计算哈希。同一份 PDF 出现在多个 collection（例如 Duraivel 2026 同时在两个文件夹）时共用一份存储，`manifest.sources` 列出所有路径。
+- **路径索引：** `.research/index.json` 记录 vault 路径 → sha256。library 在 PDF 的 `rename`、`delete`、`create` 事件里维护它，reader 打开 PDF 时先查索引，查不到再计算哈希；本机收到 PDF 修改事件后，reader 对新文件版本直接验算字节哈希，避免把尚未更新的路径索引当成新文件身份。同一份 PDF 出现在多个 collection（例如 Duraivel 2026 同时在两个文件夹）时共用一份存储，`manifest.sources` 列出所有路径。
 
 ### 3.2 规范化（`derive.ts`）
 
@@ -232,9 +232,10 @@ interface AgentAdapter {
 </div>
 ```
 
+- 分批渲染期间的语言选择以最新状态为准；期间收到的译文更新在挂载结束后统一补刷，避免后半篇停留在旧译文。普通打开优先恢复按 SHA 保存的页码，显式页链和原位重建位置优先于历史位置。
 - 当前不显示的那层：`visibility: hidden`、`aria-hidden="true"`、`user-select: none`，不参与阅读内搜索和复制。
 - 块高度等于两层中较高的那层，切换只改根元素上的 `data-lang`，靠 CSS 选择器切换可见性，不触发重新排版。
-- 中文统一一个字号，取让全文中英高度差总和最小的那个值，在首次渲染时按样本段落测一次后固定，不逐段调整。
+- 中文统一一个字号，取让全文中英高度差总和最小的那个值，在首次渲染时按样本段落的自然高度测一次后固定（测量副本的层 align-self: start，不读取 grid 拉伸后的共同高度），不逐段调整。
 - 公式、图片、表格只渲染一次；题注用同样的双层结构。中文层里的行内公式和上下标照常渲染。
 - 缺译文的段落中文层显示英文原文并加轻量标记。翻译未开始时切换按钮置灰，进行中显示进度。
 - 工具栏按钮 + 命令（可绑定快捷键）。
