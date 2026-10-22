@@ -74,6 +74,7 @@ export function register(context: LibraryContext<LibrarySettings>): ModuleHandle
     log,
   });
   context.services.pipeline = pipeline;
+  if (settings.pipelinePaused) pipeline.pause();
 
   // ---- status bar ----
   const statusItem = plugin.addStatusBarItem();
@@ -199,7 +200,6 @@ export function register(context: LibraryContext<LibrarySettings>): ModuleHandle
     const imported = await importReaderCache(path.join(context.vaultPath, app.vault.configDir, 'plugins', 'pdf-reading-mode', 'cache'), context.store, undefined, message => log.info(message));
     for (const error of imported.errors) log.warn(`旧阅读缓存暂未导入（可能仍在从 iCloud 下载，下次启动再试）：${error}`);
     if (disposed) return;
-    if (settings.pipelinePaused) pipeline.pause();
     await pipeline.start();
     await pipeline.pruneIndex(vaultPath => app.vault.getAbstractFileByPath(vaultPath) !== null);
     const indexed = await context.store.paths();
