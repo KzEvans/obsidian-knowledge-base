@@ -1,13 +1,22 @@
 import type { ModuleContext, ModuleHandle } from '../../core/module';
+import { importLegacySettings, selectionSettingsSection } from './settings';
+import type { SelectionSettings } from './settings';
+import { SelectionTranslator } from './translator';
 
 /** 划线翻译 (docs/architecture.md §6.3) */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- filled in by the selection session
-export interface SelectionSettings {}
+export type { SelectionSettings } from './settings';
+export { readSettings } from './settings';
 
-export function readSettings(_saved: unknown): SelectionSettings {
-  return {};
-}
+export function register(context: ModuleContext<SelectionSettings>): ModuleHandle {
+  const translator = new SelectionTranslator(context);
+  translator.start();
 
-export function register(_context: ModuleContext<SelectionSettings>): ModuleHandle {
-  return {};
+  void importLegacySettings(context.app.vault.adapter, context.app.vault.configDir, context.settings)
+    .then(changed => changed ? context.saveSettings() : undefined)
+    .catch((error: unknown) => context.log.warn('导入旧划线翻译设置失败', error));
+
+  return {
+    settingsSection: selectionSettingsSection(context.settings, () => context.saveSettings()),
+    dispose: () => translator.dispose(),
+  };
 }
