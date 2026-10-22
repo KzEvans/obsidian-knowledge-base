@@ -22,13 +22,14 @@ export interface ZoteroApi {
   bibtex(itemKeys: readonly string[]): Promise<string>;
 }
 
-/** The Zotero 7 local API (connector port 23119) through Obsidian's requestUrl. */
+/** Zotero's local API (connector port 23119) through Obsidian's requestUrl. */
 export function createZoteroApi(http: Http, apiBase: () => string): ZoteroApi {
   async function get(path: string, accept = 'application/json'): Promise<{ text: string; json: unknown }> {
     const url = `${apiBase().replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
     let response;
     try {
-      response = await http({ url, method: 'GET', headers: { Accept: accept, 'Zotero-API-Version': '3' } });
+      // Zotero drops browser-style requests unless this explicit permission header is present.
+      response = await http({ url, method: 'GET', headers: { Accept: accept, 'Zotero-API-Version': '3', 'Zotero-Allowed-Request': '1' } });
     } catch (error) {
       throw new ZoteroUnavailableError(error instanceof Error ? error.message.slice(0, 120) : String(error));
     }

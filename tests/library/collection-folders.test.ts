@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import type { HttpResponse } from '../../src/core/http';
+import type { Http, HttpResponse } from '../../src/core/http';
 import { createVaultFiles } from '../../src/library/files';
 import { ZoteroUnavailableError, collectionItems, createZoteroApi } from '../../src/library/zotero/api';
 import { chooseCollection, collectionTree, itemCollectionPaths, safeFilename } from '../../src/library/zotero/naming';
@@ -80,6 +80,20 @@ test('API lists include later pages', async () => {
   const api = createZoteroApi(http, () => 'http://localhost:23119/api/');
   assert.equal((await api.collections()).length, 101);
   assert.match(urls[1]!, /^http:\/\/localhost:23119\/api\/users\/0\/collections\?format=json&limit=100&start=100$/);
+});
+
+test('Zotero browser request protection permits every read endpoint', async () => {
+  const http: Http = async request => {
+    if (request.headers?.['Zotero-Allowed-Request'] !== '1') throw new Error('Browser request rejected');
+    const text = request.url.includes('/file/view/url') ? 'file:///tmp/zotero-probe.pdf'
+      : request.url.includes('format=bibtex') ? '@article{PAPER}' : '[]';
+    return { status: 200, headers: {}, text, arrayBuffer: new ArrayBuffer(0), json: [] };
+  };
+  const api = createZoteroApi(http, () => 'http://localhost:23119/api');
+  assert.deepEqual(await api.collections(), []);
+  assert.deepEqual(await api.collectionItems('ROOT'), []);
+  assert.equal(await api.attachmentPath('PDF'), '/tmp/zotero-probe.pdf');
+  assert.equal(await api.bibtex(['PAPER']), '@article{PAPER}');
 });
 
 test('a closed Zotero surfaces as ZoteroUnavailableError', async () => {

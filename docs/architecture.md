@@ -138,6 +138,8 @@ export function register(ctx: ModuleContext): ModuleHandle
 
 ## 4. library
 
+Zotero 本地 API 经 Obsidian `requestUrl` 调用；读取请求携带 `Zotero-Allowed-Request: 1`，兼容 Zotero 对浏览器样式请求的检查（[官方说明](https://www.zotero.org/support/dev/zotero_10_for_developers#local_http_server_and_local_api)）。
+
 ### 4.1 流水线状态机
 
 ```
