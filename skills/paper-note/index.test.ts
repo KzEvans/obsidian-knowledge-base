@@ -1,10 +1,22 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { PAPER_NOTE_SKILL } from './index';
-import { lintNote } from './lint';
+import { SECTIONS } from './lint';
 
-test('the skill text loads and lint returns the frozen result shape', () => {
-  assert.ok(PAPER_NOTE_SKILL.includes('paper-note'));
-  const result = lintNote('');
-  assert.deepEqual(Object.keys(result).sort(), ['length', 'ok', 'problems']);
+test('the skill text includes SKILL.md and its references', () => {
+  assert.ok(PAPER_NOTE_SKILL.startsWith('# paper-note'));
+  assert.ok(PAPER_NOTE_SKILL.includes('## 说人话'));
+  assert.ok(PAPER_NOTE_SKILL.includes('## 禁用词'));
+});
+
+test('the skill lists the 9 sections lint expects, in order', () => {
+  const template = /```markdown\n([\s\S]*?)```/.exec(PAPER_NOTE_SKILL)?.[1] ?? '';
+  assert.deepEqual([...template.matchAll(/^## (.+)$/gm)].map(match => match[1]), [...SECTIONS]);
+  assert.ok(template.includes('<!-- abstract-translation -->'));
+});
+
+test('the bundled skill respects read-only output and the research-purpose boundary', () => {
+  assert.ok(PAPER_NOTE_SKILL.includes('noteMarkdown'));
+  assert.ok(PAPER_NOTE_SKILL.includes('前六节'));
+  assert.ok(PAPER_NOTE_SKILL.includes('最多 12 次'));
 });

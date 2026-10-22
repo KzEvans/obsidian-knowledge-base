@@ -4,6 +4,7 @@ import path from 'node:path';
 import { sha256Text } from '../../core/hash';
 import type { StoreReader } from '../../core/store';
 import { fullText } from '../../../skills/paper-note/fulltext';
+import { NOTE_OUTPUT_SCHEMA, noteMarkdown } from '../../../skills/paper-note/output';
 import { lintNote } from '../../../skills/paper-note/lint';
 import type { LintResult } from '../../../skills/paper-note/lint';
 import { collect } from '../cli/adapter';
@@ -98,17 +99,11 @@ export async function generateNote(sha: string, deps: GenerateDeps, signal: Abor
       model,
       timeoutMs: deps.timeoutMs,
       mode: 'read-only',
-      outputSchema: { type: 'object', properties: { noteMarkdown: { type: 'string' } }, required: ['noteMarkdown'], additionalProperties: false },
+      outputSchema: NOTE_OUTPUT_SCHEMA,
       ephemeral: true,
     }, signal));
     signal.throwIfAborted();
-    let output: unknown;
-    try { output = JSON.parse(result.text); }
-    catch { throw new GenerationError('智能体没有返回有效的 note.md 结构化候选稿。'); }
-    if (typeof output !== 'object' || output === null || !('noteMarkdown' in output) || typeof output.noteMarkdown !== 'string' || !output.noteMarkdown.trim()) {
-      throw new GenerationError('智能体没有返回非空的 note.md 候选稿。');
-    }
-    const candidate = output.noteMarkdown;
+    const candidate = noteMarkdown(result.text);
     await fs.writeFile(path.join(workspace, 'note.md'), candidate);
     signal.throwIfAborted();
 

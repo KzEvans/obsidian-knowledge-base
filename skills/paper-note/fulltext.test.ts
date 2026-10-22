@@ -21,3 +21,16 @@ test('full text keeps headings, abstract, captions and references with their mar
   assert.match(text, /^\[参考文献\] \[1\]/m);
   assert.doesNotMatch(text, /Received|page|p\.\d/i);
 });
+
+test('scientific inequalities and equation annotations survive the full-text export', () => {
+  const document: StoredDocument = { schemaVersion: 2, sha256: 'a'.repeat(64), normalizerVersion: 1, pageCount: 1, warnings: [], assets: {}, blocks: [
+    { id: 'p', kind: 'paragraph', text: 'For $x<y$ and $z>0$ and $a<b>0$, use CO<sub>2</sub>.', sources: [{ page: 1 }], translatable: true },
+    { id: 'e', kind: 'equation', text: 'x<b>0', captions: ['Equation caption'], footnotes: ['Equation note'], sources: [{ page: 1 }], translatable: true },
+  ] };
+  const text = fullText(document);
+  assert.ok(text.includes('$x<y$ and $z>0$'));
+  assert.ok(text.includes('CO_2'));
+  assert.ok(text.includes('$a<b>0$'));
+  assert.ok(text.includes('$$x<b>0$$'));
+  assert.ok(text.includes('Equation caption') && text.includes('Equation note'));
+});
