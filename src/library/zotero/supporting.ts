@@ -223,8 +223,7 @@ export function createSiClient(http: Http, timeoutMs: number): SiClient {
     if (response.status < 200 || response.status >= 300) throw new Error(`HTTP Error ${response.status}`);
     const bytes = new Uint8Array(response.arrayBuffer);
     if (bytes.byteLength > maxBytes) throw new Error(`response exceeds ${maxBytes} bytes`);
-    // core's Http does not expose response headers; callers fall back to sniffing the body.
-    return { bytes, text: response.text, url, contentType: '' };
+    return { bytes, text: response.text, url, contentType: response.headers['content-type'] ?? '' };
   };
   return {
     get: (url, maxBytes, accept) => request(url, maxBytes, accept),

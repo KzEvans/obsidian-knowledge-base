@@ -106,3 +106,20 @@ test('journals with a manual value are not looked up, and at most maxJournalsPer
   assert.deepEqual(Object.keys(state.impact_factor_cache).sort(), ['issn:11111111', 'issn:22222222']);
   assert.equal(state.impact_factor_cache['issn:11111111']?.status, 'unavailable');
 });
+
+test('an unparseable or schema-less agent reply is an error (retried later), not "unavailable"', async () => {
+  for (const reply of ['I could not find it.', '{"answer": 4.9}', 'null']) {
+    const state: EnrichmentState = { impact_factor_cache: {} };
+    const { runner } = agent(() => reply);
+    const { changed } = await refreshAutomaticImpactFactors([parent], state, { settings: DEFAULT_AUTOMATIC_IMPACT_FACTOR, catalog: {}, http: noHttp, agent: runner, log: () => undefined });
+    assert.equal(changed, true);
+    assert.equal(state.impact_factor_cache['issn:12345678']?.status, 'error', reply);
+  }
+});
+
+test('the reply format of the agent runner (structured_output serialized as JSON text) is accepted', async () => {
+  const state: EnrichmentState = { impact_factor_cache: {} };
+  const { runner } = agent(() => JSON.stringify(payload));
+  await refreshAutomaticImpactFactors([parent], state, { settings: DEFAULT_AUTOMATIC_IMPACT_FACTOR, catalog: {}, http: noHttp, agent: runner, log: () => undefined });
+  assert.equal(state.impact_factor_cache['issn:12345678']?.status, 'found');
+});

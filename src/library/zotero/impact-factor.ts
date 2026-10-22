@@ -271,9 +271,10 @@ export async function refreshAutomaticImpactFactors(parents: Iterable<JournalFie
   };
   try {
     const text = await deps.agent.runReadOnly(buildPrompt(batch), { timeoutMs: settings.timeoutSeconds * 1000, outputSchema: RESULT_SCHEMA, allowWebSearch: true });
-    const payload = parseJsonObject(text) as { results?: unknown };
+    const payload = parseJsonObject(text) as { results?: unknown } | null;
     const returned = new Map<string, LookupResultItem>();
-    for (const item of Array.isArray(payload.results) ? payload.results as unknown[] : []) {
+    if (!Array.isArray(payload?.results)) throw new Error('智能体返回的 JSON 中没有 results 列表。');
+    for (const item of payload.results as unknown[]) {
       if (typeof item === 'object' && item !== null) returned.set(str((item as LookupResultItem).lookup_key ?? ''), item);
     }
     for (const candidate of batch) {

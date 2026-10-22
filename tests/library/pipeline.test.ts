@@ -220,10 +220,36 @@ test('an iCloud conflict copy stops the paper without overwriting anything; keep
   assert.ok(f.emitted.some(event => event.name === 'paper:conflict' && (event.payload as { files: string[] }).files[0] === 'manifest 2.json'));
   assert.equal(second.snapshot()[0]?.manifest.stage, 'conflict');
 
-  await second.keepCurrent(sha);
+  await second.resolveConflict(sha, 'manifest 2.json', 'current');
   await untilStage(second, () => f.store.manifest(sha), 'ready');
   assert.deepEqual(await f.store.conflicts(sha), []);
   assert.equal(f.mineru.uploads, 1);
+});
+
+test('keeping the conflict copy puts it in place, moves the current file aside, and never replaces raw/', async () => {
+  const f = await pipelineFixture();
+  const sha = await addPdf(f, PDF, 'keep copy');
+  const pipeline = f.create();
+  await pipeline.discover(PDF);
+  await untilStage(pipeline, () => f.store.manifest(sha), 'ready');
+  const ready = (await f.store.manifest(sha))!;
+  // The other Mac's copy says the paper is still waiting; keeping it makes this one continue from there.
+  await fs.writeFile(path.join(f.paperDir(sha), 'translation.zh 2.json'), JSON.stringify({ schemaVersion: 1, entries: {}, failures: {} }));
+  await fs.mkdir(path.join(f.paperDir(sha), 'raw 2'));
+  const second = f.create();
+  await second.start();
+  await second.idle();
+  assert.equal((await second.status(sha))?.stage, 'conflict');
+  await assert.rejects(second.resolveConflict(sha, 'raw 2', 'copy'), /只能保留当前版本/);
+  await second.resolveConflict(sha, 'translation.zh 2.json', 'copy');
+  assert.equal((await second.status(sha))?.stage, 'conflict', 'raw 2 still pending');
+  await second.resolveConflict(sha, 'raw 2', 'current');
+  assert.deepEqual(await f.store.conflicts(sha), []);
+  assert.deepEqual((await f.store.translations(sha))!.entries, {});
+  const archived = await fs.readdir(path.join(f.base, '.research', 'conflicts'), { recursive: true });
+  assert.ok(archived.some(name => name.endsWith('translation.zh.json')));
+  assert.ok(archived.some(name => name.endsWith('raw 2')));
+  assert.equal((await f.store.manifest(sha))?.stage, ready.stage);
 });
 
 test('renaming or moving the PDF mid-processing updates the index and sources and the work continues', async () => {

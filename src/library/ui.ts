@@ -2,6 +2,7 @@ import { Modal, Notice } from 'obsidian';
 import type { App } from 'obsidian';
 import type { EventBus } from '../core/events';
 import type { Stage } from '../core/types';
+import { canKeepCopy } from './pipeline/pipeline';
 import type { PaperStatus, Pipeline } from './pipeline/pipeline';
 import type { SyncStatus } from './scheduler';
 
@@ -100,11 +101,21 @@ export class PipelinePanel extends Modal {
       const actions = row.createDiv({ cls: 'pw-pipeline-actions' });
       const button = (label: string, run: () => void) => actions.createEl('button', { text: label }).addEventListener('click', run);
       if (manifest.stage === 'conflict') {
-        button('保留当前版本', () => {
-          new ConfirmModal(this.app, '保留当前版本？', `以下冲突副本会移到 .research/conflicts/，当前文件保持不变：\n${paper.conflicts.join('\n')}`, () => {
-            void this.pipeline.keepCurrent(manifest.sha256).then(() => this.render(), (error: unknown) => new Notice(`处理冲突失败：${error instanceof Error ? error.message : String(error)}`));
-          }).open();
-        });
+        const fail = (error: unknown) => new Notice(`处理冲突失败：${error instanceof Error ? error.message : String(error)}`);
+        for (const file of paper.conflicts) {
+          button(`${file}：保留当前`, () => {
+            new ConfirmModal(this.app, '保留当前版本？', `冲突副本“${file}”会移到 .research/conflicts/，当前文件保持不变。`, () => {
+              void this.pipeline.resolveConflict(manifest.sha256, file, 'current').then(() => this.render(), fail);
+            }).open();
+          });
+          if (canKeepCopy(file)) {
+            button(`${file}：保留副本`, () => {
+              new ConfirmModal(this.app, '保留冲突副本？', `当前文件会移到 .research/conflicts/，由冲突副本“${file}”替换。`, () => {
+                void this.pipeline.resolveConflict(manifest.sha256, file, 'copy').then(() => this.render(), fail);
+              }).open();
+            });
+          }
+        }
       } else if (manifest.stage === 'failed' || (manifest.stage === 'ready' && (manifest.translation?.failed ?? 0) > 0)) {
         button('重试', () => this.pipeline.retry(manifest.sha256));
       } else if (manifest.stage !== 'ready') {

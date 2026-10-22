@@ -75,7 +75,7 @@ test('API lists include later pages', async () => {
   const http = async (request: { url: string }): Promise<HttpResponse> => {
     urls.push(request.url);
     const page = request.url.includes('start=0') ? Array.from({ length: 100 }, (_, index) => ({ key: String(index) })) : [{ key: 'last' }];
-    return { status: 200, text: JSON.stringify(page), arrayBuffer: new ArrayBuffer(0), json: page };
+    return { status: 200, headers: {}, text: JSON.stringify(page), arrayBuffer: new ArrayBuffer(0), json: page };
   };
   const api = createZoteroApi(http, () => 'http://localhost:23119/api/');
   assert.equal((await api.collections()).length, 101);
@@ -131,6 +131,13 @@ test('sync mirrors child-collection PDFs into their nested folder and writes man
   assert.equal(entry.impact_factor, 5.5);
   assert.equal(entry.impact_factor_year, '2024');
   assert.equal('generation_deferred' in entry, false);
+  // contracts §11: the fields agent reads are frozen.
+  for (const field of ['sha256', 'destination', 'collection_path', 'parent_key', 'attachment_key', 'title', 'creators', 'year', 'doi', 'journal', 'issn', 'impact_factor', 'impact_factor_year', 'impact_factor_source', 'impact_factor_retrieved_at', 'active']) {
+    assert.ok(field in entry, field);
+  }
+  assert.equal(entry.attachment_key, 'PDF');
+  assert.equal(entry.parent_key, 'PARENT');
+  assert.equal(entry.active, true);
   assert.ok(zotero.calls.some(call => call === 'bib:PARENT'));
   assert.match(await fs.readFile(path.join(vault, INDEX_PATH), 'utf8'), /\| DEA\/Fibers \| New paper \| 2024 \| Yiting Cai \| \[\[sources\/literature\/pdf\/DEA\/Fibers\/paper \(PDF\)\.pdf\|PDF\]\]/);
   assert.equal(await fs.readFile(path.join(vault, BIB_PATH), 'utf8'), '@article{PARENT}');

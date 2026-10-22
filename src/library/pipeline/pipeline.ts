@@ -106,8 +106,7 @@ export class Pipeline implements PipelineControl {
   }
 
   private async inspect(sha: string): Promise<void> {
-    const store = this.deps.store as StoreWriter & { removeStaleTemps?(sha: string): Promise<void> };
-    await store.removeStaleTemps?.(sha);
+    await this.deps.store.removeStaleTemps(sha);
     const manifest = await this.deps.store.manifest(sha);
     if (!manifest) return;
     this.known.set(sha, manifest);
@@ -229,9 +228,16 @@ export class Pipeline implements PipelineControl {
     }
   }
 
-  /** Move a conflict copy aside after you chose to keep the current file. */
-  async keepCurrent(sha: string): Promise<void> {
-    for (const file of await this.deps.store.conflicts(sha)) await this.deps.store.archiveConflict(sha, file);
+  /**
+   * Resolve one iCloud conflict copy after you confirmed: keep the current file (the copy goes to
+   * .research/conflicts/) or keep the copy (the current file goes there instead).
+   */
+  async resolveConflict(sha: string, fileName: string, keep: 'current' | 'copy'): Promise<void> {
+    if (keep === 'copy' && !canKeepCopy(fileName)) throw new Error(`raw/ 和 derived/ 只能保留当前版本：${fileName}`);
+    if (keep === 'current') await this.deps.store.archiveConflict(sha, fileName);
+    else await this.deps.store.keepConflictCopy(sha, fileName);
+    const remaining = await this.deps.store.conflicts(sha);
+    if (remaining.length) { this.conflictFiles.set(sha, remaining); return; }
     this.conflictFiles.delete(sha);
     const manifest = await this.deps.store.manifest(sha);
     if (manifest) {
@@ -687,6 +693,11 @@ export class Pipeline implements PipelineControl {
   private iso(): string {
     return (this.deps.now?.() ?? new Date()).toISOString();
   }
+}
+
+/** Only JSON files may be replaced by their copy; raw/ is write-once and derived/ is rebuilt. */
+export function canKeepCopy(fileName: string): boolean {
+  return fileName.endsWith('.json');
 }
 
 function mineruOptions(): { enable_formula: boolean; enable_table: boolean; language: string } {

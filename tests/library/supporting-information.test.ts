@@ -4,6 +4,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { createVaultFiles } from '../../src/library/files';
 import { DEFAULT_SUPPORTING, candidateScore, collectLinks, isAuxiliaryPdfAttachment, isSupplementaryPdfAttachment, normalizeDoi, syncSupportingInformation, validatePublicUrl } from '../../src/library/zotero/supporting';
+import { createSiClient } from '../../src/library/zotero/supporting';
 import type { SiClient } from '../../src/library/zotero/supporting';
 import { tempDir, writeFile } from './helpers';
 
@@ -111,4 +112,15 @@ test('a download that is not a PDF is refused', async () => {
   const entry = result.manifest.items[0]!;
   assert.equal(entry.files.length, 0);
   assert.ok(entry.errors.some(error => error.includes('not a valid PDF')));
+});
+
+test('the SI client passes Content-Type through; an HTML page served as application/pdf is still refused by its magic', async () => {
+  const client = createSiClient(async request => ({
+    status: 200, headers: { 'content-type': request.url.endsWith('.pdf') ? 'text/html; charset=utf-8' : 'text/html' },
+    text: '<a href="/x_si.pdf">Supporting Information</a>', arrayBuffer: new TextEncoder().encode('<html>'.padEnd(2048)).buffer, json: undefined,
+  }), 5_000);
+  assert.equal((await client.get('https://example.org/landing', 1 << 20, 'text/html')).contentType, 'text/html');
+  const root = await tempDir('pw-si-');
+  const result = await syncSupportingInformation(new Map([['P', { key: 'P', data: { DOI: '10.1234/p', url: 'https://example.org/landing' } }]]), ['P'], [], { settings: DEFAULT_SUPPORTING, files: createVaultFiles(path.join(root, 'vault')), literatureDir: 'sources/literature', client, attachmentPath: async () => '', log: () => undefined });
+  assert.ok(result.manifest.items[0]!.errors.some(error => error.includes('unexpected content type text/html')));
 });
