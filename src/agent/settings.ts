@@ -46,7 +46,7 @@ export const DEFAULT_TIMEOUT_MINUTES = 30;
 
 export function readSettings(saved: unknown): AgentSettings {
   const value = record(saved);
-  const text = (key: string) => typeof value[key] === 'string' ? (value[key] as string).trim() : '';
+  const text = (key: string) => typeof value[key] === 'string' ? (value[key]).trim() : '';
   const flag = (key: string) => value[key] === true;
   const minutes = Number(value.generationTimeoutMinutes);
   return {

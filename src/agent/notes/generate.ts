@@ -63,7 +63,7 @@ export async function generateNote(sha: string, deps: GenerateDeps, signal: Abor
   const document = await deps.store.document(sha);
   if (!document) throw new GenerationError('解析存储中没有这篇论文的规范化全文。');
   const translations = await deps.store.translations(sha);
-  const metadata = await paperMetadata(manifest, deps.readVaultText);
+  const metadata = await paperMetadata(manifest, vaultPath => deps.readVaultText(vaultPath));
 
   const existing = deps.findExistingNote(sha, metadata.zoteroAttachment);
   const now = deps.now();

@@ -2,8 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { webUtils } from 'electron';
-import { MarkdownRenderer, MarkdownView, Notice, TFile, setIcon } from 'obsidian';
-import type { App, CachedMetadata, Component } from 'obsidian';
+import { MarkdownRenderer, Notice, setIcon } from 'obsidian';
+import type { App, CachedMetadata, Component , MarkdownView, TFile} from 'obsidian';
 import type { ModuleContext } from '../../core/module';
 import { errorMessage } from '../../core/secrets';
 import type { AgentEvent } from '../cli/adapter';
@@ -165,6 +165,7 @@ export class NoteChat {
     captureButton.addEventListener('click', () => this.captureSelection());
     const refreshButton = iconButton(contextActions, 'refresh-cw', '刷新笔记上下文', () => void this.refreshContext(true));
     const contextToggle = iconButton(contextActions, 'chevron-up', '收起本轮上下文', () => this.setContextCollapsed(!this.settings.contextCollapsed));
+    contextToggle.addClass('pw-chat-context-toggle');
     contextToggle.setAttribute('aria-controls', 'pw-chat-context-body');
     const contextBody = contextArea.createDiv({ cls: 'pw-chat-context-body', attr: { id: 'pw-chat-context-body' } });
     const chips = contextBody.createDiv({ cls: 'pw-chat-chips' });
@@ -257,7 +258,7 @@ export class NoteChat {
   }
 
   private async paperOf(file: TFile, cache: CachedMetadata): Promise<NoteContext['paper']> {
-    const frontmatter = cache.frontmatter as Record<string, unknown> | undefined;
+    const frontmatter = cache.frontmatter;
     let sha = typeof frontmatter?.source_sha256 === 'string' && /^[0-9a-f]{64}$/.test(frontmatter.source_sha256) ? frontmatter.source_sha256 : undefined;
     const candidates = [typeof frontmatter?.source_pdf === 'string' ? frontmatter.source_pdf : '', ...(cache.links ?? []).map(link => link.link)];
     let pdfPath = '';

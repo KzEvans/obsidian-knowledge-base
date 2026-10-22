@@ -31,7 +31,7 @@ export class NoteController {
   async paperFor(file: TFile): Promise<string | undefined> {
     if (file.extension.toLowerCase() === 'pdf') return this.context.store.shaForPath(file.path);
     if (file.extension !== 'md') return undefined;
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
     if (typeof frontmatter?.source_sha256 === 'string' && /^[0-9a-f]{64}$/.test(frontmatter.source_sha256)) return frontmatter.source_sha256;
     const link = typeof frontmatter?.source_pdf === 'string' ? frontmatter.source_pdf.replace(/^\[\[|\]\]$/g, '').split(/[|#]/)[0]!.trim() : '';
     const pdf = link ? this.app.metadataCache.getFirstLinkpathDest(link, file.path) : null;
@@ -41,7 +41,7 @@ export class NoteController {
   existingNote(sha: string, attachmentKey: string): string | undefined {
     return this.app.vault.getMarkdownFiles().find(file => {
       if (!file.path.startsWith(PAPERS_ROOT + '/')) return false;
-      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined;
+      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (frontmatter?.type !== 'paper') return false;
       return frontmatter.source_sha256 === sha || (!!attachmentKey && frontmatter.zotero_attachment === attachmentKey);
     })?.path;

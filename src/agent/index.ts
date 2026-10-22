@@ -44,7 +44,7 @@ export function register(context: ModuleContext<AgentSettings>): ModuleHandle {
             if (notes.isPaperNote(view.file)) void notes.toggleStatus(view.file).then(refreshButtons);
           }),
         };
-        for (const element of Object.values(set)) element.addClass('pw-note-action');
+        for (const element of [set.chat, set.generate, set.status]) element.addClass('pw-note-action');
         buttons.set(view, set);
       }
       const file = view.file;
@@ -61,7 +61,7 @@ export function register(context: ModuleContext<AgentSettings>): ModuleHandle {
     }
     for (const [view, set] of buttons) {
       if (views.has(view)) continue;
-      for (const element of Object.values(set)) element.remove();
+      for (const element of [set.chat, set.generate, set.status]) element.remove();
       buttons.delete(view);
     }
   };
@@ -134,12 +134,12 @@ export function register(context: ModuleContext<AgentSettings>): ModuleHandle {
   if (!settings.legacyImported) app.workspace.onLayoutReady(() => void importLegacy(context));
 
   return {
-    settingsSection: settingsSection(settings, context.saveSettings),
+    settingsSection: settingsSection(settings, () => context.saveSettings()),
     dispose() {
       unregisterPdfButton();
       notes.dispose();
       chat.dispose();
-      for (const set of buttons.values()) for (const element of Object.values(set)) element.remove();
+      for (const set of buttons.values()) for (const element of [set.chat, set.generate, set.status]) element.remove();
       buttons.clear();
       component.unload();
       if (context.services.agent) delete context.services.agent;
