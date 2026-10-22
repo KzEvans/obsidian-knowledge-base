@@ -3,7 +3,7 @@ import path from 'node:path';
 import { sha256Bytes } from '../core/hash';
 import { MINERU_OPTIONS, contentListName } from '../core/mineru';
 import { errorMessage } from '../core/secrets';
-import { atomicWrite } from '../core/store';
+import { StoreError, atomicWrite } from '../core/store';
 import type { StoreWriter } from '../core/store';
 import type { Manifest } from '../core/types';
 
@@ -36,7 +36,7 @@ export async function importReaderCache(cacheRoot: string, store: StoreWriter, n
     if (!sha) continue;
     try {
       const existing = await store.manifest(sha);
-      if (existing && (existing.raw || existing.mineru?.batchId || existing.stage !== 'copied')) { result.skipped.push(sha); continue; }
+      if (existing?.raw) { result.skipped.push(sha); continue; }
       const root = path.join(cacheRoot, directory);
       // Reading each file makes iCloud download it if it was evicted.
       const names = (await fs.readdir(root, { recursive: true })).map(name => name.split(path.sep).join('/'));
@@ -51,19 +51,29 @@ export async function importReaderCache(cacheRoot: string, store: StoreWriter, n
         const imported = {
           origin: 'imported-reader-cache',
           sourceDirectory: `pdf-reading-mode/cache/${directory}`,
-          importedAt: at,
           note: '旧阅读模式只保存了 json、md 和图片；结果包中的 PDF 原件和其他格式的成员缺失。旧裁图、result.json、performance.json 未导入，裁图在规范化时重新生成。',
           members: Object.keys(files).sort(),
           missing: ['MinerU 结果包中的原始 PDF（*_origin.pdf）', '其他非 json/md/图片 成员'],
         };
-        files['IMPORTED.json'] = new TextEncoder().encode(JSON.stringify(imported, null, 2) + '\n');
+        let marker = new TextEncoder().encode(JSON.stringify(imported, null, 2) + '\n');
+        try {
+          const existingMarker = await store.readRaw(sha, 'IMPORTED.json');
+          const parsed: unknown = JSON.parse(new TextDecoder().decode(existingMarker));
+          const stable = (value: object) => JSON.stringify(Object.entries(value).filter(([key]) => key !== 'importedAt').sort(([a], [b]) => a.localeCompare(b)));
+          if (typeof parsed !== 'object' || parsed === null || stable(parsed) !== stable(imported)) throw new StoreError('旧缓存导入标记内容不同，保留原始文件并暂停导入。', 'exists');
+          marker = new Uint8Array(existingMarker);
+        } catch (error) {
+          if (!(typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')) throw error;
+        }
+        files['IMPORTED.json'] = marker;
         await store.writeRaw(sha, files);
         const hashes: Record<string, string> = {};
         for (const [name, bytes] of Object.entries(files)) hashes[name] = await sha256Bytes(bytes);
         await store.writeManifest(sha, {
           ...(existing ?? baseManifest(sha, at)),
           stage: 'normalizing',
-          mineru: { modelVersion: 'vlm', options: options(), origin: 'imported-reader-cache' },
+          failure: null,
+          mineru: { ...existing?.mineru, modelVersion: 'vlm', options: options(), origin: 'imported-reader-cache' },
           raw: { files: hashes, complete: false },
           updatedAt: at,
         });
@@ -71,6 +81,7 @@ export async function importReaderCache(cacheRoot: string, store: StoreWriter, n
         log(`已导入旧阅读缓存：${sha.slice(0, 12)}（${members.length} 个文件）`);
         continue;
       }
+      if (existing?.mineru?.batchId || existing?.mineru?.previousBatchIds?.length) { result.skipped.push(sha); continue; }
       const job = await readJson(path.join(root, 'job.json')) as { batchId?: unknown; uploaded?: unknown } | undefined;
       if (typeof job?.batchId === 'string' && job.batchId && job.uploaded === true) {
         await store.writeManifest(sha, {
@@ -131,4 +142,13 @@ export async function importLegacyState(legacyDir: string, pluginDir: string, na
     copied.push(name);
   }
   return copied;
+}
+
+/** Only ENOENT means no cache. A download/read error must never authorize a new upload. */
+export async function hasReaderCache(cacheRoot: string, sha: string): Promise<boolean> {
+  try { return (await fs.stat(path.join(cacheRoot, `${sha}-vlm-v1`))).isDirectory(); }
+  catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return false;
+    throw error;
+  }
 }

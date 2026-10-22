@@ -120,3 +120,29 @@ test('keeping a conflict copy moves the current file aside and puts the copy in 
   assert.ok((await fs.stat(path.join(paper, 'raw'))).isDirectory());
   await assert.rejects(store.keepConflictCopy(SHA, 'manifest.json'), StoreError);
 });
+
+test('upload receipts are immutable and recover independently of manifest snapshots', async () => {
+  const { store, paper } = await setup();
+  const upload = { batchId: 'batch-1', uploadUrl: 'https://upload.example/put', createdAt: '2026-10-22T00:00:00Z' };
+  await store.writeMinerUUpload(SHA, upload);
+  await store.writeMinerUUpload(SHA, upload);
+  await assert.rejects(store.writeMinerUUpload(SHA, { ...upload, uploadUrl: 'https://upload.example/other' }), StoreError);
+  await store.writeManifest(SHA, manifest());
+  assert.deepEqual(await store.mineruUploads(SHA), [upload]);
+  const file = path.join(paper, 'uploads', sha256Text(upload.batchId) + '.json');
+  await fs.writeFile(file, '{"batchId":42}');
+  await assert.rejects(store.mineruUploads(SHA), (error: unknown) => error instanceof StoreError && error.kind === 'corrupt');
+});
+
+test('keeping an older manifest preserves raw hashes, sources and both batch histories', async () => {
+  const { store, paper } = await setup();
+  const mineru = { batchId: 'current', modelVersion: 'vlm', options: { enable_formula: true, enable_table: true, language: 'en' }, origin: 'cloud' } satisfies Manifest['mineru'];
+  await store.writeManifest(SHA, manifest({ mineru, raw: { files: { 'content_list.json': 'hash' }, complete: true }, sources: [{ path: 'papers/a.pdf', inLibrary: true }] }));
+  await fs.writeFile(path.join(paper, 'manifest 2.json'), JSON.stringify(manifest({ mineru: { ...mineru, batchId: 'selected' } })));
+  await store.keepConflictCopy(SHA, 'manifest 2.json');
+  const kept = (await store.manifest(SHA))!;
+  assert.equal(kept.mineru?.batchId, 'selected');
+  assert.deepEqual(kept.mineru?.previousBatchIds, ['current']);
+  assert.deepEqual(kept.raw, { files: { 'content_list.json': 'hash' }, complete: true });
+  assert.deepEqual(kept.sources, [{ path: 'papers/a.pdf', inLibrary: true }]);
+});

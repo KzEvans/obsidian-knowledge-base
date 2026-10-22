@@ -12,6 +12,7 @@ import type { QwenMtClient, TranslateRequest } from '../../src/core/qwen-mt';
 import { FileStore } from '../../src/core/store';
 import type { Manifest, Term } from '../../src/core/types';
 import { Pipeline } from '../../src/library/pipeline/pipeline';
+import type { PipelineDeps } from '../../src/library/pipeline/pipeline';
 import { tempDir } from './helpers';
 
 const encoder = new TextEncoder();
@@ -60,6 +61,8 @@ export class FakeMinerU implements MinerUClient {
   pollScript: Array<MinerUPoll | Error> = [];
   pollDefault: MinerUPoll = { state: 'done', zipUrl: 'https://cdn.example/result.zip' };
   uploadGate?: Promise<void>;
+  acceptedUploadFailures: Error[] = [];
+  uploadUrls: string[] = [];
   files: () => Record<string, Uint8Array> = resultFiles;
 
   async requestUpload(): Promise<{ batchId: string; uploadUrl: string }> {
@@ -69,11 +72,14 @@ export class FakeMinerU implements MinerUClient {
     return { batchId: `batch-${this.nextBatch++}`, uploadUrl: 'https://upload.example/put' };
   }
 
-  async upload(): Promise<void> {
+  async upload(url: string): Promise<void> {
+    this.uploadUrls.push(url);
     const failure = this.uploadFailures.shift();
     if (failure) throw failure;
-    await this.uploadGate;
     this.uploads++;
+    await this.uploadGate;
+    const acceptedFailure = this.acceptedUploadFailures.shift();
+    if (acceptedFailure) throw acceptedFailure;
   }
 
   async poll(): Promise<MinerUPoll> {
@@ -115,7 +121,7 @@ export interface Fixture {
   vault: Map<string, Uint8Array>;
   approved: { all: boolean };
   glossary: Term[];
-  create(): Pipeline;
+  create(overrides?: Partial<PipelineDeps>): Pipeline;
   paperDir(sha: string): string;
 }
 
@@ -139,7 +145,7 @@ export async function pipelineFixture(): Promise<Fixture> {
   const glossary: Term[] = [];
   const fixture: Fixture = {
     base, store, events, emitted, mineru, qwen, vault, approved, glossary,
-    create: () => new Pipeline({
+    create: overrides => new Pipeline({
       store, events, mineru, qwenMt: qwen,
       glossary: () => fixture.glossary,
       readPdf: read,
@@ -151,6 +157,7 @@ export async function pipelineFixture(): Promise<Fixture> {
       sleep: async (_ms, signal) => { if (signal?.aborted) throw new Error('aborted'); await new Promise(resolve => setTimeout(resolve, 0)); },
       retryDelays: [0, 0, 0],
       pollIntervalMs: 0,
+      ...overrides,
     }),
     paperDir: sha => path.join(base, '.research', 'papers', sha),
   };

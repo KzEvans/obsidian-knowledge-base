@@ -39,6 +39,8 @@ export interface PipelineDeps {
   /** Whether MinerU may be used for this paper without asking (the first-run backlog confirmation). */
   isApproved(manifest: Manifest): boolean;
   isInLibrary(vaultPath: string): boolean;
+  /** A legacy cache directory blocks new uploads until imported or its batch is explicitly missing. */
+  hasLegacyCache?(sha: string): Promise<boolean>;
   log: Logger;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   retryDelays?: readonly number[];
@@ -55,6 +57,10 @@ export interface PaperStatus {
 
 class SourceMissingError extends Error {
   constructor() { super('找不到这篇论文的 PDF，等它重新出现后继续。'); this.name = 'SourceMissingError'; }
+}
+
+class LegacyCachePendingError extends Error {
+  constructor() { super('旧阅读缓存尚未导入，等待下次启动重试。'); }
 }
 
 class ConflictError extends Error {
@@ -99,7 +105,8 @@ export class Pipeline implements PipelineControl {
       try {
         await this.inspect(sha);
       } catch (error) {
-        this.deps.log.error(`读取论文状态失败：${sha.slice(0, 12)}`, error);
+        if (error instanceof ConflictError) this.markConflict(sha, error.files);
+        else this.deps.log.error(`读取论文状态失败：${sha.slice(0, 12)}`, error);
       }
       await nextTask();
     }
@@ -110,6 +117,9 @@ export class Pipeline implements PipelineControl {
     const manifest = await this.deps.store.manifest(sha);
     if (!manifest) return;
     this.known.set(sha, manifest);
+    const conflicts = await this.deps.store.conflicts(sha);
+    if (conflicts.length) { this.markConflict(sha, conflicts); return; }
+    if (manifest.stage === 'failed' && manifest.failure?.retryable && manifest.failure.error !== '已取消。') await this.resetForRetry(sha);
     if (manifest.stage === 'ready' || manifest.stage === 'translating') {
       if (manifest.raw && (manifest.normalized?.normalizerVersion ?? 0) < NORMALIZER_VERSION) {
         // Rebuilt offline from raw/; never re-uploaded.
@@ -199,6 +209,7 @@ export class Pipeline implements PipelineControl {
     const result: Array<{ sha: string; path: string; pages?: number }> = [];
     for (const manifest of [...this.known.values()]) {
       if (manifest.raw || manifest.priority || !['discovered', 'copied', 'uploading', 'parsing'].includes(manifest.stage) || this.deps.isApproved(manifest)) continue;
+      if (await this.cachePending(manifest)) continue;
       const source = manifest.sources.find(item => item.inLibrary);
       if (!source) continue;
       let pages = manifest.pageCount;
@@ -353,6 +364,7 @@ export class Pipeline implements PipelineControl {
       const stage = manifest.stage;
       const approved = manifest.priority || this.deps.isApproved(manifest);
       try {
+        this.checkActive(sha);
         switch (stage) {
           case 'discovered':
           case 'copied': {
@@ -380,12 +392,14 @@ export class Pipeline implements PipelineControl {
             return;
         }
       } catch (error) {
+        if (error instanceof LegacyCachePendingError) { this.deps.log.warn(error.message); return; }
         if (error instanceof SourceMissingError) { this.deps.log.warn(`${sha.slice(0, 12)}：${error.message}`); return; }
         if (error instanceof ConflictError) { this.markConflict(sha, error.files); return; }
         if (this.disposed) return;
         if (error instanceof CancelledError && !this.cancelled.has(sha)) return;
         const current = await this.store(sha);
-        await this.fail(sha, current?.stage ?? stage, error, error instanceof CancelledError || retryable(error));
+        const failure = this.cancelled.has(sha) ? new CancelledError() : error;
+        await this.fail(sha, current?.stage ?? stage, failure, failure instanceof CancelledError || retryable(failure));
         this.cancelled.delete(sha);
         return;
       }
@@ -428,6 +442,27 @@ export class Pipeline implements PipelineControl {
     });
   }
 
+  private checkActive(sha: string, signal?: AbortSignal): void {
+    if (this.disposed || this.cancelled.has(sha) || signal?.aborted) throw new CancelledError();
+  }
+
+  private async cachePending(manifest: Manifest): Promise<boolean> {
+    if (manifest.raw || manifest.mineru?.batchId || manifest.mineru?.previousBatchIds?.length) return false;
+    try { return await this.deps.hasLegacyCache?.(manifest.sha256) ?? false; }
+    catch { return true; }
+  }
+
+  /** Receipts are write-once and independent of manifest conflicts. */
+  private async restoreBatch(sha: string): Promise<void> {
+    const manifest = await this.require(sha);
+    if (manifest.raw || manifest.mineru?.batchId) return;
+    const jobs = await this.deps.store.mineruUploads(sha);
+    const job = jobs.filter(item => !manifest.mineru?.previousBatchIds?.includes(item.batchId)).at(-1);
+    if (job) await this.update(sha, current => {
+      current.mineru = { ...current.mineru, batchId: job.batchId, modelVersion: 'vlm', options: mineruOptions(), origin: 'cloud' };
+    });
+  }
+
   // ---- steps ----
 
   private async sourceBytes(manifest: Manifest): Promise<{ path: string; bytes: Uint8Array }> {
@@ -439,8 +474,14 @@ export class Pipeline implements PipelineControl {
   }
 
   private async upload(sha: string, signal: AbortSignal): Promise<void> {
+    this.checkActive(sha, signal);
+    await this.restoreBatch(sha);
     const manifest = await this.require(sha);
-    if (manifest.mineru?.batchId) { await this.update(sha, current => { current.stage = 'parsing'; }); return; }
+    if (manifest.raw || manifest.mineru?.batchId) {
+      await this.update(sha, current => { current.stage = current.raw ? 'normalizing' : 'parsing'; });
+      return;
+    }
+    if (await this.cachePending(manifest)) throw new LegacyCachePendingError();
     const { bytes } = await this.sourceBytes(manifest);
     if (bytes.byteLength > MAX_PDF_BYTES) throw new MinerUError('MinerU 云端最大支持 200 MB 的文件。', false);
     let pageCount = manifest.pageCount;
@@ -450,43 +491,70 @@ export class Pipeline implements PipelineControl {
       await pdf.destroy();
     }
     if (pageCount > MAX_PDF_PAGES) throw new MinerUError(`MinerU 云端最多支持 ${MAX_PDF_PAGES} 页，这篇有 ${pageCount} 页。`, false);
-    const batchId = await withRetry(async () => {
-      const { batchId: id, uploadUrl } = await this.deps.mineru.requestUpload(sha);
-      await this.deps.mineru.upload(uploadUrl, bytes.slice().buffer);
-      return id;
-    }, this.retryOptions(signal));
-    // Written at once, whatever happens next: from here on only resume, never upload again.
+    this.checkActive(sha, signal);
+    const job = await withRetry(() => this.deps.mineru.requestUpload(sha, signal), this.retryOptions(signal));
+    // This write must finish even if unload/cancel or a manifest conflict arrived during requestUpload.
+    await this.deps.store.writeMinerUUpload(sha, { ...job, createdAt: this.iso() });
+    this.checkActive(sha, signal);
     await this.update(sha, current => {
       current.pageCount = pageCount;
-      current.mineru = { batchId, modelVersion: 'vlm', options: mineruOptions(), uploadedAt: this.iso(), origin: 'cloud' };
+      current.mineru = { ...current.mineru, batchId: job.batchId, modelVersion: 'vlm', options: mineruOptions(), origin: 'cloud' };
+    });
+    await this.put(sha, job.batchId, job.uploadUrl, bytes, signal);
+  }
+
+  private async put(sha: string, batchId: string, uploadUrl: string, bytes: Uint8Array, signal: AbortSignal): Promise<void> {
+    // A failed PUT may already have arrived. Poll before every retry and reuse this URL only if waiting-file.
+    await withRetry(async attempt => {
+      this.checkActive(sha, signal);
+      if (attempt > 1) {
+        const poll = await withRetry(() => this.deps.mineru.poll(batchId, signal), this.retryOptions(signal));
+        if (poll.state !== 'waiting-file') return;
+      }
+      this.checkActive(sha, signal);
+      await this.deps.mineru.upload(uploadUrl, bytes.slice().buffer, signal);
+    }, this.retryOptions(signal));
+    this.checkActive(sha, signal);
+    await this.update(sha, current => {
+      if (current.mineru) current.mineru.uploadedAt = this.iso();
       current.stage = 'parsing';
     });
   }
 
   private async parse(sha: string, signal: AbortSignal): Promise<void> {
+    this.checkActive(sha, signal);
+    await this.restoreBatch(sha);
     const manifest = await this.require(sha);
+    if (manifest.raw) { await this.update(sha, current => { current.stage = 'normalizing'; }); return; }
     const batchId = manifest.mineru?.batchId;
     if (!batchId) { await this.update(sha, current => { current.stage = 'copied'; }); return; }
     const imported = manifest.mineru?.origin === 'imported-reader-cache';
     const deadline = Date.now() + POLL_DEADLINE_MS;
     for (;;) {
+      this.checkActive(sha, signal);
       let poll;
       try {
-        poll = await withRetry(() => this.deps.mineru.poll(batchId), this.retryOptions(signal));
+        poll = await withRetry(() => this.deps.mineru.poll(batchId, signal), this.retryOptions(signal));
       } catch (error) {
         // A batch carried over from the old reader cache that MinerU no longer knows: upload normally.
-        if (imported && error instanceof MinerUError && !error.retryable && error.status !== 401 && error.status !== 403) return this.forgetBatch(sha, `旧任务 ${batchId} 已无法续取，改为重新上传。`);
+        if (imported && error instanceof MinerUError && error.taskMissing) return this.forgetBatch(sha, `旧任务 ${batchId} 已无法续取，改为重新上传。`);
         throw error;
       }
       if (poll.state === 'failed') {
-        if (imported) return this.forgetBatch(sha, `旧任务 ${batchId} 在 MinerU 端失败，改为重新上传。`);
-        // The batch is dead; a manual retry uploads again. Nothing is re-uploaded automatically.
-        await this.update(sha, current => { if (current.mineru) delete current.mineru.batchId; });
         throw new MinerUError(`MinerU 解析失败${poll.error ? '：' + poll.error : '。'}`, false);
+      }
+      this.checkActive(sha, signal);
+      if (poll.state === 'waiting-file') {
+        const job = (await this.deps.store.mineruUploads(sha)).find(item => item.batchId === batchId);
+        if (!job) throw new MinerUError('旧任务仍在等待文件，但没有可复用的上传地址；保留任务并暂停。', false);
+        const { bytes } = await this.sourceBytes(manifest);
+        await this.put(sha, job.batchId, job.uploadUrl, bytes, signal);
+        continue;
       }
       if (poll.state === 'done' && poll.zipUrl) {
         const zipUrl = poll.zipUrl;
-        const files = await withRetry(() => this.deps.mineru.download(zipUrl), this.retryOptions(signal));
+        const files = await withRetry(() => this.deps.mineru.download(zipUrl, signal), this.retryOptions(signal));
+        this.checkActive(sha, signal);
         await this.deps.store.writeRaw(sha, files);
         const hashes: Record<string, string> = {};
         for (const [name, bytes] of Object.entries(files)) hashes[name] = await sha256Bytes(bytes);
@@ -510,12 +578,16 @@ export class Pipeline implements PipelineControl {
   private async forgetBatch(sha: string, message: string): Promise<void> {
     this.deps.log.warn(message);
     await this.update(sha, current => {
-      delete current.mineru;
+      if (current.mineru?.batchId) {
+        current.mineru.previousBatchIds = [...new Set([...(current.mineru.previousBatchIds ?? []), current.mineru.batchId])];
+        delete current.mineru.batchId;
+      }
       current.stage = 'copied';
     });
   }
 
   private async normalize(sha: string): Promise<void> {
+    this.checkActive(sha);
     const manifest = await this.require(sha);
     const names = Object.keys(manifest.raw?.files ?? {});
     if (!names.length) { await this.update(sha, current => { current.stage = 'copied'; }); return; }
@@ -533,6 +605,7 @@ export class Pipeline implements PipelineControl {
     } finally {
       await pdf.destroy();
     }
+    this.checkActive(sha);
     for (const [name, data] of Object.entries(output.derived)) await this.deps.store.writeDerived(sha, name, data);
     await this.deps.store.writeDocument(sha, output.document);
     await this.update(sha, current => {
@@ -540,6 +613,7 @@ export class Pipeline implements PipelineControl {
       current.normalized = { normalizerVersion: output.document.normalizerVersion, at: this.iso() };
       current.stage = 'translating';
     });
+    this.checkActive(sha);
     this.deps.events.emit('paper:document-updated', { sha, normalizerVersion: output.document.normalizerVersion });
   }
 
@@ -559,6 +633,7 @@ export class Pipeline implements PipelineControl {
   }
 
   private async translate(sha: string, priority: boolean): Promise<void> {
+    this.checkActive(sha);
     const document = await this.deps.store.document(sha);
     if (!document) { await this.update(sha, current => { current.stage = 'normalizing'; }); return; }
     const file: TranslationFile = await this.deps.store.translations(sha) ?? { schemaVersion: 1, entries: {}, failures: {} };
@@ -572,6 +647,7 @@ export class Pipeline implements PipelineControl {
       const key = termsKey(text, terms);
       if (file.entries[hash]?.termsKey !== key) todo.push([hash, text, key]);
     }
+    this.checkActive(sha);
     const total = segments.size;
     const counts = () => {
       let done = 0, failed = 0;
@@ -589,8 +665,10 @@ export class Pipeline implements PipelineControl {
       const snapshot: TranslationFile = JSON.parse(JSON.stringify(file)) as TranslationFile;
       const progress = counts();
       writing = writing.then(async () => {
+        if (this.disposed) return;
         await this.deps.store.writeTranslations(sha, snapshot);
         await this.update(sha, current => { current.translation = { model: FULL_TEXT_MODEL, total, ...progress, at: this.iso() }; }, undefined, { quiet: true });
+        if (this.disposed) return;
         this.deps.events.emit('paper:translation-progress', { sha, total, ...progress });
       });
       return writing;
@@ -600,11 +678,14 @@ export class Pipeline implements PipelineControl {
     this.qwenKeys.set(sha, keys);
     let fatal: Error | undefined;
     try {
+      this.checkActive(sha);
       await Promise.all(todo.map(async ([hash, text, key]) => {
         const queueKey = `qwen:${sha}:${hash}`;
         keys.add(queueKey);
         try {
+          this.checkActive(sha);
           const translated = await this.qwenQueue.enqueue(queueKey, signal => this.translateSegment(text, terms, signal), { priority });
+          this.checkActive(sha);
           file.entries[hash] = { text: translated, model: FULL_TEXT_MODEL, termsKey: key, at: this.iso() };
           delete file.failures[hash];
           if (++unsaved >= FLUSH_EVERY) await flush();
@@ -671,16 +752,19 @@ export class Pipeline implements PipelineControl {
   private update(sha: string, change: (manifest: Manifest) => void, create?: () => Manifest, options: { quiet?: boolean } = {}): Promise<Manifest> {
     const previous = this.locks.get(sha) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(async () => {
+      if (this.disposed) throw new CancelledError();
       const conflicts = await this.deps.store.conflicts(sha);
+      if (this.disposed) throw new CancelledError();
       if (conflicts.length) throw new ConflictError(conflicts);
       const current = await this.deps.store.manifest(sha) ?? create?.();
       if (!current) throw new Error('论文状态文件不存在。');
+      if (this.disposed) throw new CancelledError();
       const before = current.stage;
       change(current);
       current.updatedAt = this.iso();
       await this.deps.store.writeManifest(sha, current);
       this.known.set(sha, current);
-      if ((current.stage !== before || create) && !options.quiet) {
+      if (!this.disposed && (current.stage !== before || create) && !options.quiet) {
         this.deps.events.emit('paper:stage-changed', { sha, stage: current.stage, ...(current.failure ? { failure: current.failure } : {}) });
       }
       return current;
@@ -708,6 +792,6 @@ function mineruOptions(): { enable_formula: boolean; enable_table: boolean; lang
 export function retryable(error: unknown): boolean {
   if (error instanceof MinerUError || error instanceof QwenMtError) return error.retryable;
   if (error instanceof PlaceholderMismatchError) return true;
-  if (error instanceof CancelledError || error instanceof SourceMissingError || error instanceof ConflictError) return false;
+  if (error instanceof CancelledError || error instanceof SourceMissingError || error instanceof LegacyCachePendingError || error instanceof ConflictError) return false;
   return true;
 }

@@ -9,7 +9,7 @@ import { openPdf } from '../core/pdf';
 import { atomicWrite } from '../core/store';
 import type { Manifest } from '../core/types';
 import { createVaultFiles } from './files';
-import { importLegacyState, importReaderCache, readJson } from './migration';
+import { hasReaderCache, importLegacyState, importReaderCache, readJson } from './migration';
 import { Pipeline } from './pipeline/pipeline';
 import { ENRICH_INTERVAL_MS, STARTUP_ENRICH_DELAY_MS, STARTUP_SYNC_DELAY_MS, SYNC_INTERVAL_MS, Scheduler } from './scheduler';
 import { applyLegacyConfig, readSettings, supportingSettings } from './settings';
@@ -70,6 +70,7 @@ export function register(context: LibraryContext<LibrarySettings>): ModuleHandle
     createCropper: pdf => createCanvasCropper(pdf, () => createEl('canvas'), 2 * Math.min(window.devicePixelRatio, 2)),
     isApproved,
     isInLibrary: isLibraryPdf,
+    hasLegacyCache: sha => hasReaderCache(path.join(context.vaultPath, app.vault.configDir, 'plugins', 'pdf-reading-mode', 'cache'), sha),
     log,
   });
   context.services.pipeline = pipeline;

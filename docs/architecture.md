@@ -84,9 +84,9 @@ export function register(ctx: ModuleContext): ModuleHandle
 - 读写走 Node `fs`（桌面专用），这样可以 `fsync` 后 `rename` 做原子写。
 - **只有流水线写入。** `store` 导出两套接口：`StoreReader`（reader、agent 使用）和 `StoreWriter`（只有 library 拿得到，由 `main.ts` 传入）。lint 规则保证 reader、agent 拿不到 `StoreWriter`。
 - **iCloud 冲突副本：** 读目录时识别 `manifest 2.json`、`document 3.json` 这类名字。发现后：
-  - 不覆盖、不合并，该论文进入 `conflict` 状态；
+  - 不自动覆盖或合并，该论文进入 `conflict` 状态；
   - 状态栏和阅读模式给出提示，列出冲突文件；
-  - 提供"保留较新版本"操作，由你确认后把另一份移到 `.research/conflicts/<时间>/`。
+  - 提供保留当前或副本的操作，由你确认后把另一份移到 `.research/conflicts/<时间>/`；manifest 的 batch 历史、raw 哈希和来源路径只增不减，以免旧副本触发重复上传。
 - **`raw/` 不可修改。** 写一次后不再碰。规范化版本升级时从 `raw/` 离线重建 `document.json` 和 `derived/`，绝不重新上传。
 - **路径索引：** `.research/index.json` 记录 vault 路径 → sha256。library 在 PDF 的 `rename`、`delete`、`create` 事件里维护它，reader 打开 PDF 时先查索引，查不到再计算哈希。同一份 PDF 出现在多个 collection（例如 Duraivel 2026 同时在两个文件夹）时共用一份存储，`manifest.sources` 列出所有路径。
 
@@ -148,11 +148,13 @@ discovered → copied → uploading → parsing → normalizing → translating 
 
 - `discovered`：在文献库目录发现 PDF，或你确认处理一个库外 PDF。
 - `copied`：PDF 已在 vault 中（Zotero 同步复制完成，或库外 PDF 本来就在）。计算 sha256，建立存储目录和 manifest。
-- `uploading`：申请上传地址并上传。**上传成功后立即把 `batchId` 写进 manifest**，之后任何中断都只续取，不重传。
+- `uploading`：申请上传地址并上传。**申请地址后、PUT 前把 `batchId` 写进 manifest 和独立的不可变上传记录**。PUT 报错或重启后先 poll，仅 waiting-file 才复用原地址 PUT；其他状态只续取，不申请新 batch。
 - `parsing`：轮询 MinerU。下载结果包，解包写入 `raw/`。
 - `normalizing`：执行 3.2 节。
 - `translating`：逐段翻译，写 `translation.zh.json`（每完成若干段原子落盘一次，并广播进度）。
 - `ready`：可读、可生成笔记。
+
+每一步开始及翻译入队前检查取消；卸载后不再开始写入或发事件（已拿到的 batch 上传记录仍须保存）。启动时对可重试失败恢复一次，用户取消不自动恢复。
 
 每一步都幂等：启动时读所有 manifest，从各自记录的阶段继续。阶段完成的判定只看存储里的文件和 manifest，不依赖内存状态。
 

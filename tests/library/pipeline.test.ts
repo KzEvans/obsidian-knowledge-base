@@ -134,14 +134,14 @@ test('network interruptions are retried with backoff; a request that never reach
   const sha = await addPdf(f, PDF, 'flaky');
   f.mineru.requestFailures = [new Error('net::ERR_INTERNET_DISCONNECTED')];
   f.mineru.uploadFailures = [new MinerUError('PDF 上传失败，HTTP 502。', true, 502)];
-  f.mineru.pollScript = [retryableNetworkError(), { state: 'pending' }, retryableNetworkError()];
+  f.mineru.pollScript = [{ state: 'waiting-file' }, retryableNetworkError(), { state: 'pending' }, retryableNetworkError()];
   const pipeline = f.create();
   await pipeline.discover(PDF);
   await untilStage(pipeline, () => f.store.manifest(sha), 'ready');
   assert.equal(f.mineru.uploads, 1);
-  // The first request never reached MinerU; the second got a batch whose upload failed; the third succeeded.
-  assert.equal(f.mineru.requests, 3);
-  assert.equal((await f.store.manifest(sha))?.mineru?.batchId, 'batch-2');
+  // Only the failed URL request is repeated; PUT retries reuse the batch and URL.
+  assert.equal(f.mineru.requests, 2);
+  assert.equal((await f.store.manifest(sha))?.mineru?.batchId, 'batch-1');
 });
 
 test('an outage that outlasts the retries fails the stage visibly; retry continues from there', async () => {
@@ -174,7 +174,7 @@ test('a bad token fails at once without retries', async () => {
   assert.equal((await f.store.manifest(sha))?.failure?.retryable, false);
 });
 
-test('a failed MinerU task is not re-uploaded automatically; only a manual retry uploads again', async () => {
+test('a failed MinerU task retains its batch through restart and manual retry', async () => {
   const f = await pipelineFixture();
   const sha = await addPdf(f, PDF, 'mineru failed');
   f.mineru.pollScript = [{ state: 'failed', error: 'file damaged' }];
@@ -193,7 +193,8 @@ test('a failed MinerU task is not re-uploaded automatically; only a manual retry
   assert.equal(f.mineru.uploads, 1);
   restarted.retry(sha);
   await untilStage(restarted, () => f.store.manifest(sha), 'ready');
-  assert.equal(f.mineru.uploads, 2);
+  assert.equal(f.mineru.uploads, 1);
+  assert.equal((await f.store.manifest(sha))?.mineru?.batchId, manifest.mineru?.batchId);
   pipeline.dispose();
 });
 
@@ -390,7 +391,7 @@ test('a batch carried over from the old reader cache is resumed; if MinerU no lo
     schemaVersion: 1, sha256: sha, sources: [], stage: 'parsing', failure: null, priority: false, updatedAt: 'x',
     mineru: { batchId: 'old-batch', modelVersion: 'vlm', options: { enable_formula: true, enable_table: true, language: 'en' }, origin: 'imported-reader-cache' },
   });
-  f.mineru.pollScript = [new MinerUError('MinerU 返回错误，代码 -60012。', false, 200)];
+  f.mineru.pollScript = [new MinerUError('MinerU 返回错误，代码 -60012。', false, 200, -60012)];
   const pipeline = f.create();
   await pipeline.start();
   await pipeline.discover(PDF);
