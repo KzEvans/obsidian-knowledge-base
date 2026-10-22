@@ -1,16 +1,14 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { parseHTML } from "linkedom";
 import { prepareNearbyImages } from "../../src/reader/image-decode";
+import { dom } from "./harness";
 
 function setup(count = 3) {
-  const { document: dom } = parseHTML("<!doctype html><html><body></body></html>");
-  const document = dom as unknown as Document;
-  const root = document.createElement("div");
+  const { document } = dom();
+  const root = document.body.createDiv();
   Object.defineProperty(root, "clientHeight", { value: 400 });
-  document.body.append(root);
   const images = Array.from({ length: count }, () => {
-    const image = document.createElement("img"); image.loading = "lazy"; root.append(image); return image;
+    const image = root.createEl("img"); image.loading = "lazy"; return image;
   });
   let callback: IntersectionObserverCallback | undefined;
   let options: IntersectionObserverInit | undefined;

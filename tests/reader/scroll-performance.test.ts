@@ -20,16 +20,17 @@ function harness(withObserver = false) {
   const frames = new Map<number, FrameRequestCallback>();
   const timers = new Map<number, { at: number; callback: () => void }>();
   const reports: ScrollPerformanceReport[] = [];
-  const document = Object.assign(new Events(), { hidden: false, focused: true, hasFocus() { return this.focused; }, defaultView: undefined as any });
+  const noView: unknown = undefined;
+  const document = Object.assign(new Events(), { hidden: false, focused: true, hasFocus() { return this.focused; }, defaultView: noView });
   class Observer {
     pending: PerformanceEntry[] = [];
-    constructor(private callback: (list: { getEntries(): PerformanceEntry[] }) => void) { observer = this; }
+    constructor(private callback: (list: { getEntries(): PerformanceEntry[] }) => void) { observers.push(this); }
     observe(options: object): void { assert.deepEqual(options, { type: 'longtask' }); }
     takeRecords(): PerformanceEntry[] { const records = this.pending; this.pending = []; return records; }
     disconnect(): void { disconnects++; }
     emit(entries: PerformanceEntry[]): void { this.callback({ getEntries: () => entries }); }
   }
-  let observer: Observer | undefined;
+  const observers: Observer[] = [];
   document.defaultView = {
     performance: { now: () => clock },
     requestAnimationFrame(callback: FrameRequestCallback) { frameRequests++; const id = ++nextId; frames.set(id, callback); return id; },
@@ -50,7 +51,7 @@ function harness(withObserver = false) {
   const attach = () => observeScrollPerformance(root as unknown as HTMLElement, report => reports.push(report));
   return {
     root, document, frames, timers, reports, attach,
-    observer: () => observer!,
+    observer: () => observers.at(-1)!,
     counts: () => ({ frameRequests, domQueries, disconnects }),
     time: (timestamp: number) => { clock = timestamp; },
     frame: (timestamp: number) => { clock = timestamp; const queued = [...frames.values()]; frames.clear(); for (const callback of queued) callback(timestamp); },

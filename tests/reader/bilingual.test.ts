@@ -2,11 +2,13 @@ import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import type { Segment } from '../../src/core/types';
+import type * as Controller from '../../src/reader/controller';
+import type * as Render from '../../src/reader/render';
 import type { ReaderRenderOptions, RenderBlock } from '../../src/reader/render';
 import { dom, harness, load, rectangle, withGeometry } from './harness';
 
-const renderer = load<typeof import('../../src/reader/render')>('src/reader/render.ts');
-const controller = load<typeof import('../../src/reader/controller')>('src/reader/controller.ts');
+const renderer = load<typeof Render>('src/reader/render.ts');
+const controller = load<typeof Controller>('src/reader/controller.ts');
 
 function segment(sourceHash: string, field: Segment['field'] = 'text', index = 0): Segment {
   return { field, index, sourceHash };
@@ -36,9 +38,7 @@ const ZH: Record<string, string> = {
 
 async function render(options: Partial<ReaderRenderOptions> = {}, blocks = BLOCKS) {
   const { document } = dom();
-  const root = document.createElement('div');
-  root.className = 'pdf-reader-content';
-  document.body.append(root);
+  const root = document.body.createDiv({ cls: 'pdf-reader-content' });
   await (await renderer).renderReader(root, blocks, {
     fontSize: 18, lineHeight: 1.5, assetUrl: reference => `app://local/${reference}`,
     onSource: () => {}, onCopy: () => {}, onZoom: () => {},
@@ -167,7 +167,7 @@ test('copy keeps only the visible layer and drops page markers and buttons', asy
   setLanguage(root, 'zh');
   const document = root.ownerDocument;
   const article = root.querySelector('article')!;
-  const range = { commonAncestorContainer: article, cloneContents: () => { const fragment = document.createDocumentFragment(); fragment.append(article.cloneNode(true)); return fragment; } };
+  const range = { commonAncestorContainer: article, cloneContents: () => { const fragment = createFragment(); fragment.append(article.cloneNode(true)); return fragment; } };
   Object.defineProperty(document, 'getSelection', { value: () => ({ isCollapsed: false, rangeCount: 1, getRangeAt: () => range }), configurable: true });
   let copied: string | undefined;
   let prevented = false;

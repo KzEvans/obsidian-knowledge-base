@@ -1,19 +1,19 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { ReaderBlock } from "../../src/core/types";
+import type * as Render from "../../src/reader/render";
 import type { ReaderRenderOptions, RenderBlock } from "../../src/reader/render";
 import { dom, harness, load, rectangle } from "./harness";
 
 // Ported from legacy/pdf-reading-mode/tests/render.test.ts; behaviour is unchanged.
-const renderer = load<typeof import("../../src/reader/render")>("src/reader/render.ts");
+const renderer = load<typeof Render>("src/reader/render.ts");
 
 async function render(
   blocks: RenderBlock[], invalidFormula?: string, extraOptions: Partial<ReaderRenderOptions> = {},
   beforeRender?: (root: HTMLElement) => void,
 ) {
   const { document } = dom({ invalidFormula });
-  const root = document.createElement("div");
-  document.body.append(root);
+  const root = document.body.createDiv();
   beforeRender?.(root);
   const options: ReaderRenderOptions = { fontSize: 18, lineHeight: 1.5, assetUrl: () => "", onSource: () => {}, onCopy: () => {}, onZoom: () => {}, ...extraOptions };
   await (await renderer).renderReader(root, blocks, options);
@@ -188,6 +188,7 @@ test("figure OCR text is omitted while real captions, footnotes and numbered cap
 
 test("lazy figure and equation images reserve supplied dimensions without decoding", async () => {
   let decodes = 0;
+  let imageProto: object | undefined;
   const dimensionsRequested: string[] = [];
   const { root } = await render([
     block("figure", "figure", "", { asset: "figure.png" }),
@@ -196,14 +197,11 @@ test("lazy figure and equation images reserve supplied dimensions without decodi
     assetUrl: reference => `app://local/${reference}`,
     assetDimensions: reference => { dimensionsRequested.push(reference); return { width: 900, height: 450 }; },
   }, root => {
-    const document = root.ownerDocument;
-    const create = document.createElement.bind(document);
-    document.createElement = ((name: string, options?: ElementCreationOptions) => {
-      const element = create(name, options);
-      if (name === "img") Object.defineProperty(element, "decode", { value: () => { decodes++; return new Promise(() => {}); } });
-      return element;
-    }) as Document["createElement"];
+    imageProto = Object.getPrototypeOf(root.createEl("img")) as object;
+    root.empty();
+    Object.defineProperty(imageProto, "decode", { value: () => { decodes++; return new Promise(() => {}); }, configurable: true, writable: true });
   });
+  Reflect.deleteProperty(imageProto!, "decode");
   assert.equal(decodes, 0);
   assert.deepEqual(dimensionsRequested, ["figure.png", "equation.png"]);
   for (const image of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) {
@@ -270,8 +268,10 @@ test("page tracker coalesces scroll frames and reuses cached geometry, then disp
     element.getBoundingClientRect = () => { measurements++; return rectangle(index * 100 - root.scrollTop, 90); };
   });
   const win = root.ownerDocument.defaultView!;
+  /* eslint-disable @typescript-eslint/unbound-method -- restored verbatim after the test */
   const request = win.requestAnimationFrame;
   const cancel = win.cancelAnimationFrame;
+  /* eslint-enable @typescript-eslint/unbound-method -- end of saved originals */
   const frames = new Map<number, FrameRequestCallback>();
   let nextFrame = 0;
   win.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
@@ -368,8 +368,10 @@ test("page tracker reports rebuild attempts and isolated invalidation counters w
   const { root } = await render([block("body", "paragraph", "Body text.")]);
   const win = root.ownerDocument.defaultView!;
   const originalObserver = win.ResizeObserver;
+  /* eslint-disable @typescript-eslint/unbound-method -- restored verbatim after the test */
   const originalRequest = win.requestAnimationFrame;
   const originalCancel = win.cancelAnimationFrame;
+  /* eslint-enable @typescript-eslint/unbound-method -- end of saved originals */
   let observerCallback: ResizeObserverCallback | undefined;
   win.ResizeObserver = class {
     constructor(callback: ResizeObserverCallback) { observerCallback = callback; }
@@ -382,10 +384,9 @@ test("page tracker reports rebuild attempts and isolated invalidation counters w
   root.scrollTop = 0;
   root.getBoundingClientRect = () => rectangle(0, height);
   root.querySelector<HTMLElement>(".pdf-reader-block")!.getBoundingClientRect = () => rectangle(-root.scrollTop, 100);
-  const image = root.ownerDocument.createElement("img");
-  const reserved = root.ownerDocument.createElement("img");
+  const image = root.createEl("img");
+  const reserved = root.createEl("img");
   reserved.dataset.readerLayoutReserved = "true";
-  root.append(image, reserved);
   const tracker = (await renderer).createSourcePageTracker(root, () => {});
   try {
     assert.equal(tracker.getPage(), undefined);

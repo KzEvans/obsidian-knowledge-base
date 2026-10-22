@@ -6,11 +6,13 @@ import type { EventMap } from '../../src/core/events';
 import type { ModuleContext } from '../../src/core/module';
 import type { PdfToolbarButton, PipelineControl } from '../../src/core/services';
 import type { Manifest, StoredDocument, TranslationFile } from '../../src/core/types';
+import type * as Controller from '../../src/reader/controller';
+import type * as Settings from '../../src/reader/settings';
 import type { ReaderSettings } from '../../src/reader/settings';
 import { dom, harness, load } from './harness';
 
-const controllerModule = load<typeof import('../../src/reader/controller')>('src/reader/controller.ts');
-const settingsModule = load<typeof import('../../src/reader/settings')>('src/reader/settings.ts');
+const controllerModule = load<typeof Controller>('src/reader/controller.ts');
+const settingsModule = load<typeof Settings>('src/reader/settings.ts');
 
 const SHA = 'c'.repeat(64);
 
@@ -108,7 +110,7 @@ async function setup(options: Setup = {}) {
   } as unknown as ModuleContext<ReaderSettings>;
   const controller = new ReaderController(context);
   controller.start();
-  const click = async () => { button!.onClick(leaf, document.createElement('button')); await settle(); };
+  const click = async () => { button!.onClick(leaf, document.body.createEl('button')); await settle(); };
   const command = async (id: string) => { const ran = commands.get(id)!.checkCallback(false); await settle(); return ran; };
   const root = () => content.querySelector<HTMLElement>('.pdf-reader-content');
   const panel = () => content.querySelector<HTMLElement>('.pdf-reader-processing');

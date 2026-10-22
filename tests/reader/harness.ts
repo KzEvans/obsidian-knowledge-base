@@ -66,7 +66,12 @@ export function load<T>(relativeToRepo: string): Promise<T> {
           builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: OBSIDIAN_STUB }));
         },
       }],
-    }).then(result => import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0]!.text).toString('base64')}`));
+    }).then(result => {
+      const url = `data:text/javascript;base64,${Buffer.from(result.outputFiles[0]!.text).toString('base64')}`;
+      // The bundle is built just above from this repository's own sources.
+      // eslint-disable-next-line no-unsanitized/method -- trusted, locally built module
+      return import(url) as Promise<unknown>;
+    });
     cache.set(relativeToRepo, module);
   }
   return module as Promise<T>;
@@ -76,19 +81,24 @@ interface ElementInfo { cls?: string | string[]; text?: string; attr?: Record<st
 
 let installed = false;
 
+/** linkedom's own factory methods, which the helpers below are built on. */
+function raw(document: Document): { createElement(tag: string): HTMLElement; createDocumentFragment(): DocumentFragment } {
+  return document;
+}
+
 /** Obsidian's DOM additions, implemented on linkedom's shared prototypes. */
 function installDomHelpers(sample: Document): void {
   if (installed) return;
   installed = true;
   // Every prototype that defines append(): elements, fragments and documents all get the helpers.
   const targets = new Set<object>();
-  for (let proto: object | null = sample.createElement('div'); proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto) as object | null) targets.add(proto);
-  for (let proto: object | null = sample.createDocumentFragment(); proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto) as object | null) targets.add(proto);
+  for (let proto: object | null = raw(sample).createElement('div'); proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto) as object | null) targets.add(proto);
+  for (let proto: object | null = raw(sample).createDocumentFragment(); proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto) as object | null) targets.add(proto);
   const prototypes = [...targets].filter(proto => Object.prototype.hasOwnProperty.call(proto, 'append'));
   function createEl(this: Node, tag: string, info: ElementInfo | string = {}): HTMLElement {
     const options = typeof info === 'string' ? { cls: info } : info;
     const owner = this.nodeType === 9 ? this as Document : this.ownerDocument!;
-    const created = owner.createElement(tag);
+    const created = raw(owner).createElement(tag);
     const classes = Array.isArray(options.cls) ? options.cls : options.cls?.split(' ') ?? [];
     for (const name of classes.filter(Boolean)) created.classList.add(name);
     if (options.text !== undefined) created.textContent = options.text;
@@ -119,20 +129,20 @@ function installDomHelpers(sample: Document): void {
     if (!('getBoundingClientRect' in target)) Object.defineProperty(target, 'getBoundingClientRect', { value: () => rectangle(0, 0, 0), configurable: true, writable: true });
     if (!('scrollIntoView' in target)) Object.defineProperty(target, 'scrollIntoView', { value: () => {}, configurable: true, writable: true });
   }
-  (globalThis as unknown as { createFragment: () => DocumentFragment }).createFragment = () => shared.__readerHarness.document.createDocumentFragment();
+  (globalThis as unknown as { createFragment: () => DocumentFragment }).createFragment = () => raw(shared.__readerHarness.document).createDocumentFragment();
 }
 
 /** A fresh linkedom document with Obsidian's helpers and a reset harness. */
 export function dom(extra: Partial<MathHarness> = {}): { document: Document; window: Window & typeof globalThis; body: HTMLElement } {
   const { document: parsed, window } = parseHTML('<!doctype html><html><head></head><body></body></html>');
-  const document = parsed as unknown as Document;
+  const document = parsed;
   installDomHelpers(document);
   shared.__readerHarness = { document, calls: [], loaded: false, notices: [], modals: [], ...extra };
-  return { document, window: window as unknown as Window & typeof globalThis, body: document.body };
+  return { document, window, body: document.body };
 }
 
 export function rectangle(top: number, height = 80, width = 500): DOMRect {
-  return { top, left: 0, right: width, bottom: top + height, width, height, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+  return { top, left: 0, right: width, bottom: top + height, width, height, x: 0, y: top, toJSON: () => ({}) };
 }
 
 /** Run `body` with every element's getBoundingClientRect answered by `geometry`. */

@@ -1,10 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import type { Manifest } from '../../src/core/types';
+import type * as Status from '../../src/reader/status';
 import type { StatusAction } from '../../src/reader/status';
 import { dom, load } from './harness';
 
-const status = load<typeof import('../../src/reader/status')>('src/reader/status.ts');
+const status = load<typeof Status>('src/reader/status.ts');
 
 function manifest(overrides: Partial<Manifest> = {}): Manifest {
   return { schemaVersion: 1, sha256: 'a'.repeat(64), sources: [], stage: 'parsing', failure: null, priority: false, updatedAt: 'now', ...overrides };
