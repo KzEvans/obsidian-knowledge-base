@@ -23,3 +23,8 @@ export class FileSystemAdapter {}
 export function setIcon(): void {}
 export function loadPdfJs(): Promise<never> { return Promise.reject(new Error('pdf.js is not available in unit tests')); }
 export function requestUrl(): Promise<never> { return Promise.reject(new Error('network is not available in unit tests')); }
+export class MarkdownView {}
+export class MarkdownRenderer {}
+export class TFolder {}
+
+export function normalizePath(value: string): string { return value.replace(/\\/g, '/').replace(/\/+/g, '/'); }

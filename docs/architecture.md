@@ -84,9 +84,9 @@ export function register(ctx: ModuleContext): ModuleHandle
 - 读写走 Node `fs`（桌面专用），这样可以 `fsync` 后 `rename` 做原子写。
 - **只有流水线写入。** `store` 导出两套接口：`StoreReader`（reader、agent 使用）和 `StoreWriter`（只有 library 拿得到，由 `main.ts` 传入）。lint 规则保证 reader、agent 拿不到 `StoreWriter`。
 - **iCloud 冲突副本：** 读目录时识别 `manifest 2.json`、`document 3.json` 这类名字。发现后：
-  - 不覆盖、不合并，该论文进入 `conflict` 状态；
+  - 不自动覆盖或合并，该论文进入 `conflict` 状态；
   - 状态栏和阅读模式给出提示，列出冲突文件；
-  - 提供"保留较新版本"操作，由你确认后把另一份移到 `.research/conflicts/<时间>/`。
+  - 提供保留当前或副本的操作，由你确认后把另一份移到 `.research/conflicts/<时间>/`；manifest 的 batch 历史、raw 哈希和来源路径只增不减，以免旧副本触发重复上传。
 - **`raw/` 不可修改。** 写一次后不再碰。规范化版本升级时从 `raw/` 离线重建 `document.json` 和 `derived/`，绝不重新上传。
 - **路径索引：** `.research/index.json` 记录 vault 路径 → sha256。library 在 PDF 的 `rename`、`delete`、`create` 事件里维护它，reader 打开 PDF 时先查索引，查不到再计算哈希。同一份 PDF 出现在多个 collection（例如 Duraivel 2026 同时在两个文件夹）时共用一份存储，`manifest.sources` 列出所有路径。
 
@@ -148,11 +148,13 @@ discovered → copied → uploading → parsing → normalizing → translating 
 
 - `discovered`：在文献库目录发现 PDF，或你确认处理一个库外 PDF。
 - `copied`：PDF 已在 vault 中（Zotero 同步复制完成，或库外 PDF 本来就在）。计算 sha256，建立存储目录和 manifest。
-- `uploading`：申请上传地址并上传。**上传成功后立即把 `batchId` 写进 manifest**，之后任何中断都只续取，不重传。
+- `uploading`：申请上传地址并上传。**申请地址后、PUT 前把 `batchId` 写进 manifest 和独立的不可变上传记录**。PUT 报错或重启后先 poll，仅 waiting-file 才复用原地址 PUT；其他状态只续取，不申请新 batch。
 - `parsing`：轮询 MinerU。下载结果包，解包写入 `raw/`。
 - `normalizing`：执行 3.2 节。
 - `translating`：逐段翻译，写 `translation.zh.json`（每完成若干段原子落盘一次，并广播进度）。
 - `ready`：可读、可生成笔记。
+
+每一步开始及翻译入队前检查取消；卸载后不再开始写入或发事件（已拿到的 batch 上传记录仍须保存）。启动时对可重试失败恢复一次，用户取消不自动恢复。
 
 每一步都幂等：启动时读所有 manifest，从各自记录的阶段继续。阶段完成的判定只看存储里的文件和 manifest，不依赖内存状态。
 
@@ -198,14 +200,14 @@ interface AgentAdapter {
 
 1. 你在论文的 PDF、阅读模式或笔记里执行"生成笔记"，或在文献列表里多选。只对 `ready` 的论文开放。
 2. 在临时目录建工作区，放入：规范化全文（纯文本 Markdown，带图表编号，不带页码）、元数据、`purpose.md`（若存在）、vault 笔记和概念页的标题清单。
-3. 智能体只能写工作区里的 `note.md`，可以只读 vault（用于"候选关联"一节的搜索）。
-4. 程序把 Qwen-MT 的摘要译文填进"摘要翻译"一节，写 frontmatter，跑 lint。
-5. 发布前检查目标笔记：若生成期间被改过（mtime + 内容哈希与开始时的快照不同），不覆盖，保留候选稿并提示。
+3. 两个 CLI 都用只读模式读取工作区和 vault（用于"候选关联"一节的搜索），按 JSON schema 返回 `{ noteMarkdown: string }`；程序把候选写成临时 `note.md`，CLI 不获得任何文件写权限。
+4. 程序替换整个"摘要翻译"小节为完整 Qwen-MT 摘要译文；有段落缺译就保留占位标记并提示，不采用模型自写的摘要。再写 frontmatter、跑 lint。
+5. 发布前检查目标笔记：若生成期间被改过（mtime + 内容哈希与开始时的快照不同），不覆盖，保留候选稿并提示。新建时目标必须不存在，即使文件名与另一篇笔记碰撞也不覆盖。发布边界再次检查取消。
 6. 重新生成时保留 `## 人工复核`、`# 提问`、`user-notes` 标记块和已合并的精读块，规则与 Python 的 `protected_spans` 一致。
 
 ### 5.3 笔记问答
 
-浮窗行为与现在一致。论文全文从解析存储读；会话按笔记保存（存 CLI 的会话 id 和消息），切换适配器后旧会话无法续接，新开一轮。
+浮窗行为与现在一致；准备上下文时即占用发送状态，防止重复请求。CLI 收到最终事件后继续读取到进程正常退出，确保会话保存；然后才向调用方报告完成。问答写入时将正文标题降级到问题小节以下，标题和受保护区扫描忽略代码围栏。论文全文从解析存储读；会话按笔记保存（存 CLI 的会话 id 和消息），切换适配器后旧会话无法续接，新开一轮。
 
 ## 6. reader
 

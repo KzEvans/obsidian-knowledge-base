@@ -1,1 +1,13 @@
-/* Styles for this module. Prefix classes with pw-. */
+/* library: pipeline panel, backlog confirmation, status bar */
+.pw-pipeline-modal { width: min(760px, 92vw); }
+.pw-pipeline-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--size-4-2); margin-bottom: var(--size-4-3); }
+.pw-pipeline-list { display: flex; flex-direction: column; gap: var(--size-4-2); max-height: 60vh; overflow-y: auto; }
+.pw-pipeline-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--size-4-3); padding: var(--size-4-2) 0; border-bottom: 1px solid var(--background-modifier-border); }
+.pw-pipeline-info { min-width: 0; flex: 1; }
+.pw-pipeline-title { font-weight: var(--font-semibold); overflow-wrap: anywhere; }
+.pw-pipeline-error { color: var(--text-error); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
+.pw-pipeline-actions { display: flex; gap: var(--size-4-1); flex-shrink: 0; }
+.pw-muted { color: var(--text-muted); font-size: var(--font-ui-small); }
+.pw-pre-line { white-space: pre-line; }
+.pw-backlog-list { max-height: 40vh; overflow-y: auto; font-size: var(--font-ui-small); }
+.pw-library-status { cursor: pointer; }
