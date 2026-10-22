@@ -58,3 +58,10 @@ export function preserveHumanContent(original: string, candidate: string): strin
   if (!result.includes('<!-- user-notes:start -->')) result += '\n<!-- user-notes:start -->\n<!-- user-notes:end -->\n';
   return result;
 }
+
+/** For a brand-new note: protected blocks are human territory, so drop any the agent wrote. */
+export function stripProtected(text: string): string {
+  let result = text;
+  for (const [start, end] of protectedSpans(text).reverse()) result = result.slice(0, start) + result.slice(end);
+  return result;
+}
