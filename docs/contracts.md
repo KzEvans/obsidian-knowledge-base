@@ -157,6 +157,7 @@ interface StoreReader {
   readDerived(sha, relativePath): Promise<Uint8Array | undefined>;
   assetUrl(sha, assetPath): string;                           // assetPath 取自 document.assets[*].path
   conflicts(sha): Promise<string[]>;                          // 例如 ["manifest 2.json"]
+  paths(): Promise<Record<string, string>>;                   // 完整的路径 → sha 索引
 }
 interface StoreWriter extends StoreReader {
   writeManifest(sha, manifest): Promise<void>;                 // manifest.sha256 必须等于 sha
@@ -165,8 +166,9 @@ interface StoreWriter extends StoreReader {
   writeDocument(sha, document): Promise<void>;
   writeTranslations(sha, file): Promise<void>;
   setPath(vaultPath, sha | null): Promise<void>;               // 串行化写 index.json
-  paths(): Promise<Record<string, string>>;
-  archiveConflict(sha, fileName): Promise<void>;               // 移到 .research/conflicts/<时间>/<sha>/
+  archiveConflict(sha, fileName): Promise<void>;               // 保留当前版本：冲突副本移到 .research/conflicts/<时间>/<sha>/
+  keepConflictCopy(sha, fileName): Promise<void>;              // 保留冲突副本：当前版本移走，副本改回正式文件名
+  removeStaleTemps(sha): Promise<void>;
 }
 ```
 
@@ -212,7 +214,7 @@ function termsKey(text, terms): string;          // 写入 translation.zh.json �
 function termsFor(text, terms): Term[];
 
 // http.ts
-type Http = (request: RequestUrlParam) => Promise<{ status; text; arrayBuffer; json }>;
+type Http = (request: RequestUrlParam) => Promise<{ status; headers /* 小写名 */; text; arrayBuffer; json }>;
 function obsidianHttp(requestUrl): Http;
 ```
 
@@ -250,13 +252,13 @@ interface PdfToolbar {
 function leafId(leaf): string;       // 事件载荷里的 leafId
 ```
 
-工具栏序号：阅读模式 10，划线翻译 20。
+工具栏序号：阅读模式 10，划线翻译 20，生成笔记 30。
 
 ### 5.7 其他
 
 - `hash.ts`：`sha256Bytes`（分片让出主线程）、`sha256Text`、`segmentHash`、`normalizeSegmentText`。
 - `secrets.ts`：`redact`、`errorMessage`、`registerSecretForRedaction`。
-- `obsidian-internal.d.ts`：Obsidian 和 pdf.js 缺失类型的唯一位置。
+- `obsidian-internal.d.ts`：Obsidian 和 pdf.js 缺失类型的唯一位置；`electron.d.ts`：Electron `webUtils`（附件取本地路径）。
 
 ## 6. 事件总线
 
@@ -274,6 +276,16 @@ function leafId(leaf): string;       // 事件载荷里的 leafId
 | `note:generated` | `{ notePath, sha, conflict }` | agent | — |
 
 事件只是通知，订阅方收到后应从存储重新读取，不依赖载荷里的状态。
+
+### 6.1 阅读层 DOM 约定（reader 提供，selection 依赖）
+
+| 元素 | 约定 |
+|---|---|
+| 阅读层根元素 | `.pdf-reader-content`，属性 `data-pdf-reader-active="true|false"`、`data-lang="en|zh"` |
+| 双层单元 | `.pw-block`，内含两个 `.pw-layer`，各带 `lang="en"` / `lang="zh"`；当前不显示的那层带 `aria-hidden="true"` |
+| 界面元素 | 阅读层内所有不属于论文正文的元素（"原文 p.N""复制页链"等工具按钮、页码标记、折叠标题、缺译文标记、状态提示）带 `data-pw-ui` 属性 |
+
+selection 取选区文字时，删除克隆内容中所有 `[aria-hidden="true"]` 和 `[data-pw-ui]` 节点；落在 `lang="zh"` 层或 `data-lang="zh"` 根元素内的选区不翻译。
 
 ## 7. 笔记文件
 
@@ -300,7 +312,13 @@ function leafId(leaf): string;       // 事件载荷里的 leafId
 - `skills/paper-note/lint.ts` 导出 `lintNote(markdown, options?): { ok, problems: { rule, message, line?, section? }[], length }`。agent 在生成后调用；"检查当前笔记"命令也调用它。签名已冻结，规则由 note-skill 实现。
 - 模板的 9 个二级标题（按顺序）：摘要翻译、研究背景、前人工作与不足、作者的思考路径、本文内容与创新点、论点与证据、Takeaways、Follow-up ideas、与现有知识的候选关联。
 - "摘要翻译"一节由 agent 程序填入（取 `role: "abstract"` 块的译文），模型输出时该节留空标记 `<!-- abstract-translation -->`，agent 替换。
+- `skills/paper-note/fulltext.ts` 导出 `fullText(document: StoredDocument): string`：交给 CLI 的规范化全文（Markdown，不含页码；行首标记 `[摘要]`、`[图]`、`[表]`、`[参考文献]`）。全文格式由 skill 一方定义，agent 和评测都调用它，不各自实现。
+- 模型写出的 `note.md`：可选的 YAML frontmatter 只含 `concepts`、`materials`、`methods`、`phenomena` 四个列表（`[[链接]]` 字符串）；正文从 `## 摘要翻译` 开始，不写一级标题和其他 frontmatter。agent 取出四个列表并写入完整 frontmatter 和一级标题。
 
 ## 10. 样式
 
 每个模块有自己的 `styles.css`（`src/<module>/styles.css`），构建时按 core、library、agent、reader、selection 的顺序合并为根目录 `styles.css`。类名一律以 `pw-` 开头。
+
+## 11. library 产出、agent 读取的文件
+
+agent 生成笔记时读取 library 维护的 `sources/literature/manifests/zotero-doc.json`（schema_version 1，字段与旧 Python 版一致：`items[].{sha256, destination, collection_path, parent_key, attachment_key, title, creators, year, doi, journal, issn, impact_factor*, active}`）和 `supporting-information.json`。这些字段视为冻结接口，library 修改格式前要先改本节。

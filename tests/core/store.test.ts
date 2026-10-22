@@ -105,3 +105,18 @@ test('stale temp files from an interrupted write are ignored by reads and can be
   await store.removeStaleTemps(SHA);
   assert.deepEqual(await fs.readdir(paper), ['manifest.json']);
 });
+
+test('keeping a conflict copy moves the current file aside and puts the copy in its place', async () => {
+  const { store, paper, base } = await setup();
+  await store.writeManifest(SHA, manifest({ stage: 'ready' }));
+  await fs.writeFile(path.join(paper, 'manifest 2.json'), JSON.stringify(manifest({ stage: 'parsing' })));
+  await store.keepConflictCopy(SHA, 'manifest 2.json');
+  assert.equal((await store.manifest(SHA))?.stage, 'parsing');
+  assert.deepEqual(await store.conflicts(SHA), []);
+  const archived = await fs.readdir(path.join(base, '.research', 'conflicts'), { recursive: true });
+  assert.ok(archived.some(name => name.endsWith(`${SHA}/manifest.json`)));
+  await fs.mkdir(path.join(paper, 'raw 2'));
+  await store.keepConflictCopy(SHA, 'raw 2');
+  assert.ok((await fs.stat(path.join(paper, 'raw'))).isDirectory());
+  await assert.rejects(store.keepConflictCopy(SHA, 'manifest.json'), StoreError);
+});

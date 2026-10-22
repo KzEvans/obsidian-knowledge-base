@@ -14,7 +14,7 @@ function fakeHttp(responses: Array<Partial<HttpResponse> & { status: number }>) 
     calls.push(request);
     const next = responses.shift();
     if (!next) throw new Error('unexpected request');
-    return { text: '', arrayBuffer: new ArrayBuffer(0), json: undefined, ...next };
+    return { headers: {}, text: '', arrayBuffer: new ArrayBuffer(0), json: undefined, ...next };
   };
   return { http, calls };
 }

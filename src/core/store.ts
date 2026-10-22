@@ -18,6 +18,8 @@ export interface StoreReader {
   assetUrl(sha: string, assetPath: string): string;
   /** iCloud conflict copies such as `manifest 2.json` in the paper directory. */
   conflicts(sha: string): Promise<string[]>;
+  /** The whole vault-path → sha index. */
+  paths(): Promise<Record<string, string>>;
 }
 
 /** Only the pipeline (library) receives this. */
@@ -29,9 +31,12 @@ export interface StoreWriter extends StoreReader {
   writeDocument(sha: string, document: StoredDocument): Promise<void>;
   writeTranslations(sha: string, file: TranslationFile): Promise<void>;
   setPath(vaultPath: string, sha: string | null): Promise<void>;
-  paths(): Promise<Record<string, string>>;
-  /** Move a conflict copy aside after you chose which version to keep. */
+  /** Keep the current version: move the conflict copy to .research/conflicts/. */
   archiveConflict(sha: string, fileName: string): Promise<void>;
+  /** Keep the conflict copy: move the current version to .research/conflicts/ and put the copy in its place. */
+  keepConflictCopy(sha: string, fileName: string): Promise<void>;
+  /** Remove temp files left by an interrupted write. */
+  removeStaleTemps(sha: string): Promise<void>;
 }
 
 export class StoreError extends Error {
@@ -157,10 +162,26 @@ export class FileStore implements StoreWriter {
 
   async archiveConflict(sha: string, fileName: string): Promise<void> {
     if (!CONFLICT.test(fileName)) throw new StoreError(`不是冲突副本：${fileName}`, 'invalid-path');
+    const destination = await this.conflictDestination(sha);
+    await fs.rename(path.join(this.paperDir(sha), fileName), path.join(destination, fileName));
+  }
+
+  async keepConflictCopy(sha: string, fileName: string): Promise<void> {
+    const match = CONFLICT.exec(fileName);
+    if (!match) throw new StoreError(`不是冲突副本：${fileName}`, 'invalid-path');
+    const currentName = match[1]! + (match[3] ?? '');
+    const directory = this.paperDir(sha);
+    const destination = await this.conflictDestination(sha);
+    try { await fs.rename(path.join(directory, currentName), path.join(destination, currentName)); }
+    catch (error) { if (!isMissing(error)) throw error; }
+    await fs.rename(path.join(directory, fileName), path.join(directory, currentName));
+  }
+
+  private async conflictDestination(sha: string): Promise<string> {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const destination = path.join(this.root, 'conflicts', stamp, checkSha(sha));
     await fs.mkdir(destination, { recursive: true });
-    await fs.rename(path.join(this.paperDir(sha), fileName), path.join(destination, fileName));
+    return destination;
   }
 
   /** Remove temp files left by an interrupted write. */
