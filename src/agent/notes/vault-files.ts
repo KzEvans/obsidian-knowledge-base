@@ -15,11 +15,13 @@ export function vaultNoteFiles(app: App): NoteFiles {
   };
   return {
     snapshot,
-    async publish(notePath, text, baseline) {
+    async publish(notePath, text, baseline, signal) {
+      signal.throwIfAborted();
       const target = normalizePath(notePath);
       if (!unchanged(baseline, await snapshot(target))) return false;
       if (!baseline) {
         await ensureFolder(app, target.split('/').slice(0, -1).join('/'));
+        signal.throwIfAborted();
         try { await app.vault.create(target, text); return true; }
         catch { return false; } // created meanwhile
       }
@@ -28,6 +30,7 @@ export function vaultNoteFiles(app: App): NoteFiles {
       try {
         // Last check inside the atomic read-modify-write.
         await app.vault.process(file, data => {
+          signal.throwIfAborted();
           if (sha256Text(data) !== baseline.hash) throw new ConflictError();
           return text;
         });

@@ -9,7 +9,7 @@ import type { LintResult } from '../../../skills/paper-note/lint';
 import { collect } from '../cli/adapter';
 import type { AgentAdapter } from '../cli/adapter';
 import { composeNote } from './compose';
-import { ABSTRACT_MARKER, abstractTranslation } from './fulltext';
+import { abstractTranslation } from './fulltext';
 import { PURPOSE_PATH, localDate, localIso, noteIdentity, paperMetadata } from './metadata';
 import type { PaperMetadata } from './metadata';
 
@@ -28,7 +28,7 @@ export function unchanged(baseline: NoteSnapshot | null, current: NoteSnapshot |
 export interface NoteFiles {
   snapshot(notePath: string): Promise<NoteSnapshot | null>;
   /** Writes only while the note still matches `baseline` (null: must not exist yet). False means conflict. */
-  publish(notePath: string, text: string, baseline: NoteSnapshot | null): Promise<boolean>;
+  publish(notePath: string, text: string, baseline: NoteSnapshot | null, signal: AbortSignal): Promise<boolean>;
 }
 
 export interface GenerateDeps {
@@ -59,6 +59,7 @@ export interface GenerateResult {
 export class GenerationError extends Error {}
 
 export async function generateNote(sha: string, deps: GenerateDeps, signal: AbortSignal, onStatus: (message: string) => void = () => undefined): Promise<GenerateResult> {
+  signal.throwIfAborted();
   const manifest = await deps.store.manifest(sha);
   if (manifest?.stage !== 'ready') throw new GenerationError('这篇论文还没有处理完成（需要解析和翻译都就绪）。');
   const document = await deps.store.document(sha);
@@ -79,7 +80,8 @@ export async function generateNote(sha: string, deps: GenerateDeps, signal: Abor
   } else {
     ({ notePath, displayTitle } = noteIdentity(metadata, generatedDate));
   }
-  const baseline = await deps.files.snapshot(notePath);
+  const baseline = existing ? await deps.files.snapshot(notePath) : null;
+  signal.throwIfAborted();
 
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'paper-workbench-note-'));
   try {
@@ -87,20 +89,28 @@ export async function generateNote(sha: string, deps: GenerateDeps, signal: Abor
     await writeWorkspace(workspace, { document: fullText(document), metadata, purpose: await deps.readVaultText(PURPOSE_PATH), titles: deps.markdownPaths() });
     const { adapter, model } = deps.agent();
     onStatus(`${adapter.name === 'codex' ? 'Codex' : 'Claude Code'} 正在撰写笔记…`);
-    await collect(adapter.run({
+    signal.throwIfAborted();
+    const result = await collect(adapter.run({
       prompt: generationPrompt(deps.vaultPath),
-      instructions: deps.skill,
+      instructions: deps.skill + '\n本次通过只读结构化输出交付：将完整笔记 Markdown 放入 noteMarkdown 字符串，由程序保存为 note.md；不要调用写入工具。',
       cwd: workspace,
       readableDirs: [deps.vaultPath],
       model,
       timeoutMs: deps.timeoutMs,
-      mode: 'write-workspace',
+      mode: 'read-only',
+      outputSchema: { type: 'object', properties: { noteMarkdown: { type: 'string' } }, required: ['noteMarkdown'], additionalProperties: false },
       ephemeral: true,
     }, signal));
-    let candidate: string;
-    try { candidate = await fs.readFile(path.join(workspace, 'note.md'), 'utf8'); }
-    catch { throw new GenerationError('智能体没有写出 note.md。'); }
-    if (!candidate.trim()) throw new GenerationError('智能体写出的 note.md 是空的。');
+    signal.throwIfAborted();
+    let output: unknown;
+    try { output = JSON.parse(result.text); }
+    catch { throw new GenerationError('智能体没有返回有效的 note.md 结构化候选稿。'); }
+    if (typeof output !== 'object' || output === null || !('noteMarkdown' in output) || typeof output.noteMarkdown !== 'string' || !output.noteMarkdown.trim()) {
+      throw new GenerationError('智能体没有返回非空的 note.md 候选稿。');
+    }
+    const candidate = output.noteMarkdown;
+    await fs.writeFile(path.join(workspace, 'note.md'), candidate);
+    signal.throwIfAborted();
 
     const abstract = abstractTranslation(document, translations);
     const note = composeNote({
@@ -108,11 +118,13 @@ export async function generateNote(sha: string, deps: GenerateDeps, signal: Abor
     });
     const lint = lintNote(note);
     onStatus('正在发布…');
-    if (await deps.files.publish(notePath, note, baseline)) {
-      return { notePath, conflict: false, lint, abstractFilled: !note.includes(ABSTRACT_MARKER) };
+    signal.throwIfAborted();
+    if (await deps.files.publish(notePath, note, baseline, signal)) {
+      return { notePath, conflict: false, lint, abstractFilled: abstract !== undefined };
     }
+    signal.throwIfAborted();
     const candidatePath = await deps.saveCandidate(`${localIso(now).replace(/[:+]/g, '-')} ${path.posix.basename(notePath)}`, note);
-    return { notePath, conflict: true, candidatePath, lint, abstractFilled: !note.includes(ABSTRACT_MARKER) };
+    return { notePath, conflict: true, candidatePath, lint, abstractFilled: abstract !== undefined };
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -133,7 +145,7 @@ async function writeWorkspace(dir: string, input: { document: string; metadata: 
 /** Only the workspace; how to write the note is PAPER_NOTE_SKILL's job (passed as instructions). */
 export function generationPrompt(vaultPath: string): string {
   return [
-    '按开发者指令中的 paper-note 规范，为当前工作目录中的论文撰写笔记，写入工作目录中的 note.md。',
+    '按 paper-note 规范撰写完整笔记，以 JSON 对象的 noteMarkdown 字符串返回，程序将其保存为 note.md。',
     '',
     '工作目录中的文件：',
     '- fulltext.md：论文规范化全文。',
@@ -141,6 +153,6 @@ export function generationPrompt(vaultPath: string): string {
     '- purpose.md（可能不存在）：研究目标。',
     '- vault-titles.md：知识库中已有笔记和概念页的路径清单。',
     `知识库目录（只读）：${vaultPath}`,
-    '除 note.md 外不要创建、修改或删除任何文件。',
+    '所有输入只读，不要创建、修改或删除文件。',
   ].join('\n');
 }

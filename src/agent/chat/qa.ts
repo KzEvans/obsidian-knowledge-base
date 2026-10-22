@@ -1,3 +1,4 @@
+import { markdownHeadings, questionBody } from '../notes/headings';
 import type { ChatMessage } from '../settings';
 
 /** Pure text helpers for the note chat, ported from codex-note-chat. */
@@ -29,18 +30,17 @@ export function insertQuestionAnswerSection(text: string, messages: readonly Cha
   const pairs = pairConversationMessages(messages);
   if (!pairs.length) return text;
   const lines = text.split('\n');
-  const headingIndex = lines.findIndex(line => line.trim() === '# 提问');
+  const headings = markdownHeadings(text);
+  const headingIndex = headings.find(heading => heading.level === 1 && heading.text === '提问')?.line ?? -1;
   let sectionEnd = lines.length;
   let nextNumber = 1;
   if (headingIndex >= 0) {
-    for (let index = headingIndex + 1; index < lines.length; index += 1) {
-      const line = lines[index]!;
-      if (/^#\s+/.test(line)) { sectionEnd = index; break; }
-      const number = /^##\s+(\d+)\s*$/.exec(line.trim());
-      if (number) nextNumber = Math.max(nextNumber, Number(number[1]) + 1);
+    for (const heading of headings.filter(heading => heading.line > headingIndex)) {
+      if (heading.level === 1) { sectionEnd = heading.line; break; }
+      if (heading.level === 2 && /^\d+$/.test(heading.text)) nextNumber = Math.max(nextNumber, Number(heading.text) + 1);
     }
   }
-  const blocks = pairs.map((pair, offset) => [`## ${nextNumber + offset}`, '', `Q：${pair.question}`, '', `A：${pair.answer}`].join('\n'));
+  const blocks = pairs.map((pair, offset) => [`## ${nextNumber + offset}`, '', `Q：${questionBody(pair.question)}`, '', `A：${questionBody(pair.answer)}`].join('\n'));
   if (headingIndex < 0) return `${text.replace(/\s*$/, '')}\n\n# 提问\n\n${blocks.join('\n\n')}\n`;
   const before = lines.slice(0, sectionEnd).join('\n').replace(/\s*$/, '');
   const after = lines.slice(sectionEnd).join('\n').replace(/^\s*/, '');

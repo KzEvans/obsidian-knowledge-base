@@ -81,3 +81,16 @@ test('chat prompt: at most 12 outlinks, purpose capped at 6000 characters, full 
   assert.ok(!resumed.includes('<paper_fulltext>'));
   assert.ok(resumed.includes('全文已在本会话前文提供'));
 });
+
+test('saved answers with headings and code survive appending and regeneration', async () => {
+  const { preserveHumanContent } = await import('../../src/agent/notes/protect');
+  const answer = 'Intro\n\n# Mechanism\nIMPORTANT ANSWER\n\n```python\n# code comment\n## 99\nprint(1)\n```\n\n## Detail\nFinal detail';
+  const messages: ChatMessage[] = [{ role: 'user', text: 'why?', at }, { role: 'assistant', text: answer, at }];
+  const saved = insertQuestionAnswerSection('# Paper\n', messages);
+  const more = insertQuestionAnswerSection(saved, qa);
+  assert.match(more, /## 2\n\nQ：单位是否正确/);
+  const regenerated = preserveHumanContent(more, '# Regenerated\nNew body\n');
+  assert.ok(regenerated.includes('IMPORTANT ANSWER'));
+  assert.ok(regenerated.includes('Final detail'));
+  assert.ok(regenerated.includes('```python\n# code comment\n## 99\nprint(1)\n```'));
+});

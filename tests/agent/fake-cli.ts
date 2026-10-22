@@ -36,6 +36,11 @@ process.stdin.on('end', () => {
     out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'lo' } } });
     out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } });
     out({ type: 'result', subtype: 'success', is_error: false, result: 'Hello', session_id: 'session-456' });
+  } else if (scenario === 'delayed-save') {
+    out({ type: 'thread.started', thread_id: 'persisted-thread' });
+    out({ type: 'item.completed', item: { id: 'a', type: 'agent_message', text: 'done' } });
+    out({ type: 'turn.completed' });
+    setTimeout(() => fs.writeFileSync(process.env.FAKE_SAVED, 'saved'), 150);
   } else if (scenario === 'fail') {
     out({ type: 'thread.started', thread_id: 'thread-123' });
     out({ type: 'turn.failed', error: { message: 'model refused' } });

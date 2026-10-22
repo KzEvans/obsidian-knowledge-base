@@ -22,6 +22,7 @@ export class NoteController {
   private queue: Job[] = [];
   private running?: { job: Job; controller: AbortController };
   private notice?: Notice;
+  private disposed = false;
 
   constructor(private readonly context: ModuleContext<AgentSettings>) {}
 
@@ -89,12 +90,14 @@ export class NoteController {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.queue = [];
     this.running?.controller.abort();
     this.notice?.hide();
   }
 
   private enqueue(jobs: Job[]): void {
+    if (this.disposed) return;
     for (const job of jobs) {
       if (this.running?.job.sha === job.sha || this.queue.some(queued => queued.sha === job.sha)) continue;
       this.queue.push(job);
@@ -114,6 +117,7 @@ export class NoteController {
       this.status(`${prefix}${job.label}`);
       try {
         const result = await generateNote(job.sha, this.deps(), controller.signal, message => this.status(`${prefix}${job.label}\n${message}`));
+        if (this.disposed || controller.signal.aborted) continue;
         this.context.events.emit('note:generated', { notePath: result.notePath, sha: job.sha, conflict: result.conflict });
         this.report(job, result);
       } catch (error) {
@@ -155,13 +159,14 @@ export class NoteController {
   }
 
   private status(message: string): void {
+    if (this.disposed) return;
     if (!this.notice) this.notice = new Notice(message, 0);
     else this.notice.setMessage(message);
   }
 
   private report(job: Job, result: GenerateResult): void {
     if (result.conflict) {
-      new Notice(`“${path.posix.basename(result.notePath, '.md')}”在生成期间被修改，没有覆盖。候选稿保存在：${result.candidatePath}`, 0);
+      new Notice(`“${path.posix.basename(result.notePath, '.md')}”目标路径已被占用或在生成期间被修改，没有覆盖。候选稿保存在：${result.candidatePath}`, 0);
       return;
     }
     const abstract = result.abstractFilled ? '' : '；摘要译文缺失，已保留占位标记';

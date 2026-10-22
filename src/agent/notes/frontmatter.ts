@@ -1,3 +1,5 @@
+import { parse } from 'yaml';
+
 /** Line-level frontmatter handling that leaves every other line of the note untouched. */
 
 export type FieldValue = string | number | boolean | null | readonly string[];
@@ -29,26 +31,11 @@ export function readScalar(frontmatter: string, key: string): string | undefined
 
 /** Inline (`[a, "b"]`) or block (`- a`) list of strings. */
 export function readList(frontmatter: string, key: string): string[] {
-  const lines = frontmatter.split(/\r?\n/);
-  const index = lines.findIndex(line => new RegExp(`^${escapeRegExp(key)}:`).test(line));
-  if (index < 0) return [];
-  const inline = lines[index]!.slice(key.length + 1).trim();
-  if (inline.startsWith('[')) {
-    try {
-      const parsed: unknown = JSON.parse(inline);
-      if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean);
-    } catch { /* YAML flow list without quotes */ }
-    return inline.slice(1, -1).split(',').map(item => unquote(item.trim())).filter(Boolean);
-  }
-  if (inline) return [];
-  const items: string[] = [];
-  for (const line of lines.slice(index + 1)) {
-    const item = /^\s+-\s+(.*)$/.exec(line) ?? /^-\s+(.*)$/.exec(line);
-    if (!item) break;
-    const value = unquote(item[1]!.trim());
-    if (value) items.push(value);
-  }
-  return items;
+  const parsed: unknown = parse(frontmatter);
+  if (typeof parsed !== 'object' || parsed === null || !(key in parsed)) return [];
+  const value: unknown = Reflect.get(parsed, key);
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string').map(item => item.trim());
 }
 
 /** Replace or add one top-level scalar, creating the frontmatter when missing. */
@@ -73,12 +60,6 @@ export function setReviewStatus(text: string, reviewed: boolean): string {
 export function isReviewed(text: string): boolean {
   const { frontmatter } = splitFrontmatter(text);
   return frontmatter !== null && readScalar(frontmatter, 'status') === 'reviewed';
-}
-
-function unquote(value: string): string {
-  if (value.startsWith('"') && value.endsWith('"')) { try { return String(JSON.parse(value)); } catch { return value.slice(1, -1); } }
-  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
-  return value;
 }
 
 function escapeRegExp(value: string): string {

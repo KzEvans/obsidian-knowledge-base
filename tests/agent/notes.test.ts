@@ -85,7 +85,7 @@ function memoryFiles(initial: Record<string, string> = {}): NoteFiles & { notes:
   };
 }
 
-const MODEL_NOTE = `---\nconcepts: ["[[软驱动器]]"]\nmaterials:\n  - "[[弹性体]]"\nmethods: []\nphenomena: [[[大变形]], [[驱动]]]\ntitle: should be ignored\n---\n# Model title\n\n## 摘要翻译\n\n${ABSTRACT_MARKER}\n\n## 研究背景\n\n背景。\n\n# 提问\n\n模型编造的问答\n`;
+const MODEL_NOTE = `---\nconcepts: ["[[软驱动器]]"]\nmaterials:\n  - "[[弹性体]]"\nmethods: []\nphenomena: ['[[大变形]]', '[[驱动]]']\ntitle: should be ignored\n---\n# Model title\n\n## 摘要翻译\n\n${ABSTRACT_MARKER}\n\n## 研究背景\n\n背景。\n\n# 提问\n\n模型编造的问答\n`;
 
 function fakeAgent(onRun: (request: AgentRequest) => Promise<void> | void, note = MODEL_NOTE): { adapter: AgentAdapter; requests: AgentRequest[] } {
   const requests: AgentRequest[] = [];
@@ -95,9 +95,8 @@ function fakeAgent(onRun: (request: AgentRequest) => Promise<void> | void, note 
       name: 'codex',
       async *run(request) {
         requests.push(request);
-        await fs.writeFile(path.join(request.cwd, 'note.md'), note);
         await onRun(request);
-        yield { type: 'done', text: 'ok' };
+        yield { type: 'done', text: JSON.stringify({ noteMarkdown: note }) };
       },
     },
   };
@@ -154,8 +153,8 @@ test('abstract translation fills the marker; without one the marker stays', () =
   assert.equal(translation, '我们报道了一种软驱动器。');
   assert.equal(fillAbstract(`## 摘要翻译\n\n${ABSTRACT_MARKER}\n`, translation), '## 摘要翻译\n\n我们报道了一种软驱动器。\n');
   assert.equal(abstractTranslation(document, undefined), undefined);
-  assert.equal(fillAbstract(ABSTRACT_MARKER, undefined), ABSTRACT_MARKER);
-  assert.equal(fillAbstract(ABSTRACT_MARKER, 'cost $1 and $& kept'), 'cost $1 and $& kept');
+  assert.equal(fillAbstract('', undefined), `## 摘要翻译\n\n${ABSTRACT_MARKER}\n\n`);
+  assert.ok(fillAbstract('', 'cost $1 and $& kept').includes('cost $1 and $& kept'));
 });
 
 // ---- compose ----
@@ -190,7 +189,7 @@ test('generation: workspace contents, agent request, publish, lint', async () =>
   const files = memoryFiles();
   const agent = fakeAgent(async request => {
     const names = (await fs.readdir(request.cwd)).sort();
-    assert.deepEqual(names, ['fulltext.md', 'metadata.json', 'note.md', 'purpose.md', 'vault-titles.md']);
+    assert.deepEqual(names, ['fulltext.md', 'metadata.json', 'purpose.md', 'vault-titles.md']);
     assert.equal(await fs.readFile(path.join(request.cwd, 'fulltext.md'), 'utf8'), fullText(document));
     assert.ok((await fs.readFile(path.join(request.cwd, 'vault-titles.md'), 'utf8')).includes('- wiki/concepts/软驱动器'));
   });
@@ -199,8 +198,8 @@ test('generation: workspace contents, agent request, publish, lint', async () =>
   assert.equal(result.abstractFilled, true);
   assert.deepEqual(Object.keys(result.lint).sort(), ['length', 'ok', 'problems']);
   const request = agent.requests[0]!;
-  assert.equal(request.mode, 'write-workspace');
-  assert.equal(request.instructions, 'SKILL TEXT');
+  assert.equal(request.mode, 'read-only');
+  assert.ok(request.instructions?.startsWith('SKILL TEXT'));
   assert.deepEqual(request.readableDirs, ['/vault']);
   assert.equal(request.model, 'm1');
   assert.ok(!existsSync(request.cwd), 'workspace removed');
@@ -266,4 +265,63 @@ test('an invented # 提问 is dropped even when the old note had no protected bl
   const files = memoryFiles({ [notePath]: '---\ntype: paper\n---\n# plain\n正文\n' });
   await generateNote(SHA, deps(files, fakeAgent(() => undefined), { findExistingNote: () => notePath }), new AbortController().signal);
   assert.ok(!files.notes.get(notePath)!.text.includes('模型编造的问答'));
+});
+
+test('a new-paper filename collision preserves the unrelated note and saves a candidate', async () => {
+  const notePath = 'wiki/papers/软材料/驱动器/2026-10-21 - Jane Smith - Soft actuators with CO₂ & more.md';
+  const original = `---\ntype: paper\nsource_sha256: ${'b'.repeat(64)}\n---\n# Another paper\nHuman text\n`;
+  const files = memoryFiles({ [notePath]: original });
+  const run = deps(files, fakeAgent(() => undefined));
+  const result = await generateNote(SHA, run, new AbortController().signal);
+  assert.equal(result.conflict, true);
+  assert.equal(files.notes.get(notePath)?.text, original);
+  assert.equal(run.saved.size, 1);
+});
+
+test('cancellation after CLI completion or at the publish boundary prevents publishing', async () => {
+  for (const phase of ['result', 'publish']) {
+    const controller = new AbortController();
+    const files = memoryFiles();
+    const agent = fakeAgent(() => { if (phase === 'result') controller.abort(); });
+    await assert.rejects(generateNote(SHA, deps(files, agent), controller.signal, status => {
+      if (phase === 'publish' && status === '正在发布…') controller.abort();
+    }), { name: 'AbortError' });
+    assert.equal(files.notes.size, 0);
+  }
+});
+
+test('the program replaces the whole abstract section even if the model omits or misplaces its marker', () => {
+  for (const body of [
+    '## 摘要翻译\n\nModel paraphrase\n\n## 研究背景\n\nBackground\n',
+    `## 摘要翻译\n\nModel paraphrase\n\n## 研究背景\n\n${ABSTRACT_MARKER}\n`,
+    '## 研究背景\n\nBackground\n',
+  ]) {
+    const filled = fillAbstract(body, 'Qwen exact text $&');
+    assert.match(filled, /^## 摘要翻译\n\nQwen exact text \$&\n\n## 研究背景/);
+    assert.ok(!filled.includes('Model paraphrase'));
+  }
+});
+
+test('partial abstract translations stay incomplete instead of silently dropping a paragraph', () => {
+  const extra = block('a2', 'paragraph', 'Second abstract paragraph.', { role: 'abstract', segments: [{ field: 'text', index: 0, sourceHash: 'missing' }] });
+  assert.equal(abstractTranslation({ ...document, blocks: [...document.blocks, extra] }, translations), undefined);
+});
+
+test('generation uses read-only structured output and writes note.md itself', async () => {
+  const adapter: AgentAdapter = {
+    name: 'codex',
+    async *run(request) {
+      assert.equal(request.mode, 'read-only');
+      assert.ok(request.outputSchema);
+      yield { type: 'done', text: JSON.stringify({ noteMarkdown: MODEL_NOTE }) };
+    },
+  };
+  const files = memoryFiles();
+  await generateNote(SHA, deps(files, { adapter }), new AbortController().signal);
+  assert.equal(files.notes.size, 1);
+});
+
+test('candidate tags accept standard YAML quoting, commas and comments', () => {
+  assert.deepEqual(readList("concepts: ['[[A, B]]', '[[C]]'] # comment", 'concepts'), ['[[A, B]]', '[[C]]']);
+  assert.deepEqual(readList('concepts:\n  - "[[A, B]]" # comment\n', 'concepts'), ['[[A, B]]']);
 });

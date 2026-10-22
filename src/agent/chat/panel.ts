@@ -67,6 +67,8 @@ export class NoteChat {
   private noteContext: NoteContext | null = null;
   private attachments: PendingAttachment[] = [];
   private active?: AbortController;
+  private preparing = false;
+  private disposed = false;
   private drag?: { pointerId: number; startX: number; startY: number; left: number; top: number };
   private resize?: { pointerId: number; direction: string; startX: number; startY: number; left: number; top: number; right: number; bottom: number };
   private selectionTimer = 0;
@@ -133,6 +135,7 @@ export class NoteChat {
   onWindowResize(): void { this.constrain(); }
 
   dispose(): void {
+    this.disposed = true;
     window.clearTimeout(this.selectionTimer);
     window.clearTimeout(this.saveTimer);
     this.active?.abort();
@@ -441,12 +444,15 @@ export class NoteChat {
 
   private async send(): Promise<void> {
     const refs = this.refs;
-    if (this.active || !refs || !this.noteContext) return;
+    if (this.active || this.preparing || this.disposed || !refs || !this.noteContext) return;
     const attachments = this.attachments.slice();
     const question = refs.input.value.trim() || (attachments.length ? '请分析这些附件。' : '');
     if (!question) { new Notice('请输入问题'); refs.input.focus(); return; }
 
-    await this.refreshContext();
+    this.preparing = true;
+    try { await this.refreshContext(); }
+    finally { this.preparing = false; }
+    if (this.disposed || !this.noteContext) return;
     const context = this.noteContext;
     const session = this.session()!;
     const notePath = context.file.path;
@@ -511,12 +517,14 @@ export class NoteChat {
   }
 
   private async consume(events: AsyncIterable<AgentEvent>, session: ChatSession, onDelta: (text: string) => void): Promise<string> {
+    let final: string | undefined;
     for await (const event of events) {
       if (event.type === 'session') { session.threadId = event.id; this.scheduleSave(); }
       else if (event.type === 'text-delta') onDelta(event.text);
       else if (event.type === 'error') throw new Error(event.message);
-      else return event.text;
+      else final = event.text;
     }
+    if (final !== undefined) return final;
     throw new Error('智能体没有返回最终回答。');
   }
 

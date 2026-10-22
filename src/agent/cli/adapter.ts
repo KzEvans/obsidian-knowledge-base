@@ -58,7 +58,7 @@ export function createAdapter(dialect: CliDialect, options: AdapterOptions): Age
     name: dialect.name,
     async *run(request, signal) {
       let tempDir: string | undefined;
-      let finished = false;
+      let final: Extract<AgentEvent, { type: 'done' }> | undefined;
       let lastError: string | undefined;
       try {
         const command = resolveCli(dialect.binary, options.cliPath());
@@ -80,16 +80,17 @@ export function createAdapter(dialect: CliDialect, options: AdapterOptions): Age
           for (const parsed of parse(event)) {
             // An error before the final answer may be recovered (e.g. a reconnect); report it only if none comes.
             if (parsed.type === 'error') { lastError = parsed.message; continue; }
-            if (finished) continue;
-            if (parsed.type === 'done') finished = true;
+            if (final) continue;
+            if (parsed.type === 'done') { final = parsed; continue; }
             yield parsed;
           }
         }
-        if (!finished) yield { type: 'error', message: lastError ?? `${dialect.name} 没有返回最终回答。` };
+        if (final) yield final;
+        else yield { type: 'error', message: lastError ?? `${dialect.name} 没有返回最终回答。` };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const exitFailure = error instanceof ProcessError && error.kind === 'exit';
-        if (!finished) yield { type: 'error', message: lastError && exitFailure ? `${lastError}（${message}）` : message };
+        yield { type: 'error', message: lastError && exitFailure ? `${lastError}（${message}）` : message };
       } finally {
         if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
       }
@@ -100,11 +101,13 @@ export function createAdapter(dialect: CliDialect, options: AdapterOptions): Age
 /** Drain a run: stream deltas to `onDelta`, return the final text and session id, throw on error. */
 export async function collect(events: AsyncIterable<AgentEvent>, onDelta?: (text: string) => void): Promise<{ text: string; sessionId?: string }> {
   let sessionId: string | undefined;
+  let final: string | undefined;
   for await (const event of events) {
     if (event.type === 'session') sessionId = event.id;
     else if (event.type === 'text-delta') onDelta?.(event.text);
     else if (event.type === 'error') throw new Error(event.message);
-    else return { text: event.text, sessionId };
+    else final = event.text;
   }
+  if (final !== undefined) return { text: final, sessionId };
   throw new Error('智能体没有返回最终回答。');
 }

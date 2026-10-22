@@ -243,3 +243,11 @@ test('a missing CLI is an error event, not a crash', async () => {
   assert.equal(all.length, 1);
   assert.equal(all[0]?.type, 'error');
 });
+
+
+test('the final answer is returned only after the CLI has saved its session and exited', async () => {
+  const saved = path.join(scratch, 'saved-session');
+  const run = fake(codexDialect, 'delayed-save', { FAKE_SAVED: saved });
+  await collect(run.adapter.run({ ...base, cwd: scratch }, new AbortController().signal));
+  assert.equal(readFileSync(saved, 'utf8'), 'saved');
+});

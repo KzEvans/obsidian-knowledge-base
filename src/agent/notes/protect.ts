@@ -1,3 +1,5 @@
+import { markdownHeadings } from './headings';
+
 /**
  * Human content that regeneration keeps verbatim (docs/contracts.md §7). A port of
  * protected_spans / preserve_human_content in legacy run_pipeline.py.
@@ -9,11 +11,11 @@ const CHECKBOX = /^\s*[-*+] \[[ xX]\] (.+)$/gm;
 
 export function protectedSpans(text: string): [number, number][] {
   const spans: [number, number][] = [];
-  const headings = [...text.matchAll(/^(#{1,6})\s+(.+?)\s*$/gm)];
+  const headings = markdownHeadings(text);
   headings.forEach((match, index) => {
-    if (!PROTECTED_HEADINGS.has(match[2]!)) return;
-    const level = match[1]!.length;
-    const next = headings.slice(index + 1).find(following => following[1]!.length <= level);
+    if (!PROTECTED_HEADINGS.has(match.text)) return;
+    const level = match.level;
+    const next = headings.slice(index + 1).find(following => following.level <= level);
     spans.push([match.index, next ? next.index : text.length]);
   });
   for (const pattern of [/<!-- user-notes:start -->[\s\S]*?<!-- user-notes:end -->/g, /<!-- intensive-reading:([^:]+):start -->[\s\S]*?<!-- intensive-reading:\1:end -->/g]) {

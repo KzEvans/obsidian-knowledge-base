@@ -26,7 +26,7 @@ export interface ComposeInput {
  */
 export function composeNote(input: ComposeInput): string {
   const { frontmatter, body } = splitFrontmatter(input.candidate.replace(/^\uFEFF/, ''));
-  const tags = Object.fromEntries(TAG_FIELDS.map(key => [key, frontmatter ? readList(frontmatter, key) : []]));
+  const tags = Object.fromEntries(TAG_FIELDS.map(key => [key, frontmatter ? readList(frontmatter, key).filter(link => /^\[\[[^\]\r\n]+\]\]$/.test(link)) : []]));
   const meta = input.metadata;
   const fields: [string, FieldValue][] = [
     ['type', 'paper'],
