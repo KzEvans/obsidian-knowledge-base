@@ -1,5 +1,5 @@
 import { sha256Text } from './hash';
-import { raceWithTimeout } from './http';
+import { abortError, raceWithTimeout } from './http';
 import type { Http } from './http';
 import type { Term } from './types';
 
@@ -15,7 +15,7 @@ export class QwenMtError extends Error {
   }
 }
 
-/** The model changed, dropped or duplicated a protected span. Retry; never store the result. */
+/** The model changed, dropped or duplicated a protected span. Never store the result. */
 export class PlaceholderMismatchError extends Error {
   constructor() {
     super('译文中的公式或上下标占位符不完整。');
@@ -43,27 +43,38 @@ export function createQwenMtClient(http: Http, apiKey: () => string | null, endp
       const source = request.text.trim();
       if (!source) throw new QwenMtError('没有可翻译的文本。', false);
       const { text: masked, spans } = protectSpans(source);
-      const terms = termsFor(source, request.terms);
-      const response = await raceWithTimeout(http({
-        url: normalizeEndpoint(endpoint()),
-        method: 'POST',
-        contentType: 'application/json',
-        headers: { Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: request.model,
-          messages: [{ role: 'user', content: masked }],
-          translation_options: { source_lang: 'auto', target_lang: 'Chinese', ...(terms.length ? { terms } : {}) },
-        }),
-      }), request.timeoutMs, request.signal, `Qwen-MT 在 ${Math.round(request.timeoutMs / 1000)} 秒内没有返回。`);
+      const url = normalizeEndpoint(endpoint());
+      const complete = async (text: string, termSource = text): Promise<string> => {
+        if (request.signal?.aborted) throw abortError();
+        const terms = termsFor(termSource, request.terms);
+        const response = await raceWithTimeout(http({
+          url,
+          method: 'POST',
+          contentType: 'application/json',
+          headers: { Authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            model: request.model,
+            messages: [{ role: 'user', content: text }],
+            translation_options: { source_lang: 'auto', target_lang: 'Chinese', ...(terms.length ? { terms } : {}) },
+          }),
+        }), request.timeoutMs, request.signal, `Qwen-MT 在 ${Math.round(request.timeoutMs / 1000)} 秒内没有返回。`);
 
-      if (response.status === 401 || response.status === 403) throw new QwenMtError('阿里云百炼 API Key 无效、已过期或没有 Qwen-MT 权限。', false, response.status);
-      if (response.status === 429) throw new QwenMtError('Qwen-MT 请求过于频繁或额度不足，稍后重试。', true, 429);
-      if (response.status < 200 || response.status >= 300) {
-        throw new QwenMtError(`Qwen-MT 请求失败（${response.status}）${apiDetail(response.json)}`, response.status >= 500, response.status);
+        if (response.status === 401 || response.status === 403) throw new QwenMtError('阿里云百炼 API Key 无效、已过期或没有 Qwen-MT 权限。', false, response.status);
+        if (response.status === 429) throw new QwenMtError('Qwen-MT 请求过于频繁或额度不足，稍后重试。', true, 429);
+        if (response.status < 200 || response.status >= 300) {
+          throw new QwenMtError(`Qwen-MT 请求失败（${response.status}）${apiDetail(response.json)}`, response.status >= 500, response.status);
+        }
+        const content = completionText(response.json);
+        if (!content) throw new QwenMtError('Qwen-MT 没有返回译文。', true);
+        return content;
+      };
+      const content = await complete(masked, source);
+      try {
+        return restoreSpans(content, spans);
+      } catch (error) {
+        if (!(error instanceof PlaceholderMismatchError) || spans.length === 0) throw error;
       }
-      const content = completionText(response.json);
-      if (!content) throw new QwenMtError('Qwen-MT 没有返回译文。', true);
-      return restoreSpans(content, spans);
+      return translateProseOnly(masked, spans, complete);
     },
   };
 }
@@ -94,6 +105,24 @@ export function restoreSpans(translated: string, spans: readonly string[]): stri
   }
   if (seen.size !== spans.length) throw new PlaceholderMismatchError();
   return translated.replace(PLACEHOLDER, (_, index: string) => spans[Number(index) - 1]!);
+}
+
+/** After one mismatch, keep spans local and translate the gaps in source order. */
+async function translateProseOnly(masked: string, spans: readonly string[], complete: (text: string) => Promise<string>): Promise<string> {
+  const prose = async (text: string) => {
+    const source = text.trim();
+    if (!/\p{L}/u.test(source)) return text;
+    const translated = restoreSpans(await complete(source), []);
+    const start = text.indexOf(source);
+    return text.slice(0, start) + translated + text.slice(start + source.length);
+  };
+  let result = '', offset = 0;
+  for (const match of masked.matchAll(PLACEHOLDER)) {
+    result += await prose(masked.slice(offset, match.index));
+    result += spans[Number(match[1]) - 1]!;
+    offset = match.index + match[0].length;
+  }
+  return result + await prose(masked.slice(offset));
 }
 
 // ---- Glossary ----

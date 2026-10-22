@@ -4,11 +4,11 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { NORMALIZER_VERSION } from '../../src/core/derive';
 import { MinerUError } from '../../src/core/mineru';
-import { PlaceholderMismatchError, QwenMtError } from '../../src/core/qwen-mt';
+import { PlaceholderMismatchError, QwenMtError, createQwenMtClient } from '../../src/core/qwen-mt';
 import type { Manifest } from '../../src/core/types';
 import { FLUSH_EVERY } from '../../src/library/pipeline/pipeline';
 import { deferred, settle } from './helpers';
-import { addPdf, pipelineFixture, retryableNetworkError } from './pipeline-fixture';
+import { addPdf, pipelineFixture, resultFiles, retryableNetworkError } from './pipeline-fixture';
 
 const PDF = 'sources/literature/pdf/DEA/Paper (K1).pdf';
 /** Distinct translatable segments of CONTENT_LIST: title, "Abstract", abstract paragraph and 12 paragraphs. */
@@ -295,7 +295,35 @@ test('a PDF that is gone waits instead of failing, and continues when it reappea
   await untilStage(pipeline, () => f.store.manifest(sha), 'ready');
 });
 
-test('corrupt placeholders are retried, then recorded as failures; nothing corrupt is stored and retry re-translates', async () => {
+test('the pipeline stores a fully reassembled translation after the first placeholder mismatch', async () => {
+  const f = await pipelineFixture();
+  const sha = await addPdf(f, PDF, 'local formula fallback');
+  f.mineru.files = () => ({
+    ...resultFiles(),
+    'auto/paper_content_list.json': new TextEncoder().encode(JSON.stringify([
+      { type: 'text', text: 'The modulus $Y$ is measured.', page_idx: 0, bbox: [100, 100, 900, 200] },
+    ])),
+  });
+  const sent: string[] = [];
+  const qwenMt = createQwenMtClient(async request => {
+    const body = JSON.parse(request.body as string) as { messages: Array<{ content: string }> };
+    const text = body.messages[0]!.content;
+    sent.push(text);
+    const content = text.includes('⟦') ? '损坏的译文' : text === 'The modulus' ? '模量' : '已测量。';
+    return { status: 200, headers: {}, text: '', arrayBuffer: new ArrayBuffer(0), json: { choices: [{ message: { content } }] } };
+  }, () => 'test-key-not-real', () => '');
+  const pipeline = f.create({ qwenMt });
+  await pipeline.discover(PDF);
+  await untilStage(pipeline, () => f.store.manifest(sha), 'ready');
+  const file = (await f.store.translations(sha))!;
+  assert.deepEqual(sent, ['The modulus ⟦1⟧ is measured.', 'The modulus', 'is measured.']);
+  assert.deepEqual(Object.values(file.entries).map(entry => entry.text), ['模量 $Y$ 已测量。']);
+  assert.deepEqual(file.failures, {});
+  assert.equal((await f.store.manifest(sha))?.translation?.done, 1);
+  assert.equal(f.mineru.uploads, 1);
+});
+
+test('placeholder errors after core fallback are recorded once; manual retry preserves successful translations', async () => {
   const f = await pipelineFixture();
   const sha = await addPdf(f, PDF, 'placeholders');
   const flaky = new Map<string, number>();
@@ -313,12 +341,14 @@ test('corrupt placeholders are retried, then recorded as failures; nothing corru
   await untilStage(pipeline, () => f.store.manifest(sha), 'ready');
   const file = (await f.store.translations(sha))!;
   const failures = Object.values(file.failures);
-  assert.equal(failures.length, 1);
-  assert.deepEqual(failures[0]!.error, 'PlaceholderMismatch');
-  assert.equal(failures[0]!.attempts, 3);
-  assert.equal(Object.keys(file.entries).length, SEGMENTS - 1);
+  assert.equal(failures.length, 2);
+  assert.ok(failures.every(failure => failure.error === 'PlaceholderMismatch' && failure.attempts === 1));
+  assert.equal(Object.keys(file.entries).length, SEGMENTS - 2);
   assert.ok(Object.values(file.entries).every(entry => entry.text.startsWith('译：')));
-  assert.equal((await f.store.manifest(sha))?.translation?.failed, 1);
+  assert.equal((await f.store.manifest(sha))?.translation?.failed, 2);
+  assert.equal(flaky.size, 1);
+  assert.ok([...flaky.values()].every(count => count === 1));
+  const callsBeforeRetry = f.qwen.calls.length;
 
   f.qwen.behaviour = request => `译：${request.text}`;
   pipeline.retry(sha);
@@ -328,6 +358,9 @@ test('corrupt placeholders are retried, then recorded as failures; nothing corru
   assert.deepEqual(fixed.failures, {});
   assert.equal(Object.keys(fixed.entries).length, SEGMENTS);
   assert.equal((await f.store.manifest(sha))?.translation?.failed, 0);
+  assert.equal(f.qwen.calls.length - callsBeforeRetry, 2);
+  for (const [hash, entry] of Object.entries(file.entries)) assert.deepEqual(fixed.entries[hash], entry);
+  assert.equal(f.mineru.uploads, 1);
 });
 
 test('a missing DashScope key stops translation at once, keeping finished segments', async () => {

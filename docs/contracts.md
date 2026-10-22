@@ -216,7 +216,7 @@ const MAX_PDF_BYTES, MAX_PDF_PAGES;
 interface QwenMtClient { translate(request: { text; model; terms: Term[]; timeoutMs; signal? }): Promise<string> }
 const FULL_TEXT_MODEL = 'qwen-mt-plus', SELECTION_MODEL = 'qwen-mt-flash';
 class QwenMtError { retryable: boolean; status?: number }
-class PlaceholderMismatchError {}               // 可重试，绝不写入
+class PlaceholderMismatchError {}               // core 首次校验失败已尝试本地保留公式；仍失败则记录缺译，绝不写入
 function termsKey(text, terms): string;          // 写入 translation.zh.json 的 termsKey
 function termsFor(text, terms): Term[];
 
@@ -224,6 +224,8 @@ function termsFor(text, terms): Term[];
 type Http = (request: RequestUrlParam) => Promise<{ status; headers /* 小写名 */; text; arrayBuffer; json }>;
 function obsidianHttp(requestUrl): Http;
 ```
+
+`QwenMtClient.translate` 先请求完整段落，首次占位符校验失败后立即改为只翻译保护片段之间的文字。公式、上下标、源文中的字面占位符和边界空白在本地按原顺序拼回；纯数字/标点不额外请求。所有片段成功才返回完整译文。分段仍有占位符错误时抛出 `PlaceholderMismatchError`，流水线记录一次失败；认证、网络、限流错误分类不变。历史有效缓存继续复用，历史缺译由单篇“重试”处理。
 
 MinerU 每个 HTTP 操作默认 120 秒超时，可取消等待；Obsidian requestUrl 底层请求可能继续，因此取消或超时不代表 PUT 未到服务端。`taskMissing` 仅对应官方 `-60012`（找不到任务）：仅导入的旧 batch 在该错误下可退回首次上传，并保留到 previousBatchIds。认证、额度、限流、普通 HTTP 错误、服务端 failed 都保留 batch。错误码依据 [MinerU 官方文档](https://mineru.net/apiManage/docs)。
 

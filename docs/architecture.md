@@ -109,7 +109,7 @@ export function register(ctx: ModuleContext): ModuleHandle
 
 - 从现有 `qwen-mt.ts` 迁移：OpenAI 兼容接口、`translation_options`、超时、取消、错误信息。
 - 术语表：设置里维护的 `{source, target}` 列表。每段只发送该段实际出现的术语（`translation_options.terms`，以百炼文档为准，阶段 1 实测确认）。
-- 占位符保护：送出前把行内公式 `$…$`、`<sup>…</sup>`、`<sub>…</sub>` 换成编号占位符，返回后还原。占位符集合对不上（多、少、重复、改写）就抛 `PlaceholderMismatchError`，由调用方重试，绝不写入损坏的译文。占位符的具体写法由 core 实现时用真实接口测出最稳的格式。
+- 占位符保护：送出前把公式 `$…$`、`$$…$$`、`<sup>…</sup>`、`<sub>…</sub>` 换成 `⟦n⟧`，返回后校验还原。首次占位符不匹配就丢弃该次结果，公式和上下标留在本地，按源文顺序只翻译周围文字，再保留原有空白拼回。纯标点和数字片段直接保留，各文字片段顺序请求并独立筛选术语。分段返回仍含占位符则抛 `PlaceholderMismatchError`，调用方记录缺译，不再重复整段请求，绝不写入损坏或未完成的译文。网络与限流错误仍按原策略重试。
 - 调用方传模型名：全文翻译和划线翻译可以用不同模型（全文 `qwen-mt-plus`，划线 `qwen-mt-flash`）。
 
 ### 3.4 MinerU 客户端

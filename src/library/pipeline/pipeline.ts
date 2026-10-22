@@ -20,8 +20,6 @@ export const MINERU_CONCURRENCY = 2;
 export const QWEN_CONCURRENCY = 4;
 /** Translations are written to disk after this many new segments. */
 export const FLUSH_EVERY = 8;
-/** A translation whose placeholders keep coming back wrong is recorded as failed after this many tries. */
-export const PLACEHOLDER_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 5_000;
 const POLL_DEADLINE_MS = 2 * 60 * 60 * 1000;
 const TRANSLATE_TIMEOUT_MS = 60_000;
@@ -713,14 +711,7 @@ export class Pipeline implements PipelineControl {
   }
 
   private translateSegment(text: string, terms: readonly Term[], signal: AbortSignal): Promise<string> {
-    let attempt = 0;
-    return withRetry(run => {
-      attempt = run;
-      return this.deps.qwenMt.translate({ text, model: FULL_TEXT_MODEL, terms, timeoutMs: TRANSLATE_TIMEOUT_MS, signal });
-    }, {
-      ...this.retryOptions(signal),
-      isRetryable: error => error instanceof PlaceholderMismatchError ? attempt < PLACEHOLDER_ATTEMPTS : retryable(error),
-    });
+    return withRetry(() => this.deps.qwenMt.translate({ text, model: FULL_TEXT_MODEL, terms, timeoutMs: TRANSLATE_TIMEOUT_MS, signal }), this.retryOptions(signal));
   }
 
   // ---- manifest access ----
@@ -791,7 +782,7 @@ function mineruOptions(): { enable_formula: boolean; enable_table: boolean; lang
 /** Credentials, quota and malformed results fail at once; network trouble is retried. */
 export function retryable(error: unknown): boolean {
   if (error instanceof MinerUError || error instanceof QwenMtError) return error.retryable;
-  if (error instanceof PlaceholderMismatchError) return true;
+  if (error instanceof PlaceholderMismatchError) return false;
   if (error instanceof CancelledError || error instanceof SourceMissingError || error instanceof LegacyCachePendingError || error instanceof ConflictError) return false;
   return true;
 }

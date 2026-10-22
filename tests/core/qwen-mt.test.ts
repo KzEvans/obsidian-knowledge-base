@@ -41,9 +41,78 @@ test('missing, duplicated, extra or out-of-range placeholders are rejected', () 
   assert.equal(restoreSpans('无公式', []), '无公式');
 });
 
-test('a corrupted placeholder from the API surfaces as PlaceholderMismatchError', async () => {
-  const { mt } = client(() => ok('模量 [1] MPa'));
+test('the first placeholder mismatch translates only surrounding prose and reassembles local spans', async () => {
+  const sent: string[] = [];
+  const replies = ['损坏的译文', '模量', '兆帕；氧化物', '在 10', '赫兹'];
+  const { mt } = client(masked => {
+    sent.push(masked);
+    return ok(replies.shift()!);
+  });
+  const result = await mt.translate({
+    text: 'The modulus $Y=0.11$ MPa; oxide<sub>2</sub> at 10<sup>3</sup> Hz $$E=mc^2$$, $a$⟦9⟧.',
+    model: 'm', terms: [], timeoutMs: 1000,
+  });
+  assert.deepEqual(sent, [
+    'The modulus ⟦1⟧ MPa; oxide⟦2⟧ at 10⟦3⟧ Hz ⟦4⟧, ⟦5⟧⟦6⟧.',
+    'The modulus', 'MPa; oxide', 'at 10', 'Hz',
+  ]);
+  assert.equal(result, '模量 $Y=0.11$ 兆帕；氧化物<sub>2</sub> 在 10<sup>3</sup> 赫兹 $$E=mc^2$$, $a$⟦9⟧.');
+});
+
+test('prose fallback filters glossary terms per fragment', async () => {
+  const sentTerms: unknown[] = [];
+  const { mt } = client((masked, body) => {
+    sentTerms.push(body.translation_options);
+    return ok(masked.includes('⟦') ? '损坏的译文' : `译：${masked}`);
+  });
+  await mt.translate({ text: 'modulus $Y$ actuator', model: 'm', terms: [
+    { source: 'modulus', target: '模量' }, { source: 'actuator', target: '驱动器' },
+  ], timeoutMs: 1000 });
+  assert.deepEqual(sentTerms, [
+    { source_lang: 'auto', target_lang: 'Chinese', terms: [{ source: 'modulus', target: '模量' }, { source: 'actuator', target: '驱动器' }] },
+    { source_lang: 'auto', target_lang: 'Chinese', terms: [{ source: 'modulus', target: '模量' }] },
+    { source_lang: 'auto', target_lang: 'Chinese', terms: [{ source: 'actuator', target: '驱动器' }] },
+  ]);
+});
+
+test('formula-only fallback is local and punctuation-only gaps are not sent', async () => {
+  const { mt, calls } = client(() => ok('损坏的译文'));
+  assert.equal(await mt.translate({ text: '$a$ + $$b$$ / <sup>2</sup>', model: 'm', terms: [], timeoutMs: 1000 }), '$a$ + $$b$$ / <sup>2</sup>');
+  assert.equal(calls.length, 1);
+});
+
+test('a corrupt prose fallback is rejected without trying later fragments', async () => {
+  let count = 0;
+  const { mt, calls } = client(() => ok(++count === 1 ? '损坏的译文' : '模量 ⟦1⟧'));
   await assert.rejects(mt.translate({ text: 'modulus $Y$ MPa', model: 'm', terms: [], timeoutMs: 1000 }), PlaceholderMismatchError);
+  assert.equal(calls.length, 2);
+});
+
+test('HTTP errors do not enter prose fallback', async () => {
+  const { mt, calls } = client(() => ({ status: 503 }));
+  await assert.rejects(mt.translate({ text: 'modulus $Y$ MPa', model: 'm', terms: [], timeoutMs: 1000 }), QwenMtError);
+  assert.equal(calls.length, 1);
+});
+
+test('aborting fallback prevents further HTTP requests', async () => {
+  const controller = new AbortController();
+  let count = 0;
+  const { mt, calls } = client(() => {
+    if (++count === 2) controller.abort();
+    return ok('模量');
+  });
+  await assert.rejects(mt.translate({ text: 'modulus $Y$ MPa', model: 'm', terms: [], timeoutMs: 1000, signal: controller.signal }),
+    (error: unknown) => error instanceof Error && error.name === 'AbortError');
+  assert.equal(calls.length, 2);
+});
+
+test('an already aborted translation sends no HTTP request', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const { mt, calls } = client(() => ok('译文'));
+  await assert.rejects(mt.translate({ text: 'modulus $Y$', model: 'm', terms: [], timeoutMs: 1000, signal: controller.signal }),
+    (error: unknown) => error instanceof Error && error.name === 'AbortError');
+  assert.equal(calls.length, 0);
 });
 
 test('only glossary terms present in the text are sent, on word boundaries', async () => {
