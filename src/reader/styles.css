@@ -522,6 +522,9 @@ span.pw-layer {
 }
 
 .pdf-reader-toolbar .pw-reader-language {
+  /* Fixed width: a label change must not rewrap the toolbar and push the text down. */
+  min-width: 7.5em;
+  justify-content: center;
   font-variant-numeric: tabular-nums;
 }
 
