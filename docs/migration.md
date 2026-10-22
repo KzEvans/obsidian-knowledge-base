@@ -22,14 +22,14 @@
 1. 用 `brctl download` 或读取文件触发 iCloud 下载，等待完成。超时先确认是不是 iCloud 下载慢，不直接判失败。
 2. 找到 `*_content_list.json`。没有就跳过（例如 Cai 2024 只有 `job.json`，见 2.2）。
 3. 把 `*_content_list.json`、`*_content_list_v2.json`、`*_model.json`、`layout.json`、`full.md`、`images/` 复制到 `.research/papers/<sha>/raw/`，保持相对路径。
-4. 写 `raw/IMPORTED.json`：来源目录、导入时间、说明哪些成员缺失（旧插件只保存了 json/md/图片）。manifest 中 `mineru.origin = "imported-reader-cache"`，`raw.complete = false`。
+4. 写确定性 `raw/IMPORTED.json`：来源目录、说明哪些成员缺失（旧插件只保存了 json/md/图片）。导入时间只进 manifest；已有旧标记经忽略时间字段校验后原样保留，逐个校验 raw 成员并补写 manifest。导入失败或 iCloud 暂未下载完成时，排除出存量上传清单并等待重试。manifest 中 `mineru.origin = "imported-reader-cache"`，`raw.complete = false`。
 5. 旧的 `fallback/`、`fallback-v2/`、`source-tables-v1/` 裁图**不导入**，规范化阶段重新生成到 `derived/`，保证与新规则一致。`result.json`、`performance.json` 不导入。
 6. 从 `raw/` 离线规范化，再进入翻译。**全程不上传。**
 7. 旧缓存目录保持不动，用于回滚。
 
 ### 2.2 只有 `job.json` 的论文（Cai 2024）
 
-`job.json` 里有已上传的 `batchId`。迁移时把它写进新 manifest 的 `mineru.batchId`，阶段设为 `parsing`，流水线先尝试续取。MinerU 若已不再提供该结果（过期或报错），再按正常流程上传。这一篇会计入存量补跑的确认清单。
+`job.json` 里有已上传的 `batchId`。迁移时把它写进新 manifest 的 `mineru.batchId`，阶段设为 `parsing`，流水线先尝试续取。只有 MinerU 明确返回 `-60012`（任务不存在）才按正常流程上传，并把旧 batchId 留在 previousBatchIds；Token 缺失、限流、额度和普通服务错误都保留 batchId。这一篇会计入存量补跑的确认清单。
 
 ### 2.3 存量补跑
 
