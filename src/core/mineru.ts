@@ -1,5 +1,6 @@
 import { unzipSync } from 'fflate';
-import type { Http } from './http';
+import { abortError, raceWithTimeout } from './http';
+import type { Http, HttpResponse } from './http';
 
 /** MinerU cloud precision API, VLM model (decision 2). Scheduling lives in library; this is HTTP only. */
 export const MINERU_API = 'https://mineru.net/api/v4';
@@ -9,7 +10,7 @@ export const MAX_PDF_PAGES = 200;
 const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 
-export type MinerUState = 'pending' | 'running' | 'converting' | 'done' | 'failed';
+export type MinerUState = 'waiting-file' | 'pending' | 'running' | 'converting' | 'done' | 'failed';
 
 export interface MinerUPoll {
   state: MinerUState;
@@ -19,45 +20,55 @@ export interface MinerUPoll {
 }
 
 export class MinerUError extends Error {
-  constructor(message: string, readonly retryable: boolean, readonly status?: number) {
+  constructor(message: string, readonly retryable: boolean, readonly status?: number, readonly code?: number | string) {
     super(message);
     this.name = 'MinerUError';
   }
+
+  get taskMissing(): boolean { return this.code === -60012 || this.code === '-60012'; }
 }
 
 export interface MinerUClient {
-  requestUpload(sha: string): Promise<{ batchId: string; uploadUrl: string }>;
-  upload(uploadUrl: string, pdf: ArrayBuffer): Promise<void>;
-  poll(batchId: string): Promise<MinerUPoll>;
+  requestUpload(sha: string, signal?: AbortSignal): Promise<{ batchId: string; uploadUrl: string }>;
+  upload(uploadUrl: string, pdf: ArrayBuffer, signal?: AbortSignal): Promise<void>;
+  poll(batchId: string, signal?: AbortSignal): Promise<MinerUPoll>;
   /** Every member of the result archive, after path and size checks. */
-  download(zipUrl: string): Promise<Record<string, Uint8Array>>;
+  download(zipUrl: string, signal?: AbortSignal): Promise<Record<string, Uint8Array>>;
 }
 
 interface ApiEnvelope { code?: unknown; msg?: unknown; data?: unknown }
 
-export function createMinerUClient(http: Http, token: () => string | null): MinerUClient {
-  async function api(endpoint: string, method: 'GET' | 'POST', body?: object): Promise<Record<string, unknown>> {
+export function createMinerUClient(http: Http, token: () => string | null, timeoutMs = 120_000): MinerUClient {
+  async function request(input: Parameters<Http>[0], signal?: AbortSignal): Promise<HttpResponse> {
+    if (signal?.aborted) throw abortError();
+    return raceWithTimeout(http(input), timeoutMs, signal, 'MinerU 请求超时，将先核对同一任务状态。');
+  }
+  async function api(endpoint: string, method: 'GET' | 'POST', body?: object, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const secret = token();
     if (!secret) throw new MinerUError('MinerU Token 未配置，请在设置中保存。', false);
-    const response = await http({
+    const response = await request({
       url: MINERU_API + endpoint, method,
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
-    });
+    }, signal);
     if (response.status === 401 || response.status === 403) throw new MinerUError('MinerU Token 无效或已过期，请在设置中更新。', false, response.status);
     if (response.status === 429) throw new MinerUError('MinerU 请求受限，稍后重试。', true, 429);
     if (response.status >= 400) throw new MinerUError(`MinerU 请求失败，HTTP ${response.status}。`, response.status >= 500, response.status);
     const envelope = response.json as ApiEnvelope | undefined;
-    if (envelope?.code !== 0) throw new MinerUError(`MinerU 返回错误，代码 ${typeof envelope?.code === 'number' || typeof envelope?.code === 'string' ? envelope.code : '未知'}。`, false, response.status);
+    if (envelope?.code !== 0) {
+      const code = typeof envelope?.code === 'number' || typeof envelope?.code === 'string' ? envelope.code : undefined;
+      const retryable = [-10001, -60001, -60007, -60009].includes(Number(code));
+      throw new MinerUError(`MinerU 返回错误，代码 ${code ?? '未知'}。`, retryable, response.status, code);
+    }
     return isRecord(envelope.data) ? envelope.data : {};
   }
 
   return {
-    async requestUpload(sha) {
+    async requestUpload(sha, signal) {
       const data = await api('/file-urls/batch', 'POST', {
         files: [{ name: 'paper.pdf', data_id: 'pw_' + sha.slice(0, 24) }],
         ...MINERU_OPTIONS,
-      });
+      }, signal);
       const uploadUrl: unknown = Array.isArray(data.file_urls) ? (data.file_urls as unknown[])[0] : undefined;
       if (typeof data.batch_id !== 'string' || typeof uploadUrl !== 'string' || !uploadUrl.startsWith('https://')) {
         throw new MinerUError('MinerU 没有返回有效的上传地址。', true);
@@ -65,15 +76,15 @@ export function createMinerUClient(http: Http, token: () => string | null): Mine
       return { batchId: data.batch_id, uploadUrl };
     },
 
-    async upload(uploadUrl, pdf) {
+    async upload(uploadUrl, pdf, signal) {
       if (pdf.byteLength > MAX_PDF_BYTES) throw new MinerUError('MinerU 云端最大支持 200 MB 的文件。', false);
       // The pre-signed URL carries its own credential; no Authorization header.
-      const response = await http({ url: uploadUrl, method: 'PUT', body: pdf });
+      const response = await request({ url: uploadUrl, method: 'PUT', body: pdf }, signal);
       if (response.status < 200 || response.status >= 300) throw new MinerUError(`PDF 上传失败，HTTP ${response.status}。`, true, response.status);
     },
 
-    async poll(batchId) {
-      const data = await api('/extract-results/batch/' + encodeURIComponent(batchId), 'GET');
+    async poll(batchId, signal) {
+      const data = await api('/extract-results/batch/' + encodeURIComponent(batchId), 'GET', undefined, signal);
       const result = Array.isArray(data.extract_result) && isRecord(data.extract_result[0]) ? data.extract_result[0] : undefined;
       if (!result) throw new MinerUError('MinerU 未返回任务状态。', true);
       const state = result.state;
@@ -85,13 +96,13 @@ export function createMinerUClient(http: Http, token: () => string | null): Mine
       const progress = isRecord(result.extract_progress) ? result.extract_progress : undefined;
       const done = Number(progress?.extracted_pages), total = Number(progress?.total_pages);
       return {
-        state: state === 'running' || state === 'converting' ? state : 'pending',
+        state: state === 'waiting-file' || state === 'running' || state === 'converting' ? state : 'pending',
         progress: Number.isFinite(done) && Number.isFinite(total) && total > 0 ? { done, total } : undefined,
       };
     },
 
-    async download(zipUrl) {
-      const response = await http({ url: zipUrl, method: 'GET' });
+    async download(zipUrl, signal) {
+      const response = await request({ url: zipUrl, method: 'GET' }, signal);
       if (response.status !== 200) throw new MinerUError(`解析结果下载失败，HTTP ${response.status}。`, true, response.status);
       return unpackArchive(new Uint8Array(response.arrayBuffer));
     },

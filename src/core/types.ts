@@ -72,6 +72,7 @@ export interface Manifest {
   priority: boolean;
   mineru?: {
     batchId?: string;
+    previousBatchIds?: string[];
     modelVersion: 'vlm';
     options: { enable_formula: boolean; enable_table: boolean; language: string };
     uploadedAt?: string;
