@@ -559,3 +559,8 @@ span.pw-layer {
   width: 140px;
   height: 6px;
 }
+
+/* Measure natural content heights rather than the shared grid row height. */
+.pw-measure .pw-layer {
+  align-self: start;
+}

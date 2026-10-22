@@ -90,7 +90,7 @@ export async function renderReader(root: HTMLElement, blocks: readonly RenderBlo
   }
 
   if (!blocks.length) article.createEl('p', { cls: 'pdf-reader-render-notice', text: '没有可重排的正文，请查看原 PDF。', attr: UI });
-  setLanguage(root, options.language ?? 'en');
+  setLanguage(root, root.dataset.lang === 'zh' ? 'zh' : 'en');
   await flushMath(context, () => {
     if (article.isConnected && article.parentElement === root) {
       article.createEl('p', { cls: 'pdf-reader-render-notice', text: '部分公式未完成排版，可用原文按钮查看源页。', attr: UI, prepend: true });
@@ -424,6 +424,7 @@ function renderBlock(parent: HTMLElement, block: RenderBlock, context: RenderCon
       equation.empty();
       appendImage(equation, original, block.text || '原文公式', context, undefined, block.asset);
     }
+    appendCaptions(wrapper, block, context);
   } else if (block.kind === 'list') {
     appendLayers(wrapper, 'div', segmentFor(block, 'text', 0), block.text, true, context, layer => {
       if (block.html) appendHtml(layer, block.html, context, true, block.text);

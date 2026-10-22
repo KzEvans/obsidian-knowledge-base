@@ -62,7 +62,11 @@ async function setup(options: Setup = {}) {
     translations: options.translations,
     manifest: options.manifest,
     reads: 0,
+    indexSha: SHA,
+    pdfBytes: new TextEncoder().encode('%PDF-new content'),
+    lastSha: '',
   };
+  const vaultEvents = new Map<string, (file: typeof view.file) => void>();
   const requested: string[] = [];
   const calls: string[] = [];
   const pipeline: PipelineControl = {
@@ -83,7 +87,7 @@ async function setup(options: Setup = {}) {
         iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => callback(leaf),
         getMostRecentLeaf: () => leaf,
       },
-      vault: { on: () => ({}) },
+      vault: { on: (name: string, callback: (file: typeof view.file) => void) => { vaultEvents.set(name, callback); return {}; }, adapter: { readBinary: async () => store.pdfBytes.slice().buffer } },
       fileManager: { generateMarkdownLink: (_file: unknown, _source: string, subpath: string, alias: string) => `[[a.pdf${subpath}|${alias}]]` },
     } as unknown as App,
     plugin: {
@@ -96,9 +100,9 @@ async function setup(options: Setup = {}) {
       pdfToolbar: { register: (registered: PdfToolbarButton) => { button = registered; return () => {}; }, refresh: () => {} },
     },
     store: {
-      shaForPath: async () => SHA,
+      shaForPath: async () => store.indexSha,
       manifest: async () => store.manifest,
-      document: async () => { store.reads++; return store.document && structuredClone(store.document); },
+      document: async (sha: string) => { store.reads++; store.lastSha = sha; return store.document && structuredClone(store.document); },
       translations: async () => store.translations,
       conflicts: async () => [],
       assetUrl: (sha: string, assetPath: string) => `app://local/.research/papers/${sha.slice(0, 4)}/${assetPath}`,
@@ -114,7 +118,7 @@ async function setup(options: Setup = {}) {
   const command = async (id: string) => { const ran = commands.get(id)!.checkCallback(false); await settle(); return ran; };
   const root = () => content.querySelector<HTMLElement>('.pdf-reader-content');
   const panel = () => content.querySelector<HTMLElement>('.pdf-reader-processing');
-  return { view, controller, events, emitted, button: () => button!, click, command, commands, root, panel, native, content, store, requested, calls, settings, ephemeral, file, saves: () => saves };
+  return { leaf, view, controller, events, emitted, button: () => button!, click, command, commands, root, panel, native, content, store, requested, calls, settings, ephemeral, file, modify: () => vaultEvents.get('modify')?.(file), saves: () => saves };
 }
 
 async function settle(): Promise<void> {
@@ -269,4 +273,58 @@ test('disposing closes the reader and restores the view', async () => {
   assert.equal(env.root(), null);
   assert.equal(env.emitted.at(-1)?.active, false);
   assert.ok(!env.native.classList.contains('pw-reader-native-hidden'));
+});
+
+
+async function waitUntil(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 300; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 2)); }
+  assert.fail('reader condition not reached');
+}
+
+test('saved SHA position takes priority over a native PDF default page, while an explicit page link wins', async () => {
+  const env = await setup({ document: storedDocument(), settings: { positions: { [SHA]: 3 } } });
+  env.native.createEl('input', { cls: 'page-number', type: 'number', value: '1' });
+  await env.click();
+  assert.equal(env.content.querySelector<HTMLInputElement>('.pdf-reader-page-input')?.value, '3');
+  await env.click();
+  env.view.setEphemeralState({ subpath: '#page=2' });
+  await env.click();
+  assert.equal(env.content.querySelector<HTMLInputElement>('.pdf-reader-page-input')?.value, '2');
+  env.controller.dispose();
+});
+
+test('PDF modification rehashes bytes before the library index catches up and follows the new SHA', async () => {
+  const { sha256Bytes } = await import('../../src/core/hash');
+  const env = await setup({ document: storedDocument() });
+  await env.click();
+  env.store.document = storedDocument();
+  env.store.document.blocks[0]!.text = 'Changed PDF content';
+  const newSha = await sha256Bytes(env.store.pdfBytes);
+  env.file.stat.mtime = 2;
+  env.modify();
+  await waitUntil(() => env.root()?.dataset.pdfReaderActive === 'true');
+  assert.equal(env.store.lastSha, newSha);
+  assert.ok(env.root()?.textContent?.includes('Changed PDF content'));
+  env.store.indexSha = newSha;
+  env.events.emit('paper:document-updated', { sha: newSha, normalizerVersion: 2 });
+  await settle();
+  assert.equal(env.store.lastSha, newSha);
+  env.controller.dispose();
+});
+
+test('translations arriving during the first render update every block after mounting', async () => {
+  const document = storedDocument();
+  document.blocks = Array.from({ length: 400 }, (_, index) => ({ id: `p${index}`, kind: 'paragraph', text: `Original ${index}`, sources: [{ page: 1 }], translatable: true, segments: [{ field: 'text', index: 0, sourceHash: `h${index}` }] }));
+  const env = await setup({ document, translations: translationFile(), manifest: { schemaVersion: 1, sha256: SHA, sources: [], stage: 'translating', failure: null, priority: false, updatedAt: 'x' } });
+  env.button().onClick(env.leaf, env.content.createEl('button'));
+  await waitUntil(() => !!env.root()?.querySelector('.pw-block'));
+  env.store.translations = { schemaVersion: 1, failures: {}, entries: Object.fromEntries(document.blocks.map((_, index) => [`h${index}`, { text: `New translation ${index}`, model: 'm', termsKey: '', at: '' }])) };
+  env.store.manifest = { ...env.store.manifest!, stage: 'ready' };
+  env.events.emit('paper:stage-changed', { sha: SHA, stage: 'ready' });
+  await waitUntil(() => env.root()?.dataset.pdfReaderActive === 'true');
+  await settle();
+  const chinese = Array.from(env.root()!.querySelectorAll('.pw-layer[lang="zh"]'));
+  assert.equal(chinese.length, document.blocks.length);
+  assert.ok(chinese.every(layer => layer.textContent?.startsWith('New translation')));
+  env.controller.dispose();
 });

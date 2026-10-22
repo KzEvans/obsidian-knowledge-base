@@ -270,3 +270,25 @@ test('DOM contract: each .pw-block holds exactly an en and a zh .pw-layer, the h
     }
   }
 });
+
+
+test('a language choice made during batched render remains active at completion', async () => {
+  const { renderReader, setLanguage } = await renderer;
+  const { document } = dom();
+  const root = document.body.createDiv({ cls: 'pdf-reader-content' });
+  const blocks = Array.from({ length: 200 }, (_, index) => block(`p${index}`, 'paragraph', 'Body', { segments: [segment(`h${index}`)] }));
+  const pending = renderReader(root, blocks, { fontSize: 18, lineHeight: 1.5, language: 'en', translation: () => '译文', assetUrl: () => '', onSource: () => {}, onCopy: () => {}, onZoom: () => {} });
+  setLanguage(root, 'zh');
+  await pending;
+  assert.equal(root.dataset.lang, 'zh');
+  assert.ok(Array.from(root.querySelectorAll('.pw-layer[lang="en"]')).every(layer => layer.getAttribute('aria-hidden') === 'true'));
+});
+
+test('equation captions and footnotes are bilingual while the formula is rendered once', async () => {
+  const equation = block('eq-notes', 'equation', '$$a=b$$', { captions: ['Eq. 1 caption'], footnotes: ['Equation footnote'], segments: [segment('eq-cap', 'caption'), segment('eq-note', 'footnote')] });
+  const texts: Record<string, string> = { 'eq-cap': '公式题注', 'eq-note': '公式脚注' };
+  const root = await render({ translation: hash => texts[hash] }, [equation]);
+  assert.equal(root.querySelectorAll('.pdf-reader-equation-body .test-math').length, 1);
+  assert.equal(root.querySelector('figcaption [lang="zh"]')?.textContent, '公式题注');
+  assert.equal(root.querySelector('.pdf-reader-figure-footnotes [lang="zh"]')?.textContent, '公式脚注');
+});

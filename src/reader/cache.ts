@@ -93,15 +93,21 @@ export class ShaCache {
   private readonly known = new Map<string, string>();
   private readonly pending = new Map<string, Promise<string | undefined>>();
 
-  constructor(private readonly lookup: (path: string) => Promise<string | undefined>, private readonly limit = 64) {}
+  private readonly modified = new Set<string>();
+
+  constructor(private readonly lookup: (path: string) => Promise<string | undefined>, private readonly verify = lookup, private readonly limit = 64) {}
+
+  /** Once modified on this device, new versions must be hashed rather than trusting a lagging index. */
+  invalidate(path: string): void { this.modified.add(path); }
 
   get(file: FileVersion): Promise<string | undefined> {
-    const key = JSON.stringify([file.path, file.stat.mtime, file.stat.size]);
+    const key = JSON.stringify([file.path, file.stat.mtime, file.stat.size, this.modified.has(file.path)]);
     const known = this.known.get(key);
     if (known) return Promise.resolve(known);
     let job = this.pending.get(key);
     if (!job) {
-      const created: Promise<string | undefined> = this.lookup(file.path).then(sha => {
+      const lookup = this.modified.has(file.path) ? this.verify : this.lookup;
+      const created: Promise<string | undefined> = lookup(file.path).then(sha => {
         if (sha) {
           this.known.set(key, sha);
           while (this.known.size > this.limit) this.known.delete(this.known.keys().next().value!);

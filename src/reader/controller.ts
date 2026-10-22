@@ -1,7 +1,8 @@
-import { Notice, TFile } from 'obsidian';
-import type { FileView, View, WorkspaceLeaf } from 'obsidian';
+import { Notice } from 'obsidian';
+import type { FileView, TFile, View, WorkspaceLeaf } from 'obsidian';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { sha256Bytes } from '../core/hash';
 import type { ModuleContext } from '../core/module';
 import { leafId } from '../core/pdf-toolbar';
 import type { Manifest } from '../core/types';
@@ -30,6 +31,9 @@ interface LeafState {
   sha?: string; paper?: LoadedPaper; manifest?: Manifest; conflicts: string[];
   /** Page to restore when the reader is rebuilt in place (new document, changed file). */
   reopenPage?: number;
+  linkedPage?: number;
+  mounting?: number;
+  pendingTranslations?: boolean;
   askedConsent?: boolean;
   shell?: HTMLElement; root?: HTMLElement; waiting?: HTMLElement; pageLabel?: HTMLElement; pageInput?: HTMLInputElement;
   search?: HTMLInputElement; languageButton?: HTMLButtonElement; statusLabel?: HTMLElement;
@@ -58,7 +62,7 @@ export class ReaderController {
 
   constructor(private readonly context: ModuleContext<ReaderSettings>) {
     this.cache = new PaperCache(context.store);
-    this.shas = new ShaCache(vaultPath => context.store.shaForPath(vaultPath));
+    this.shas = new ShaCache(vaultPath => context.store.shaForPath(vaultPath), async vaultPath => sha256Bytes(await context.app.vault.adapter.readBinary(vaultPath)));
   }
 
   get settings(): ReaderSettings { return this.context.settings; }
@@ -103,6 +107,7 @@ export class ReaderController {
     plugin.registerEvent(app.workspace.on('file-open', () => this.queueRefresh()));
     plugin.registerEvent(app.workspace.on('window-open', () => this.queueRefresh()));
     plugin.registerEvent(app.vault.on('modify', file => {
+      if (file.path.toLowerCase().endsWith('.pdf')) this.shas.invalidate(file.path);
       for (const state of this.states.values()) if (state.file === file) this.reopen(state);
     }));
     plugin.registerEvent(app.vault.on('rename', file => {
@@ -210,6 +215,7 @@ export class ReaderController {
       if (page > 0 && Number.isFinite(page)) {
         state.page = page;
         if (state.desired && state.root) this.navigateReader(state, page);
+        else state.linkedPage = page;
       }
     };
     view.setEphemeralState = state.wrappedEphemeral;
@@ -230,7 +236,8 @@ export class ReaderController {
     state.generation++;
     state.askedConsent = false;
     this.context.services.pdfToolbar.refresh();
-    state.page = state.reopenPage ?? currentNativePage(state) ?? 0;
+    state.page = state.reopenPage ?? state.linkedPage ?? 0;
+    state.linkedPage = undefined;
     state.reopenPage = undefined;
     const generation = state.generation;
     this.showWaiting(state, '正在准备单栏阅读…');
@@ -254,7 +261,7 @@ export class ReaderController {
     if (!this.isCurrent(state, generation)) return;
     if (!sha) throw new Error('无法读取这篇 PDF。');
     state.sha = sha;
-    if (!state.page) state.page = this.settings.positions[sha] ?? 1;
+    if (!state.page) state.page = this.settings.positions[sha] ?? currentNativePage(state) ?? 1;
     const cached = this.cache.has(sha);
     const [manifest, conflicts, paper] = await Promise.all([this.manifest(sha), this.context.store.conflicts(sha), this.cache.get(sha)]);
     if (!this.isCurrent(state, generation)) return;
@@ -416,23 +423,34 @@ export class ReaderController {
     this.updateToolbarStatus(state);
 
     const translations = paper.translations;
-    await renderReader(root, document.blocks, {
-      fontSize: this.settings.fontSize, lineHeight: this.settings.lineHeight, language: state.language,
-      assetUrl: reference => {
-        const asset = document.assets[reference];
-        return asset ? this.context.store.assetUrl(sha, asset.path) : '';
-      },
-      assetDimensions: reference => {
-        const asset = document.assets[reference];
-        return asset?.width && asset.height ? { width: asset.width, height: asset.height } : undefined;
-      },
-      ...(translations ? { translation: (hash: string) => translations.entries[hash]?.text } : {}),
-      isCurrent: () => this.isCurrent(state, generation),
-      onSource: page => this.showOriginal(state, page),
-      onCopy: page => void this.copySource(state, page),
-      onZoom: (url, caption) => new FigureModal(this.context.app, url, caption).open(),
-    });
+    state.mounting = generation;
+    try {
+      await renderReader(root, document.blocks, {
+        fontSize: this.settings.fontSize, lineHeight: this.settings.lineHeight, language: state.language,
+        assetUrl: reference => {
+          const asset = document.assets[reference];
+          return asset ? this.context.store.assetUrl(sha, asset.path) : '';
+        },
+        assetDimensions: reference => {
+          const asset = document.assets[reference];
+          return asset?.width && asset.height ? { width: asset.width, height: asset.height } : undefined;
+        },
+        ...(translations ? { translation: (hash: string) => translations.entries[hash]?.text } : {}),
+        isCurrent: () => this.isCurrent(state, generation),
+        onSource: page => this.showOriginal(state, page),
+        onCopy: page => void this.copySource(state, page),
+        onZoom: (url, caption) => new FigureModal(this.context.app, url, caption).open(),
+      });
+    } finally {
+      if (state.mounting === generation) state.mounting = undefined;
+    }
     if (!this.isCurrent(state, generation)) { shell.remove(); return; }
+    if (state.pendingTranslations) {
+      state.pendingTranslations = false;
+      await this.refreshTranslations(state, generation);
+      if (!this.isCurrent(state, generation)) { shell.remove(); return; }
+    }
+    setLanguage(root, state.language);
     const rendered = performance.now();
     if (paper.zhScale === undefined && translations) {
       const scale = measureZhScale(root);
@@ -539,7 +557,8 @@ export class ReaderController {
 
   private async refreshTranslations(state: LeafState, generation: number): Promise<void> {
     const { paper, sha, root } = state;
-    if (!paper || !sha || !root) return;
+    if (!paper || !sha || !root || !this.isCurrent(state, generation)) return;
+    if (state.mounting === generation) { state.pendingTranslations = true; return; }
     try {
       const translations = await this.cache.refreshTranslations(sha);
       if (!this.isCurrent(state, generation) || !translations) return;
@@ -572,7 +591,7 @@ export class ReaderController {
   /** Rebuild after the file or its document changed, keeping the reading position. */
   private reopen(state: LeafState): void {
     const file = (state.view as FileView).file;
-    if (file instanceof TFile) state.revision = file.stat.mtime;
+    if (file) state.revision = file.stat.mtime;
     if (!state.desired) return;
     const page = state.root ? (state.pageTracker?.getPage() ?? state.page) : state.page;
     this.exit(state, false);
@@ -590,6 +609,7 @@ export class ReaderController {
     state.document.defaultView?.clearTimeout(state.saveTimer);
     state.document.defaultView?.clearTimeout(state.translationTimer);
     state.translationTimer = undefined;
+    state.pendingTranslations = false;
     if (wasActive && state.sha) this.savePosition(state.sha, page);
     const wasDesired = state.desired;
     state.desired = false;
