@@ -139,6 +139,8 @@ test('the toolbar button is registered at order 10 and opens the reader with the
   assert.equal(image.getAttribute('src'), 'app://local/.research/papers/cccc/raw/images/f.png');
   assert.equal(image.getAttribute('width'), '400');
   assert.ok(root.parentElement!.querySelector('.pdf-reader-warnings')?.textContent?.includes('1'));
+  // Reader chrome is marked as UI for selection (contracts §6.1).
+  assert.ok(env.content.querySelector('.pdf-reader-toolbar')?.hasAttribute('data-pw-ui'));
 });
 
 test('switching language emits mode-change and only flips data-lang; leaving emits inactive', async () => {
@@ -172,6 +174,7 @@ test('while parsing, the reader shows stage and progress, offers priority, and o
   await env.click();
   assert.equal(env.root(), null);
   assert.equal(env.panel()?.querySelector('strong')?.textContent, '解析中');
+  assert.ok(env.panel()?.hasAttribute('data-pw-ui'));
   env.events.emit('paper:parse-progress', { sha: SHA, done: 5, total: 10 });
   assert.equal(env.panel()?.querySelector('.pw-reader-status-detail')?.textContent, '5/10 页');
   const prioritize = env.panel()!.querySelector<HTMLButtonElement>('[data-action="prioritize"]')!;

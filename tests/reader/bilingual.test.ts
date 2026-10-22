@@ -224,3 +224,49 @@ test('the Chinese font scale minimises the summed height difference and is measu
   assert.equal(measured, ZH_SCALES.length * 2);
   assert.equal(root.querySelector('.pw-measure'), null);
 });
+
+/** What selection does with a clone of the reading layer (contracts §6.1). */
+function selectionText(node: HTMLElement): string {
+  const clone = node.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('[aria-hidden="true"], [data-pw-ui]').forEach(element => element.remove());
+  return clone.textContent ?? '';
+}
+
+test('DOM contract: every UI element in the reading layer carries data-pw-ui, so removing it leaves only paper text', async () => {
+  const { setLanguage } = await renderer;
+  const blocks: RenderBlock[] = [
+    ...BLOCKS,
+    block('table', 'table', '', { captions: ['Table 1. Values.'] }),
+    block('header', 'header', 'Journal header', { sources: [{ page: 2 }] }),
+  ];
+  const root = await render({}, blocks);
+  for (const selector of ['.pdf-reader-block-tools', '.pdf-reader-page-markers', '.pdf-reader-fold-summary', '.pdf-reader-render-notice', '.pw-untranslated-mark']) {
+    const elements = Array.from(root.querySelectorAll(selector));
+    assert.ok(elements.length > 0, selector);
+    assert.ok(elements.every(element => element.hasAttribute('data-pw-ui')), selector);
+  }
+  const english = selectionText(root);
+  for (const ui of ['原文 p.', '复制页链', 'PDF p.', '参考文献', '页眉与页脚', '表格裁图暂不可用']) assert.ok(!english.includes(ui), ui);
+  for (const paper of ['Dielectric elastomers', 'drives', 'Not yet translated paragraph.', 'Fig. 1. Actuator.', 'Table 1. Values.', 'Reference entry', 'Journal header']) assert.ok(english.includes(paper), paper);
+  assert.ok(!english.includes('驱动'));
+  setLanguage(root, 'zh');
+  const chinese = selectionText(root);
+  assert.ok(chinese.includes('驱动') && !chinese.includes('drives'));
+  // The untranslated stand-in is English text in the Chinese layer; its marker is UI and adds nothing.
+  assert.ok(chinese.includes('Not yet translated paragraph.'));
+});
+
+test('DOM contract: each .pw-block holds exactly an en and a zh .pw-layer, the hidden one aria-hidden', async () => {
+  const { setLanguage } = await renderer;
+  const root = await render();
+  for (const language of ['en', 'zh'] as const) {
+    setLanguage(root, language);
+    const blocks = Array.from(root.querySelectorAll<HTMLElement>('.pw-block'));
+    assert.ok(blocks.length >= 6);
+    for (const pwBlock of blocks) {
+      const children = Array.from(pwBlock.children);
+      assert.deepEqual(children.map(child => [child.classList.contains('pw-layer'), child.getAttribute('lang')]), [[true, 'en'], [true, 'zh']]);
+      assert.deepEqual(children.map(child => child.getAttribute('aria-hidden')), language === 'en' ? [null, 'true'] : ['true', null]);
+    }
+  }
+});

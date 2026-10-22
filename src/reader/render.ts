@@ -36,6 +36,8 @@ const INLINE_TAGS = new Set(['SPAN', 'SUP', 'SUB', 'EM', 'STRONG', 'B', 'I', 'U'
 const TABLE_TAGS = new Set(['TABLE', 'CAPTION', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'UL', 'OL', 'LI', 'P', 'DIV']);
 const OMIT_TAGS = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'FORM', 'INPUT', 'TEXTAREA', 'BUTTON', 'SVG', 'MATH']);
 const HIDDEN_LAYER = '.pw-layer[aria-hidden="true"]';
+/** Marks reader UI inside the reading layer, so selection and copy can drop it (contracts §6.1). */
+const UI = { 'data-pw-ui': '' };
 
 /** Keep body/figure order, moving only ancillary blocks to the end of their section. */
 export async function renderReader(root: HTMLElement, blocks: readonly RenderBlock[], options: ReaderRenderOptions): Promise<void> {
@@ -74,7 +76,7 @@ export async function renderReader(root: HTMLElement, blocks: readonly RenderBlo
       index += 1;
     }
     const details = article.createEl('details', { cls: 'pdf-reader-fold', attr: { 'data-fold-kind': fold } });
-    const summary = details.createEl('summary', { cls: 'pdf-reader-fold-summary', text: foldLabel(fold) });
+    const summary = details.createEl('summary', { cls: 'pdf-reader-fold-summary', text: foldLabel(fold), attr: UI });
     setSources(summary, group.flatMap(item => sourcePages(item)));
     const content = details.createDiv({ cls: 'pdf-reader-fold-content' });
     const foldedContext = { ...context, markedPages: new Set<number>() };
@@ -87,11 +89,11 @@ export async function renderReader(root: HTMLElement, blocks: readonly RenderBlo
     }
   }
 
-  if (!blocks.length) article.createEl('p', { cls: 'pdf-reader-render-notice', text: '没有可重排的正文，请查看原 PDF。' });
+  if (!blocks.length) article.createEl('p', { cls: 'pdf-reader-render-notice', text: '没有可重排的正文，请查看原 PDF。', attr: UI });
   setLanguage(root, options.language ?? 'en');
   await flushMath(context, () => {
     if (article.isConnected && article.parentElement === root) {
-      article.createEl('p', { cls: 'pdf-reader-render-notice', text: '部分公式未完成排版，可用原文按钮查看源页。', prepend: true });
+      article.createEl('p', { cls: 'pdf-reader-render-notice', text: '部分公式未完成排版，可用原文按钮查看源页。', attr: UI, prepend: true });
     }
   });
 }
@@ -250,7 +252,7 @@ export function readableText(node: Node): string {
       if (child.nodeType === 3) { text += child.textContent ?? ''; continue; }
       if (child.nodeType !== 1) continue;
       const element = child as HTMLElement;
-      if (element.classList.contains('pdf-reader-block-tools') || element.classList.contains('pdf-reader-page-markers') || element.matches(HIDDEN_LAYER)) continue;
+      if (element.hasAttribute('data-pw-ui') || element.matches(HIDDEN_LAYER)) continue;
       walk(element);
       if (BREAK_AFTER.has(element.tagName)) text += '\n';
     }
@@ -266,7 +268,7 @@ export function blockSearchText(block: HTMLElement): string {
 
 /** Whether copying this fragment needs readableText() instead of the browser's own text. */
 export function needsCleanCopy(fragment: ParentNode): boolean {
-  return Boolean(fragment.querySelector(`${HIDDEN_LAYER}, .pdf-reader-block-tools, .pdf-reader-page-markers`));
+  return Boolean(fragment.querySelector(`${HIDDEN_LAYER}, [data-pw-ui]`));
 }
 
 export interface SourcePageTracker {
@@ -402,7 +404,7 @@ function renderBlock(parent: HTMLElement, block: RenderBlock, context: RenderCon
   setSources(wrapper, pages);
   const unmarkedPages = pages.filter(page => !context.markedPages.has(page));
   if (unmarkedPages.length) {
-    const markers = wrapper.createDiv({ cls: 'pdf-reader-page-markers' });
+    const markers = wrapper.createDiv({ cls: 'pdf-reader-page-markers', attr: UI });
     for (const page of unmarkedPages) {
       context.markedPages.add(page);
       markers.createSpan({ cls: 'pdf-reader-page-marker', text: `PDF p. ${page}` });
@@ -469,6 +471,7 @@ function appendChineseLayer(block: HTMLElement, hash: string, source: string, li
     // Show the English source in place, with a light marker, so the block keeps its place.
     layer.addClass('is-untranslated');
     layer.setAttribute('title', '暂无译文');
+    layer.createSpan({ cls: 'pw-untranslated-mark', attr: { ...UI, 'aria-hidden': 'true' } });
   }
   if (list) appendList(layer, text ?? source, context);
   else appendTextWithMath(layer, text ?? source, context);
@@ -492,7 +495,7 @@ function appendImageOrText(parent: HTMLElement, block: RenderBlock, context: Ren
     appendImage(parent, url, caption, context, block.text || caption, block.asset);
     return;
   }
-  parent.createEl('p', { cls: 'pdf-reader-render-notice', text: block.kind === 'table' ? '原 PDF 表格裁图暂不可用，请查看源页。' : '图表暂不可用，请查看源页。' });
+  parent.createEl('p', { cls: 'pdf-reader-render-notice', text: block.kind === 'table' ? '原 PDF 表格裁图暂不可用，请查看源页。' : '图表暂不可用，请查看源页。', attr: UI });
 }
 
 function appendImage(parent: HTMLElement, url: string, caption: string, context: RenderContext, altText?: string, assetReference?: string): void {
@@ -522,7 +525,7 @@ function appendImage(parent: HTMLElement, url: string, caption: string, context:
   });
   image.addEventListener('error', () => {
     image.hidden = true;
-    const warning = parent.createEl('p', { cls: 'pdf-reader-render-notice', text: '图表无法加载，请查看源页。' });
+    const warning = parent.createEl('p', { cls: 'pdf-reader-render-notice', text: '图表无法加载，请查看源页。', attr: UI });
     image.after(warning);
   }, { once: true });
   image.src = url;
@@ -584,7 +587,7 @@ function sectionEndAncillary(blocks: readonly RenderBlock[]): RenderBlock[] {
 
 function appendSourceTools(parent: HTMLElement, pages: number[], context: RenderContext): void {
   if (!pages.length) return;
-  const tools = parent.createDiv({ cls: 'pdf-reader-block-tools' });
+  const tools = parent.createDiv({ cls: 'pdf-reader-block-tools', attr: UI });
   for (const page of pages) {
     const title = `查看原 PDF 第 ${page} 页`;
     const source = tools.createEl('button', { type: 'button', text: `原文 p.${page}`, title, attr: { 'aria-label': title } });

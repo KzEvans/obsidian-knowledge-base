@@ -497,9 +497,8 @@ span.pw-layer {
   pointer-events: none;
 }
 
-/* No translation for this segment: the English text stands in, marked lightly in the margin. */
-.pw-layer.is-untranslated::before {
-  content: "";
+/* No translation for this segment: the English text stands in, marked lightly in the margin (an empty UI element). */
+.pw-untranslated-mark {
   position: absolute;
   top: 0.25em;
   bottom: 0.25em;
@@ -508,6 +507,7 @@ span.pw-layer {
   border-radius: 1px;
   background: var(--text-faint);
   opacity: 0.6;
+  user-select: none;
 }
 
 /* Off-flow copy used once to pick the Chinese font size. */

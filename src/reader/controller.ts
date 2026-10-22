@@ -240,7 +240,7 @@ export class ReaderController {
       if (!this.isCurrent(state, generation)) return;
       this.context.log.warn('阅读模式打开失败', error);
       this.exit(state, false);
-      const banner = state.content.createDiv({ cls: 'pdf-reader-processing is-error', attr: { role: 'alert' } });
+      const banner = state.content.createDiv({ cls: 'pdf-reader-processing is-error', attr: { role: 'alert', 'data-pw-ui': '' } });
       state.waiting = banner;
       banner.createSpan({ text: error instanceof Error ? error.message : '阅读模式打开失败，请重试。' });
       banner.createEl('button', { text: '重试' }).addEventListener('click', () => { banner.remove(); state.waiting = undefined; void this.toggle(state); });
@@ -301,7 +301,7 @@ export class ReaderController {
 
   private showWaiting(state: LeafState, message: string): void {
     state.waiting?.remove();
-    const waiting = state.content.createDiv({ cls: 'pdf-reader-processing', attr: { role: 'status', 'aria-live': 'polite' } });
+    const waiting = state.content.createDiv({ cls: 'pdf-reader-processing', attr: { role: 'status', 'aria-live': 'polite', 'data-pw-ui': '' } });
     state.waiting = waiting;
     waiting.createSpan({ text: message });
     waiting.createEl('button', { text: '继续原 PDF' }).addEventListener('click', () => this.exit(state));
@@ -311,7 +311,7 @@ export class ReaderController {
   private showStatus(state: LeafState): void {
     if (!state.desired || state.root || !state.sha) return;
     if (!state.waiting?.isConnected) {
-      state.waiting = state.content.createDiv({ cls: 'pdf-reader-processing', attr: { 'aria-live': 'polite' } });
+      state.waiting = state.content.createDiv({ cls: 'pdf-reader-processing', attr: { 'aria-live': 'polite', 'data-pw-ui': '' } });
     }
     const view = describeStatus({
       ...(state.manifest ? { manifest: state.manifest } : {}),
@@ -366,7 +366,7 @@ export class ReaderController {
     const native = Array.from(state.content.children).filter(element => !element.classList.contains('pdf-reader-processing')) as HTMLElement[];
     const shell = state.content.createDiv({ cls: 'pdf-reader-shell' });
     state.shell = shell;
-    const toolbar = shell.createDiv({ cls: 'pdf-reader-toolbar' });
+    const toolbar = shell.createDiv({ cls: 'pdf-reader-toolbar', attr: { 'data-pw-ui': '' } });
     state.pageLabel = toolbar.createSpan({ cls: 'pdf-reader-page-label', text: `PDF p.${state.page}` });
     const pageInput = toolbar.createEl('input', { type: 'number', cls: 'pdf-reader-page-input', attr: { min: '1', max: String(document.pageCount), 'aria-label': '跳转原文页码' } });
     state.pageInput = pageInput;

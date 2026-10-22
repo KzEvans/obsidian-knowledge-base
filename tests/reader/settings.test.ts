@@ -13,12 +13,13 @@ test('settings fall back to defaults and keep only sha-keyed positions', () => {
 
 test('the old plugin data imports typography and re-keys positions by sha through the path index', async () => {
   const settings = readSettings({ positions: { [SHA_B]: 9 } });
-  const index: Record<string, string> = { 'papers/a.pdf': SHA_A, 'papers/b.pdf': SHA_B };
+  const index: Record<string, string> = { 'papers/a.pdf': SHA_A };
+  const hashed: Record<string, string> = { 'papers/b.pdf': SHA_B };
   const asked: string[] = [];
   const result = await importLegacySettings(settings, {
     fontSize: 20, lineHeight: 1.6, scrollDiagnostics: true,
     positions: { 'papers/a.pdf': 7, 'papers/b.pdf': 2, 'papers/gone.pdf': 5, 'papers/bad.pdf': 'x' },
-  }, async path => { asked.push(path); if (path === 'papers/gone.pdf') throw new Error('ENOENT'); return index[path]; });
+  }, index, async path => { asked.push(path); if (path === 'papers/gone.pdf') throw new Error('ENOENT'); return hashed[path]; });
   assert.deepEqual(result, { positions: 1 });
   assert.equal(settings.fontSize, 20);
   assert.equal(settings.lineHeight, 1.6);
@@ -26,12 +27,13 @@ test('the old plugin data imports typography and re-keys positions by sha throug
   // A position already recorded by sha wins over the imported one.
   assert.deepEqual(settings.positions, { [SHA_A]: 7, [SHA_B]: 9 });
   assert.equal(settings.legacyImported, true);
-  assert.deepEqual(asked, ['papers/a.pdf', 'papers/b.pdf', 'papers/gone.pdf']);
+  // Only paths missing from the index are hashed.
+  assert.deepEqual(asked, ['papers/b.pdf', 'papers/gone.pdf']);
 });
 
 test('missing or malformed old data still marks the import done', async () => {
   const settings = readSettings({});
-  assert.deepEqual(await importLegacySettings(settings, null, async () => undefined), { positions: 0 });
+  assert.deepEqual(await importLegacySettings(settings, null, {}, async () => undefined), { positions: 0 });
   assert.equal(settings.fontSize, 18);
   assert.equal(settings.legacyImported, true);
 });

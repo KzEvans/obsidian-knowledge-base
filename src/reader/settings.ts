@@ -35,9 +35,10 @@ export function readSettings(saved: unknown): ReaderSettings {
 /**
  * Take typography, diagnostics and reading positions from the old plugin's data.json.
  * Positions there are keyed by vault path; they are re-keyed by sha through the
- * store's path index. Positions already recorded here win.
+ * store's path index, hashing only paths the index does not know. Positions
+ * already recorded here win.
  */
-export async function importLegacySettings(settings: ReaderSettings, legacy: unknown, shaForPath: (path: string) => Promise<string | undefined>): Promise<{ positions: number }> {
+export async function importLegacySettings(settings: ReaderSettings, legacy: unknown, index: Readonly<Record<string, string>>, shaForPath: (path: string) => Promise<string | undefined>): Promise<{ positions: number }> {
   const old = (typeof legacy === 'object' && legacy !== null ? legacy : {}) as Record<string, unknown>;
   if (typeof old.fontSize === 'number') settings.fontSize = clampNumber(old.fontSize, FONT_SIZE.min, FONT_SIZE.max, settings.fontSize);
   if (typeof old.lineHeight === 'number') settings.lineHeight = clampNumber(old.lineHeight, LINE_HEIGHT.min, LINE_HEIGHT.max, settings.lineHeight);
@@ -46,8 +47,10 @@ export async function importLegacySettings(settings: ReaderSettings, legacy: unk
   if (typeof old.positions === 'object' && old.positions !== null) {
     for (const [path, page] of Object.entries(old.positions as Record<string, unknown>)) {
       if (typeof page !== 'number' || !Number.isInteger(page) || page < 1) continue;
-      let sha: string | undefined;
-      try { sha = await shaForPath(path); } catch { continue; }
+      let sha = index[path];
+      if (!sha) {
+        try { sha = await shaForPath(path); } catch { continue; }
+      }
       if (!sha || sha in settings.positions) continue;
       settings.positions[sha] = page;
       positions++;

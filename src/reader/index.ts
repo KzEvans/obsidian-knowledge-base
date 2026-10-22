@@ -27,7 +27,7 @@ async function importLegacy(context: ModuleContext<ReaderSettings>, onTypography
   try {
     const adapter = context.app.vault.adapter;
     const legacy: unknown = await adapter.exists(file) ? JSON.parse(await adapter.read(file)) : {};
-    const { positions } = await importLegacySettings(context.settings, legacy, vaultPath => context.store.shaForPath(vaultPath));
+    const { positions } = await importLegacySettings(context.settings, legacy, await context.store.paths(), vaultPath => context.store.shaForPath(vaultPath));
     await context.saveSettings();
     onTypography();
     if (positions) context.log.info(`已从旧阅读模式导入 ${positions} 篇的阅读位置`);
