@@ -486,6 +486,9 @@ span.pw-layer {
 
 .pw-layer[lang="zh"] {
   position: relative;
+}
+
+.pw-layer[lang="zh"]:not(.is-untranslated) {
   font-family: "Times New Roman", Times, "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", serif;
   font-size: calc(var(--pw-zh-scale, 1) * 1em);
 }
