@@ -7,6 +7,21 @@
 - 阅读模式：双栏论文重排为单栏，中英对照切换时页面位置不变；英文状态下可划线翻译。
 - 笔记：由你手动发起生成，可选 Codex CLI 或 Claude Code CLI；笔记问答窗口。
 
+本项目沿用 [KzEvans/obsidian-knowledge-base](https://github.com/KzEvans/obsidian-knowledge-base)
+仓库，合并了旧版 Zotero 同步、笔记问答、PDF 阅读模式与划线翻译插件。
+
+## 从旧插件迁移
+
+先阅读[迁移与回滚方案](docs/migration.md)，在 vault 副本上验证后再部署。
+启用 Paper Workbench 前，停用 `zotero-doc-sync`、`codex-note-chat`、
+`pdf-reading-mode` 和 `pdf-selection-translator`；保留旧插件目录、配置与缓存用于回滚。
+已有 MinerU 结果可复用，无需重新上传；存量首次解析需先确认篇数和页数。
+
+旧知识库代码和说明保存在 [legacy/knowledge-base-repo/](legacy/knowledge-base-repo/)，
+旧 PDF 阅读模式保存在 [legacy/pdf-reading-mode/](legacy/pdf-reading-mode/)。
+知识整合、跨来源检索、知识维护、健康检查及实验笔记摄取目前冻结，
+功能范围见[功能清单](docs/feature-inventory.md)。已有笔记和精读产出保留。
+
 设计文档见 [docs/](docs/)。旧插件与 Python runner 归档在 [legacy/](legacy/)。
 
 ## 开发
