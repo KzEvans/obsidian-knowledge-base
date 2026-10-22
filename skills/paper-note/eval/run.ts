@@ -14,7 +14,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { PAPER_NOTE_SKILL } from '../index';
 import { lintNote } from '../lint';
-import { deriveFromCache, fullText } from './fulltext';
+import { fullText } from '../fulltext';
+import { deriveFromCache } from './fulltext';
 import { EVAL_PAPERS, readFrontmatter, type ZoteroItem } from './papers';
 
 const say = (text: string) => process.stdout.write(text + '\n');

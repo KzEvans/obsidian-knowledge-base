@@ -50,6 +50,13 @@ describe('sections', () => {
   });
 });
 
+test('the model frontmatter with the four link lists is ignored', () => {
+  const frontmatter = '---\nconcepts: ["[[玻璃化转变]]"]\nmaterials: []\nmethods: ["[[动态力学分析]]"]\nphenomena: []\n---\n';
+  const result = lintNote(frontmatter + note());
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.length, lintNote(note()).length);
+});
+
 describe('page links and embeds', () => {
   test('#page= links are reported', () => {
     assert.ok(rules(note({ 研究背景: filler(240) + '[[paper.pdf#page=3|p.3]]' })).includes('page-link'));

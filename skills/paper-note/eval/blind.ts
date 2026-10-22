@@ -38,7 +38,7 @@ function cleanOld(markdown: string): string {
   return kept.join('\n').trim() + '\n';
 }
 
-const cleanNew = (markdown: string) => markdown.replace('<!-- abstract-translation -->', '（摘要译文由程序填入，盲评材料中省略。）').trim() + '\n';
+const cleanNew = (markdown: string) => markdown.replace(/^---\n[\s\S]*?\n---\n/, '').replace('<!-- abstract-translation -->', '（摘要译文由程序填入，盲评材料中省略。）').trim() + '\n';
 
 const escapeHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const compareHtml = (a: string, b: string) => `<!doctype html><meta charset="utf-8"><title>盲评</title>

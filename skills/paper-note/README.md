@@ -8,6 +8,7 @@
 | `references/plain-writing.md` | “说人话”规则，参考 Humanizer-zh 重写（出处见根目录 `THIRD_PARTY_NOTICES.md`） |
 | `references/banned-phrases.md` | 禁用词和对冲词表；skill 和 lint 共用这一份 |
 | `index.ts` | `PAPER_NOTE_SKILL` = SKILL.md + 两个 references |
+| `fulltext.ts` | `fullText()`：交给 CLI 的规范化全文；格式只在这里改，agent 和评测共用 |
 | `lint.ts` | `lintNote()`，规则和阈值常量都在文件开头 |
 | `lint-cli.ts` | 命令行检查：`pnpm exec tsx skills/paper-note/lint-cli.ts [--json] <note.md> ...` |
 | `eval/` | 评测脚本（下文） |
@@ -48,7 +49,7 @@ pnpm exec tsx --import ./tests/setup.ts skills/paper-note/eval/blind.ts --round 
 
 流程：
 
-1. 评测集是 `eval/papers.ts` 里的三篇（按 Zotero 附件 key 指定）。用 vault 的 `zotero-doc.json` 找到 sha 和 PDF，从旧阅读插件的 MinerU 缓存离线运行 core 的 `derive()`，用 `eval/fulltext.ts` 生成规范化全文 `inputs/<key>/paper.md`（无页码，带图表题注）。**不上传、不调用 MinerU**。摘要翻译留占位。
+1. 评测集是 `eval/papers.ts` 里的三篇（按 Zotero 附件 key 指定）。用 vault 的 `zotero-doc.json` 找到 sha 和 PDF，从旧阅读插件的 MinerU 缓存离线运行 core 的 `derive()`（`eval/fulltext.ts`），再用 `fulltext.ts` 的 `fullText()` 生成规范化全文 `inputs/<key>/paper.md`（无页码，带图表题注）。**不上传、不调用 MinerU**。摘要翻译留占位。
 2. 每篇、每个适配器建一个工作区 `runs/<round>/<key>/<adapter>/work/`：全文、元数据、`purpose.md`、vault 标题清单和 `wiki/` 的副本（去掉这篇论文的旧笔记）。模型只能写副本，不碰真实 vault。
 3. 把 `PAPER_NOTE_SKILL` 加任务说明经 stdin 交给 `codex exec`（`-s workspace-write --ephemeral`）或 `claude -p`（`--permission-mode acceptEdits --tools Read,Grep,Glob,Write,Edit --setting-sources project`）。
 4. 对 `note.md` 跑 lint，写 `lint.json`；整轮汇总在 `runs/<round>/summary.json`。
