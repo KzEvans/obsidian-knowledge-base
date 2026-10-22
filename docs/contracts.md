@@ -322,7 +322,8 @@ selection 取选区文字时，删除克隆内容中所有 `[aria-hidden="true"]
 - 模板的 9 个二级标题（按顺序）：摘要翻译、研究背景、前人工作与不足、作者的思考路径、本文内容与创新点、论点与证据、Takeaways、Follow-up ideas、与现有知识的候选关联。
 - "摘要翻译"一节由 agent 程序填入（取 `role: "abstract"` 块的译文），模型输出时该节留空标记 `<!-- abstract-translation -->`，agent 替换。
 - `skills/paper-note/fulltext.ts` 导出 `fullText(document: StoredDocument): string`：交给 CLI 的规范化全文（Markdown，不含页码；行首标记 `[摘要]`、`[图]`、`[表]`、`[参考文献]`）。全文格式由 skill 一方定义，agent 和评测都调用它，不各自实现。
-- 模型写出的 `note.md`：可选的 YAML frontmatter 只含 `concepts`、`materials`、`methods`、`phenomena` 四个列表（`[[链接]]` 字符串）；正文从 `## 摘要翻译` 开始，不写一级标题和其他 frontmatter。agent 取出四个列表并写入完整 frontmatter 和一级标题。
+- 生产生成调用的两个 CLI 均为 read-only，通过 JSON schema 返回 `{ noteMarkdown: string }`，程序将字符串保存为临时 `note.md`。CLI 不得写工作区输入、vault 或其他文件。
+- 候选 `note.md`：可选的 YAML frontmatter 只含 `concepts`、`materials`、`methods`、`phenomena` 四个列表（`[[链接]]` 字符串）；正文从 `## 摘要翻译` 开始，不写一级标题和其他 frontmatter。agent 取出四个列表并写入完整 frontmatter 和一级标题。
 
 ## 10. 样式
 
