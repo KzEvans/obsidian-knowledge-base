@@ -7,9 +7,9 @@ import type { App, CachedMetadata, Component , MarkdownView, TFile} from 'obsidi
 import type { ModuleContext } from '../../core/module';
 import { errorMessage } from '../../core/secrets';
 import type { AgentEvent } from '../cli/adapter';
-import { documentToMarkdown } from '../notes/fulltext';
 import { PURPOSE_PATH } from '../notes/metadata';
 import { confirm } from '../notes/controller';
+import { fullText } from '../../../skills/paper-note/fulltext';
 import { currentAgent } from '../runner';
 import type { AgentSettings, AttachmentSummary, ChatMessage, ChatSession } from '../settings';
 import { CHAT_INSTRUCTIONS, MAX_ATTACHMENTS, MAX_IMAGE_ATTACHMENT_BYTES, MAX_OUTLINK_NOTES, buildChatPrompt } from './prompt';
@@ -526,7 +526,7 @@ export class NoteChat {
     let paper: { pdfPath: string; text: string } | undefined;
     if (context.paper && !resumed) {
       const document = await this.context.store.document(context.paper.sha);
-      if (document) paper = { pdfPath: context.paper.pdfPath, text: documentToMarkdown(document) };
+      if (document) paper = { pdfPath: context.paper.pdfPath, text: fullText(document) };
     }
     const outlinks = refs.outlinksInput.checked
       ? await Promise.all(context.outlinks.slice(0, MAX_OUTLINK_NOTES).map(async file => ({ path: file.path, text: await this.app.vault.cachedRead(file) })))

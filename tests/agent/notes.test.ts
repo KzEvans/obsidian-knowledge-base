@@ -8,7 +8,8 @@ import type { Manifest, StoredBlock, StoredDocument, TranslationFile } from '../
 import type { AgentAdapter, AgentRequest } from '../../src/agent/cli/adapter';
 import { composeNote } from '../../src/agent/notes/compose';
 import { readList, readScalar, splitFrontmatter } from '../../src/agent/notes/frontmatter';
-import { ABSTRACT_MARKER, abstractTranslation, documentToMarkdown, fillAbstract } from '../../src/agent/notes/fulltext';
+import { ABSTRACT_MARKER, abstractTranslation, fillAbstract } from '../../src/agent/notes/fulltext';
+import { fullText } from '../../skills/paper-note/fulltext';
 import { generateNote, snapshotOf, unchanged } from '../../src/agent/notes/generate';
 import type { GenerateDeps, NoteFiles, NoteSnapshot } from '../../src/agent/notes/generate';
 import { SUPPORTING_MANIFEST, ZOTERO_MANIFEST, collectionPath, noteIdentity, paperMetadata, plainTitle, safeStem } from '../../src/agent/notes/metadata';
@@ -62,6 +63,7 @@ function store(stage: Manifest['stage'] = 'ready'): StoreReader {
     readDerived: () => Promise.resolve(undefined),
     assetUrl: () => '',
     conflicts: () => Promise.resolve([]),
+    paths: () => Promise.resolve({ [PDF]: SHA }),
   };
 }
 
@@ -83,7 +85,7 @@ function memoryFiles(initial: Record<string, string> = {}): NoteFiles & { notes:
   };
 }
 
-const MODEL_NOTE = `---\nconcepts: ["软驱动器"]\nmaterials:\n  - 弹性体\nmethods: []\nphenomena: [大变形]\ntitle: should be ignored\n---\n# Model title\n\n## 摘要翻译\n\n${ABSTRACT_MARKER}\n\n## 研究背景\n\n背景。\n\n# 提问\n\n模型编造的问答\n`;
+const MODEL_NOTE = `---\nconcepts: ["[[软驱动器]]"]\nmaterials:\n  - "[[弹性体]]"\nmethods: []\nphenomena: [[[大变形]], [[驱动]]]\ntitle: should be ignored\n---\n# Model title\n\n## 摘要翻译\n\n${ABSTRACT_MARKER}\n\n## 研究背景\n\n背景。\n\n# 提问\n\n模型编造的问答\n`;
 
 function fakeAgent(onRun: (request: AgentRequest) => Promise<void> | void, note = MODEL_NOTE): { adapter: AgentAdapter; requests: AgentRequest[] } {
   const requests: AgentRequest[] = [];
@@ -147,16 +149,6 @@ test('collection path and file-name rules', () => {
 
 // ---- full text and abstract ----
 
-test('full text keeps headings, captions and equations, drops headers, footers and page numbers', () => {
-  const text = documentToMarkdown(document);
-  assert.ok(text.startsWith('# Soft actuators\n\nWe report'));
-  assert.ok(text.includes('## Introduction'));
-  assert.ok(text.includes('[图]\nFigure 1. Device.'));
-  assert.ok(!text.includes('ocr junk'));
-  assert.ok(text.includes('$$E = mc^2$$'));
-  assert.ok(!text.includes('Journal header') && !text.includes('Page 3'));
-});
-
 test('abstract translation fills the marker; without one the marker stays', () => {
   const translation = abstractTranslation(document, translations);
   assert.equal(translation, '我们报道了一种软驱动器。');
@@ -180,10 +172,10 @@ test('frontmatter: program fields, tag lists from the model, nothing from the re
   };
   for (const [key, value] of Object.entries(expected)) assert.equal(readScalar(fm, key), value, key);
   assert.deepEqual(readList(fm, 'supporting_information'), ['sources/literature/si/PARENT01/si.pdf']);
-  assert.deepEqual(readList(fm, 'concepts'), ['软驱动器']);
-  assert.deepEqual(readList(fm, 'materials'), ['弹性体']);
+  assert.deepEqual(readList(fm, 'concepts'), ['[[软驱动器]]']);
+  assert.deepEqual(readList(fm, 'materials'), ['[[弹性体]]']);
   assert.deepEqual(readList(fm, 'methods'), []);
-  assert.deepEqual(readList(fm, 'phenomena'), ['大变形']);
+  assert.deepEqual(readList(fm, 'phenomena'), ['[[大变形]]', '[[驱动]]']);
   for (const removed of ['extract', 'images_dir', 'supporting_information_used', 'generation_stage', 'paragraph_reading', 'reviewed_at', 'reviewed_content_sha256', 'integrated_at']) {
     assert.equal(readScalar(fm, removed), undefined, removed);
   }
@@ -199,7 +191,7 @@ test('generation: workspace contents, agent request, publish, lint', async () =>
   const agent = fakeAgent(async request => {
     const names = (await fs.readdir(request.cwd)).sort();
     assert.deepEqual(names, ['fulltext.md', 'metadata.json', 'note.md', 'purpose.md', 'vault-titles.md']);
-    assert.ok((await fs.readFile(path.join(request.cwd, 'fulltext.md'), 'utf8')).includes('Figure 1. Device.'));
+    assert.equal(await fs.readFile(path.join(request.cwd, 'fulltext.md'), 'utf8'), fullText(document));
     assert.ok((await fs.readFile(path.join(request.cwd, 'vault-titles.md'), 'utf8')).includes('- wiki/concepts/软驱动器'));
   });
   const result = await generateNote(SHA, deps(files, agent), new AbortController().signal);
