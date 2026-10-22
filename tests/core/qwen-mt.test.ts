@@ -11,7 +11,7 @@ function client(reply: (masked: string, body: Record<string, unknown>) => Partia
   const http = async (request: RequestUrlParam): Promise<HttpResponse> => {
     calls.push(request);
     const body = JSON.parse(request.body as string) as { messages: Array<{ content: string }> } & Record<string, unknown>;
-    return { text: '', arrayBuffer: new ArrayBuffer(0), json: undefined, ...reply(body.messages[0]!.content, body) };
+    return { headers: {}, text: '', arrayBuffer: new ArrayBuffer(0), json: undefined, ...reply(body.messages[0]!.content, body) };
   };
   return { calls, mt: createQwenMtClient(http, () => KEY, () => '') };
 }
