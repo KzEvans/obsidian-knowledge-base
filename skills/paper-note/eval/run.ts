@@ -8,10 +8,14 @@
  * --inputs-only (build the inputs and stop). PAPER_NOTE_EVAL_OUT overrides the output
  * directory (default ~/Developer/paper-workbench-eval). See ../README.md.
  */
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { collect } from '../../../src/agent/cli/adapter';
+import { currentAgent } from '../../../src/agent/runner';
+import { readSettings } from '../../../src/agent/settings';
+import { errorMessage } from '../../../src/core/secrets';
+import { NOTE_OUTPUT_SCHEMA, noteMarkdown } from '../output';
 import { PAPER_NOTE_SKILL } from '../index';
 import { lintNote } from '../lint';
 import { fullText } from '../fulltext';
@@ -74,7 +78,7 @@ async function buildInputs(item: ZoteroItem): Promise<string> {
   return directory;
 }
 
-/** A workspace with the inputs and a read-only-in-spirit copy of wiki/ minus this paper's old note. */
+/** A workspace with the inputs and a local copy of wiki/ minus this paper's old note. */
 async function buildWorkspace(item: ZoteroItem, inputs: string, adapter: Adapter, notes: Awaited<ReturnType<typeof wikiNotes>>): Promise<string> {
   const work = path.join(out, 'runs', round!, item.attachment_key, adapter, 'work');
   await fs.rm(work, { recursive: true, force: true });
@@ -96,45 +100,37 @@ const TASK = `
 
 # 本次任务
 
-为当前目录中的论文写笔记，写入当前目录的 note.md。
+为当前目录中的论文写笔记，只读返回 JSON 的 noteMarkdown 字符串，由程序保存为 note.md。
 
 - 规范化全文：paper.md
 - 元数据：metadata.json
 - 研究方向：purpose.md（若不存在则按“文件不存在”处理）
 - vault 标题清单：vault-titles.md；vault 的只读副本在 vault/ 目录，可以搜索
 
-只写 note.md，不修改其他文件。写完后不需要在回复里复述笔记内容。
+不创建、修改或删除任何文件，按给定 schema 返回完整笔记。
 `;
-
-function run(command: string, args: string[], cwd: string, input: string, log: string): Promise<{ code: number | null; ms: number }> {
-  const started = Date.now();
-  return new Promise((resolve, reject) => {
-    void fs.open(log, 'w').then(handle => {
-      const child = spawn(command, args, { cwd, stdio: ['pipe', handle.fd, handle.fd], detached: true });
-      const timer = window.setTimeout(() => { if (child.pid) process.kill(-child.pid, 'SIGTERM'); }, TIMEOUT_MS);
-      child.on('error', reject);
-      child.on('close', code => { window.clearTimeout(timer); void handle.close(); resolve({ code, ms: Date.now() - started }); });
-      child.stdin?.end(input);
-    }, reject);
-  });
-}
-
-function adapterCommand(adapter: Adapter, work: string): [string, string[]] {
-  if (adapter === 'codex') {
-    return ['codex', ['exec', '-C', work, '-s', 'workspace-write', '--skip-git-repo-check', '--ephemeral', '--json', '-o', path.join(work, '..', 'last-message.txt'), '-']];
-  }
-  return ['claude', ['-p', '--output-format', 'json', '--permission-mode', 'acceptEdits', '--tools', 'Read,Grep,Glob,Write,Edit',
-    '--setting-sources', 'project', '--strict-mcp-config', '--no-session-persistence']];
-}
 
 async function generate(item: ZoteroItem, adapter: Adapter, notes: Awaited<ReturnType<typeof wikiNotes>>) {
   const inputs = await buildInputs(item);
   const work = await buildWorkspace(item, inputs, adapter, notes);
   const runDirectory = path.dirname(work);
-  const [command, args] = adapterCommand(adapter, work);
-  const { code, ms } = await run(command, args, work, PAPER_NOTE_SKILL + TASK, path.join(runDirectory, 'cli.log'));
-  const notePath = path.join(work, 'note.md');
-  const note = await exists(notePath) ? await fs.readFile(notePath, 'utf8') : '';
+  const started = Date.now();
+  const { adapter: client, model } = currentAgent(readSettings({ adapter, proxyUrl: process.env.PAPER_WORKBENCH_PROXY ?? '' }));
+  let note = '';
+  let code = 0;
+  try {
+    const result = await collect(client.run({
+      prompt: TASK, instructions: PAPER_NOTE_SKILL, cwd: work, model, mode: 'read-only', ephemeral: true,
+      timeoutMs: TIMEOUT_MS, outputSchema: NOTE_OUTPUT_SCHEMA,
+    }, new AbortController().signal));
+    note = noteMarkdown(result.text);
+    await fs.writeFile(path.join(work, 'note.md'), note);
+    await fs.writeFile(path.join(runDirectory, 'cli.log'), '只读候选生成完成。\n');
+  } catch (error) {
+    code = 1;
+    await fs.writeFile(path.join(runDirectory, 'cli.log'), errorMessage(error) + '\n');
+  }
+  const ms = Date.now() - started;
   await fs.writeFile(path.join(runDirectory, 'note.md'), note);
   const lint = lintNote(note);
   const result = { paper: item.attachment_key, adapter, exitCode: code, minutes: +(ms / 60_000).toFixed(1), length: lint.length, ok: lint.ok, problems: lint.problems };

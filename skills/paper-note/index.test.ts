@@ -14,3 +14,9 @@ test('the skill lists the 9 sections lint expects, in order', () => {
   assert.deepEqual([...template.matchAll(/^## (.+)$/gm)].map(match => match[1]), [...SECTIONS]);
   assert.ok(template.includes('<!-- abstract-translation -->'));
 });
+
+test('the bundled skill respects read-only output and the research-purpose boundary', () => {
+  assert.ok(PAPER_NOTE_SKILL.includes('noteMarkdown'));
+  assert.ok(PAPER_NOTE_SKILL.includes('前六节'));
+  assert.ok(PAPER_NOTE_SKILL.includes('最多 12 次'));
+});

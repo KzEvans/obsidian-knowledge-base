@@ -162,3 +162,34 @@ test('empty input returns the frozen shape and reports missing sections', () => 
   assert.equal(result.length, 0);
   assert.ok(result.problems.some(problem => problem.rule === 'sections'));
 });
+
+test('code examples cannot create protected sections or markers that swallow the prose after them', () => {
+  for (const example of ['```markdown\n## 人工复核\n```', '```markdown\n<!-- user-notes:start -->\n```', '````markdown\n```\n## 人工复核\n````']) {
+    const plain = note();
+    const withCode = note({ 研究背景: filler(240) + '\n\n' + example });
+    assert.equal(lintNote(withCode).length, lintNote(plain).length);
+    assert.deepEqual(rules(withCode), []);
+  }
+});
+
+test('the program title does not change body length', () => {
+  assert.equal(lintNote('# 程序生成的论文标题和作者\n\n' + note()).length, lintNote(note()).length);
+});
+
+test('reference-style image embeds are rejected in full, collapsed and shortcut forms', () => {
+  for (const image of ['![图][figure]', '![figure][]', '![figure]']) {
+    assert.ok(rules(note({ 研究背景: filler(240) + '\n\n' + image + '\n\n[figure]: images/figure.png' })).includes('embed'));
+  }
+});
+
+test('reference citations do not count as measurements but actual values still do', () => {
+  const citations = Array.from({ length: 12 }, (_, i) => `[${i + 1}]`).join(' ');
+  assert.ok(!rules(note({ 论点与证据: filler(300) + citations + ' [2–4] [6, 8–10]' })).includes('evidence-numbers'));
+  assert.ok(rules(note({ 论点与证据: filler(100) + '模量 1 2 3 4 5 6 7 8 9 10 kPa。' })).includes('evidence-numbers'));
+});
+
+test('underscore bold labels are rejected just like asterisk labels', () => {
+  for (const label of ['__机理：__交联点解离。', '__机理__：交联点解离。']) {
+    assert.ok(rules(note({ 研究背景: filler(240) + '\n\n' + label })).includes('bold-label'));
+  }
+});

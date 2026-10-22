@@ -67,6 +67,18 @@ function checkedLines(markdown: string): Line[] {
     const end = lines.findIndex((line, index) => index > 0 && line.text.trim() === '---');
     if (end > 0) lines.slice(0, end + 1).forEach(blank);
   }
+  // Code examples must not create protection state or consume real prose after the closing fence.
+  let fence: { marker: string; length: number } | undefined;
+  for (const line of lines) {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.text);
+    if (fence) {
+      if (match && match[1]![0] === fence.marker && match[1]!.length >= fence.length && !match[2]!.trim()) fence = undefined;
+      blank(line);
+    } else if (match) {
+      fence = { marker: match[1]![0]!, length: match[1]!.length };
+      blank(line);
+    }
+  }
   let protectedLevel = 0;
   let marker: string | undefined;
   for (const line of lines) {
@@ -85,12 +97,6 @@ function checkedLines(markdown: string): Line[] {
       if (!protectedLevel && PROTECTED_SECTIONS.has(heading[2]!)) protectedLevel = level;
     }
     if (protectedLevel) blank(line);
-  }
-  // Code fences are not prose.
-  let fence = false;
-  for (const line of lines) {
-    if (/^\s*(```|~~~)/.test(line.text)) { fence = !fence; blank(line); }
-    else if (fence) blank(line);
   }
   return lines;
 }
@@ -130,11 +136,17 @@ export function noteLength(text: string): number {
 
 const LABELLED_NUMBER = /(?:图|表|式|公式|Fig(?:ure)?s?\.?|Tables?|Eqs?\.?|Ref(?:erence)?s?\.?|参考文献)\s*S?\d+[a-zA-Z]?(?:\s*[,，、–—-]\s*S?\d+[a-zA-Z]?)*/g;
 const NUMBER = /\d+(?:[.,]\d+)?/g;
+const CITATION = /\[\d+(?:\s*[,，;；–—-]\s*\d+)*\]/g;
+const referenceLabel = (label: string) => label.trim().replace(/\s+/g, ' ').toLowerCase();
 
 export function lintNote(markdown: string, options: LintOptions = {}): LintResult {
   const problems: LintProblem[] = [];
   const lines = checkedLines(markdown);
   const { preamble, sections } = splitSections(lines);
+  const references = new Set(lines.flatMap(line => {
+    const label = /^ {0,3}\[([^\]]+)\]:\s*\S/.exec(line.text)?.[1];
+    return label ? [referenceLabel(label)] : [];
+  }));
 
   // Structure: the 9 sections, once each, in order; only protected sections may follow.
   const titles = sections.map(section => section.title);
@@ -174,8 +186,10 @@ export function lintNote(markdown: string, options: LintOptions = {}): LintResul
     let sectionLength = 0;
     let numbers = 0;
     for (const line of section.lines) {
+      if (sectionName === undefined && /^#\s+/.test(line.text)) continue;
       if (/#page=/.test(line.text)) problems.push({ rule: 'page-link', message: '不要写页码链接（#page=）。', ...where(line) });
-      if (/!\[\[|!\[[^\]]*\]\(/.test(line.text)) problems.push({ rule: 'embed', message: '不要嵌入图片，写“图 N 显示……”。', ...where(line) });
+      const images = [...line.text.matchAll(/!\[([^\]]*)\](?:\[([^\]]*)\])?/g)];
+      if (/!\[\[|!\[[^\]]*\]\(/.test(line.text) || images.some(match => references.has(referenceLabel(match[2] || match[1]!)))) problems.push({ rule: 'embed', message: '不要嵌入图片，写“图 N 显示……”。', ...where(line) });
       if (sectionName === ABSTRACT) {
         if (options.includeAbstractInLength) length += noteLength(prose(line.text));
         continue;
@@ -188,11 +202,11 @@ export function lintNote(markdown: string, options: LintOptions = {}): LintResul
       hedges += text.match(HEDGE)?.length ?? 0;
       const spans = line.text.match(/\*\*[^*\n]+?\*\*|__[^_\n]+?__/g) ?? [];
       bold += spans.length;
-      if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*[^*\n]+?[:：]\*\*|\*\*[^*\n]+?\*\*\s*[:：])/.test(line.text)) {
+      if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*[^*\n]+?[:：]\*\*|\*\*[^*\n]+?\*\*\s*[:：]|__[^_\n]+?[:：]__|__[^_\n]+?__\s*[:：])/.test(line.text)) {
         problems.push({ rule: 'bold-label', message: '不要用加粗当行首小标题，改用标题或列表层级。', ...where(line) });
       }
       sectionLength += noteLength(text);
-      if (sectionName === EVIDENCE) numbers += text.replace(LABELLED_NUMBER, '').match(NUMBER)?.length ?? 0;
+      if (sectionName === EVIDENCE) numbers += text.replace(LABELLED_NUMBER, '').replace(CITATION, '').match(NUMBER)?.length ?? 0;
     }
     if (bold > MAX_BOLD_PER_SECTION) {
       problems.push({ rule: 'bold', message: `本节加粗 ${bold} 处，上限 ${MAX_BOLD_PER_SECTION}。`, ...where() });
