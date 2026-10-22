@@ -6,6 +6,9 @@ import { ProcessError, runLines } from './process';
 
 export type AdapterName = 'codex' | 'claude';
 
+export const CODEX_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+export type CodexReasoningEffort = typeof CODEX_REASONING_EFFORTS[number];
+
 /** One CLI turn (docs/architecture.md §5.1). */
 export interface AgentRequest {
   prompt: string;
@@ -19,6 +22,8 @@ export interface AgentRequest {
   images?: string[];
   resumeId?: string;
   model?: string;
+  /** Codex only; omitted to use the selected model's default. */
+  reasoningEffort?: CodexReasoningEffort;
   timeoutMs: number;
   mode: 'read-only' | 'write-workspace';
   webSearch?: boolean;

@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { MAX_STORED_MESSAGES, importLegacySettings, renameSession, sessionFor, trimSession } from '../../src/agent/chat/sessions';
 import { DEFAULT_TIMEOUT_MINUTES, readSettings } from '../../src/agent/settings';
+import { currentAgent } from '../../src/agent/runner';
 
 test('settings tolerate missing and invalid fields; Codex is the default', () => {
   const settings = readSettings({ adapter: 'gpt', generationTimeoutMinutes: -3, codexPath: 7, window: { left: 'x', top: 10 } });
@@ -11,6 +12,26 @@ test('settings tolerate missing and invalid fields; Codex is the default', () =>
   assert.deepEqual(settings.window, { top: 10 });
   assert.equal(readSettings({ adapter: 'claude' }).adapter, 'claude');
   assert.deepEqual(readSettings(undefined).sessions, {});
+});
+
+test('Codex reasoning defaults to high, preserves choices and survives saving', () => {
+  assert.equal(readSettings(undefined).codexReasoningEffort, 'high');
+  assert.equal(readSettings({ codexReasoningEffort: 'invalid' }).codexReasoningEffort, 'high');
+  for (const effort of ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
+    const settings = readSettings({ codexReasoningEffort: effort });
+    assert.equal(settings.codexReasoningEffort, effort);
+    assert.equal(readSettings(JSON.parse(JSON.stringify(settings))).codexReasoningEffort, effort);
+  }
+});
+
+test('the current agent uses the latest Codex reasoning selection', () => {
+  const settings = readSettings({});
+  assert.equal(currentAgent(settings).reasoningEffort, 'high');
+  settings.codexReasoningEffort = 'xhigh';
+  assert.equal(currentAgent(settings).reasoningEffort, 'xhigh');
+  assert.equal(currentAgent(settings, 'claude').reasoningEffort, undefined);
+  settings.codexReasoningEffort = '';
+  assert.equal(currentAgent(settings).reasoningEffort, undefined);
 });
 
 test('codex-note-chat sessions and options are imported once, existing values win, old review data is dropped', () => {

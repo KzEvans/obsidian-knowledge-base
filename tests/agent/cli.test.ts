@@ -69,6 +69,17 @@ test('codex: resume puts the sandbox in -c and the id after --', () => {
   assert.deepEqual(args.slice(-5), ['-i', '/a.png', '--', 'abc-1', '-']);
 });
 
+test('codex: selected reasoning is passed to new and resumed turns; default is left to the model', () => {
+  for (const resumeId of [undefined, 'existing-thread']) {
+    const { args } = codexDialect.build({ ...base, resumeId, reasoningEffort: 'high' }, {});
+    const index = args.indexOf('model_reasoning_effort="high"');
+    assert.ok(index > 0);
+    assert.equal(args[index - 1], '-c');
+  }
+  const { args } = codexDialect.build(base, {});
+  assert.ok(!args.some(arg => arg.startsWith('model_reasoning_effort=')));
+});
+
 test('codex: write-workspace, web search, schema and ephemeral', () => {
   const { args } = codexDialect.build({ ...base, mode: 'write-workspace', writableDirs: ['/extra'], webSearch: true, ephemeral: true }, { schemaFile: '/tmp/s.json' });
   assert.ok(args.join(' ').includes('-s workspace-write -C /work --add-dir /extra'));
@@ -176,11 +187,12 @@ test('child environment: PATH completed, proxy injected, localhost bypassed', ()
 test('fake codex: streams JSONL, receives stdin and the proxy', async () => {
   const run = fake(codexDialect, 'codex-ok', {}, 'http://proxy.test:8080');
   const deltas: string[] = [];
-  const result = await collect(run.adapter.run({ ...base, cwd: scratch, prompt: '你好' }, new AbortController().signal), text => deltas.push(text));
+  const result = await collect(run.adapter.run({ ...base, cwd: scratch, prompt: '你好', reasoningEffort: 'high' }, new AbortController().signal), text => deltas.push(text));
   assert.deepEqual(result, { text: 'World', sessionId: 'thread-123' });
   assert.deepEqual(deltas, ['Hello', '\n\nWorld']);
   const record = run.record();
   assert.equal(record.stdin, '你好');
+  assert.ok(record.argv.includes('model_reasoning_effort="high"'));
   assert.equal(record.env.HTTPS_PROXY, 'http://proxy.test:8080');
   assert.ok(record.env.NO_PROXY?.includes('localhost'));
   assert.ok(record.env.PATH?.split(':').includes(run.dir));

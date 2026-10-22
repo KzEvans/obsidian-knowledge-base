@@ -8,7 +8,7 @@ import { NOTE_OUTPUT_SCHEMA, noteMarkdown } from '../../../skills/paper-note/out
 import { lintNote } from '../../../skills/paper-note/lint';
 import type { LintResult } from '../../../skills/paper-note/lint';
 import { collect } from '../cli/adapter';
-import type { AgentAdapter } from '../cli/adapter';
+import type { AgentChoice } from '../runner';
 import { composeNote } from './compose';
 import { abstractTranslation } from './fulltext';
 import { PURPOSE_PATH, localDate, localIso, noteIdentity, paperMetadata } from './metadata';
@@ -40,7 +40,7 @@ export interface GenerateDeps {
   markdownPaths(): string[];
   /** An existing note for this paper (by source_sha256 or zotero_attachment). */
   findExistingNote(sha: string, attachmentKey: string): string | undefined;
-  agent(): { adapter: AgentAdapter; model?: string };
+  agent(): AgentChoice;
   vaultPath: string;
   timeoutMs: number;
   skill: string;
@@ -88,7 +88,7 @@ export async function generateNote(sha: string, deps: GenerateDeps, signal: Abor
   try {
     onStatus('正在准备工作区…');
     await writeWorkspace(workspace, { document: fullText(document), metadata, purpose: await deps.readVaultText(PURPOSE_PATH), titles: deps.markdownPaths() });
-    const { adapter, model } = deps.agent();
+    const { adapter, model, reasoningEffort } = deps.agent();
     onStatus(`${adapter.name === 'codex' ? 'Codex' : 'Claude Code'} 正在撰写笔记…`);
     signal.throwIfAborted();
     const result = await collect(adapter.run({
@@ -97,6 +97,7 @@ export async function generateNote(sha: string, deps: GenerateDeps, signal: Abor
       cwd: workspace,
       readableDirs: [deps.vaultPath],
       model,
+      reasoningEffort,
       timeoutMs: deps.timeoutMs,
       mode: 'read-only',
       outputSchema: NOTE_OUTPUT_SCHEMA,

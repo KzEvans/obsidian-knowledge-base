@@ -1,6 +1,7 @@
 import { Setting } from 'obsidian';
 import type { SettingsSection } from '../core/module';
-import type { AdapterName } from './cli/adapter';
+import { CODEX_REASONING_EFFORTS } from './cli/adapter';
+import type { AdapterName, CodexReasoningEffort } from './cli/adapter';
 import { probeDirs } from './cli/environment';
 
 export interface AttachmentSummary { name: string; type: string; size: number; isImage: boolean }
@@ -29,6 +30,7 @@ export interface AgentSettings {
   codexPath: string;
   claudePath: string;
   codexModel: string;
+  codexReasoningEffort: CodexReasoningEffort | '';
   claudeModel: string;
   proxyUrl: string;
   generationTimeoutMinutes: number;
@@ -54,6 +56,7 @@ export function readSettings(saved: unknown): AgentSettings {
     codexPath: text('codexPath'),
     claudePath: text('claudePath'),
     codexModel: text('codexModel'),
+    codexReasoningEffort: readCodexReasoningEffort(value.codexReasoningEffort),
     claudeModel: text('claudeModel'),
     proxyUrl: text('proxyUrl'),
     generationTimeoutMinutes: Number.isFinite(minutes) && minutes >= 1 ? Math.min(Math.round(minutes), 240) : DEFAULT_TIMEOUT_MINUTES,
@@ -64,6 +67,10 @@ export function readSettings(saved: unknown): AgentSettings {
     sessions: readSessions(value.sessions, 'codex'),
     legacyImported: flag('legacyImported'),
   };
+}
+
+function readCodexReasoningEffort(value: unknown): CodexReasoningEffort | '' {
+  return value === '' ? '' : CODEX_REASONING_EFFORTS.find(effort => effort === value) ?? 'high';
 }
 
 export function readWindow(saved: unknown): WindowState {
@@ -125,6 +132,19 @@ export function settingsSection(settings: AgentSettings, save: () => Promise<voi
       const probe = probeDirs().join('、');
       textSetting(container, 'Codex 路径', `留空时依次查找 ${probe}。`, '自动探测', settings.codexPath, value => { settings.codexPath = value; }, save);
       textSetting(container, 'Codex 模型', '留空使用 Codex 默认模型。', '默认', settings.codexModel, value => { settings.codexModel = value; }, save);
+      new Setting(container).setName('Codex 思考强度').setDesc('用于笔记生成、笔记问答和影响因子查询。可用档位取决于所选模型。')
+        .addDropdown(dropdown => {
+          dropdown.addOption('', '模型默认');
+          const labels: Record<CodexReasoningEffort, string> = {
+            low: 'Low（低）', medium: 'Medium（中）', high: 'High（高）',
+            xhigh: 'Extra High（极高）', max: 'Max（最大）', ultra: 'Ultra',
+          };
+          for (const effort of CODEX_REASONING_EFFORTS) dropdown.addOption(effort, labels[effort]);
+          dropdown.setValue(settings.codexReasoningEffort).onChange(async value => {
+            settings.codexReasoningEffort = readCodexReasoningEffort(value);
+            await save();
+          });
+        });
       textSetting(container, 'Claude Code 路径', `留空时依次查找 ${probe}。`, '自动探测', settings.claudePath, value => { settings.claudePath = value; }, save);
       textSetting(container, 'Claude Code 模型', '留空使用 Claude Code 默认模型，也可填 opus、sonnet 等别名。', '默认', settings.claudeModel, value => { settings.claudeModel = value; }, save);
       textSetting(container, '代理地址', '设置后注入 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY；localhost 不走代理。', 'http://127.0.0.1:7890', settings.proxyUrl, value => { settings.proxyUrl = value; }, save);

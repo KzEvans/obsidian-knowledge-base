@@ -15,6 +15,7 @@ export const codexDialect: CliDialect = {
     args.push('--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules');
     if (request.ephemeral) args.push('--ephemeral');
     if (request.model) args.push('-m', request.model);
+    if (request.reasoningEffort) args.push('-c', `model_reasoning_effort=${toml(request.reasoningEffort)}`);
     const sandbox = request.mode === 'write-workspace' ? 'workspace-write' : 'read-only';
     if (request.resumeId) args.push('-c', `sandbox_mode=${toml(sandbox)}`);
     else args.push('-s', sandbox, '-C', request.cwd);

@@ -190,11 +190,12 @@ interface AgentAdapter {
   run(request: AgentRequest, signal: AbortSignal): AsyncIterable<AgentEvent>;
 }
 // AgentRequest: prompt、instructions、cwd、readableDirs、writableDirs、images、
-//               resumeId、model、timeoutMs、mode: "read-only" | "write-workspace"
+//               resumeId、model、reasoningEffort、timeoutMs、mode: "read-only" | "write-workspace"
 // AgentEvent:   { type: "text-delta" } | { type: "session", id } | { type: "done", text } | { type: "error" }
 ```
 
 - Codex：`codex exec --json`，续聊用 `codex exec resume <id>`。Claude：`claude -p --output-format stream-json`，续聊用 `--resume <id>`。具体参数（沙箱、可写目录、图片、跳过用户配置）由 agent 会话对照本机 `--help` 输出确定，不凭记忆写。
+- Codex 思考强度在智能体设置中选择，默认 `high`，用于生成笔记、问答和影响因子查询；选择“模型默认”时省略参数。新会话及续聊均通过 `-c model_reasoning_effort="…"` 显式传入选择的档位。Claude 不使用此设置。
 - 子进程以独立进程组启动（`detached: true`），取消或超时时 `process.kill(-pid)` 结束整组。
 - CLI 路径：先看设置，再按顺序探测 `~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`。Obsidian 从图形界面启动时不继承 shell 的 PATH，所以子进程的 PATH 也要显式补全。
 - 代理地址设置后注入子进程的 `HTTP(S)_PROXY`、`ALL_PROXY`，`NO_PROXY` 包含 localhost。

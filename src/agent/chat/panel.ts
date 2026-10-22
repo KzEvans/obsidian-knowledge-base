@@ -476,11 +476,11 @@ export class NoteChat {
       const resumable = !!session.threadId;
       const run = async (resumeId: string | null) => {
         const prompt = await this.buildPrompt(context, question, attachments, !!resumeId);
-        const { adapter, model } = currentAgent(this.settings, session.adapter);
+        const { adapter, model, reasoningEffort } = currentAgent(this.settings, session.adapter);
         const cwd = await chatDirectory();
         const readable = new Set([this.context.vaultPath, ...attachments.filter(attachment => !attachment.isImage).map(attachment => path.dirname(attachment.path))]);
         const events = adapter.run({
-          prompt, instructions: CHAT_INSTRUCTIONS, cwd, readableDirs: [...readable], model, mode: 'read-only', timeoutMs: CHAT_TIMEOUT_MS,
+          prompt, instructions: CHAT_INSTRUCTIONS, cwd, readableDirs: [...readable], model, reasoningEffort, mode: 'read-only', timeoutMs: CHAT_TIMEOUT_MS,
           images: attachments.filter(attachment => attachment.isImage).map(attachment => attachment.path),
           resumeId: resumeId ?? undefined,
         }, controller.signal);

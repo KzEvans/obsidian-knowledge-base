@@ -109,7 +109,7 @@ function deps(files: NoteFiles, agent: { adapter: AgentAdapter }, overrides: Par
     store: store(), files, readVaultText,
     markdownPaths: () => ['wiki/concepts/软驱动器.md', 'wiki/papers/Other.md'],
     findExistingNote: () => undefined,
-    agent: () => ({ adapter: agent.adapter, model: 'm1' }),
+    agent: () => ({ adapter: agent.adapter, model: 'm1', reasoningEffort: 'high' }),
     vaultPath: '/vault', timeoutMs: 60_000, skill: 'SKILL TEXT',
     saveCandidate: (name, text) => { saved.set(name, text); return Promise.resolve(`/candidates/${name}`); },
     now: () => new Date(2026, 9, 21, 9, 30, 0),
@@ -202,6 +202,7 @@ test('generation: workspace contents, agent request, publish, lint', async () =>
   assert.ok(request.instructions?.startsWith('SKILL TEXT'));
   assert.deepEqual(request.readableDirs, ['/vault']);
   assert.equal(request.model, 'm1');
+  assert.equal(request.reasoningEffort, 'high');
   assert.ok(!existsSync(request.cwd), 'workspace removed');
   const notePath = 'wiki/papers/软材料/驱动器/2026-10-21 - Jane Smith - Soft actuators with CO₂ & more.md';
   const written = files.notes.get(notePath)?.text ?? '';
