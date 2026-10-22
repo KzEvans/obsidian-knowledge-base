@@ -13,6 +13,8 @@ export interface MathHarness {
   calls: string[];
   loaded: boolean;
   invalidFormula?: string;
+  failFlush?: boolean;
+  mathIds?: boolean;
   notices: string[];
   modals: Array<{ kind: string; args: unknown[]; confirm?: () => void }>;
 }
@@ -30,10 +32,20 @@ export function renderMath(source, display) {
   harness.calls.push('math:' + source);
   const node = harness.document.createElement('span');
   node.className = 'test-math'; node.dataset.source = source; node.dataset.display = String(display); node.textContent = source;
+  if (harness.mathIds) {
+    node.id = 'math-' + harness.calls.filter(call => call.startsWith('math:')).length;
+    const link = harness.document.createElement('a'); link.setAttribute('href', '#' + node.id); node.append(link);
+    const svg = harness.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const glyph = harness.document.createElementNS('http://www.w3.org/2000/svg', 'path'); glyph.id = node.id + '-glyph'; svg.append(glyph);
+    const use = harness.document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', '#' + glyph.id);
+    use.setAttribute('clip-path', 'url(#' + glyph.id + ')'); svg.append(use); node.append(svg);
+    node.setAttribute('aria-labelledby', glyph.id);
+  }
   if (source === harness.invalidFormula) { const error = harness.document.createElement('mjx-merror'); error.setAttribute('data-mjx-error', 'invalid TeX'); node.append(error); }
   return node;
 }
-export async function finishRenderMath() { h().calls.push('flush'); }
+export async function finishRenderMath() { h().calls.push('flush'); if (h().failFlush) throw new Error('stylesheet flush failed'); }
 export function sanitizeHTMLToDom(html) { const template = h().document.createElement('template'); template.innerHTML = html; return template.content; }
 export class Notice { constructor(message) { h().notices.push(message); } }
 export class Modal {

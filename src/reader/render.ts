@@ -28,7 +28,13 @@ interface RenderContext {
   options: ReaderRenderOptions;
   markedPages: Set<number>;
   mathDocuments: Set<Document>;
+  pendingMath: Set<MathTemplate>;
 }
+
+interface MathTemplate { element: HTMLElement; flushed: boolean; scopeIds: boolean }
+const MATH_TEMPLATE_LIMIT = 512;
+const mathTemplates = new WeakMap<Document, Map<string, MathTemplate>>();
+let mathInstance = 0;
 
 type Tag = keyof HTMLElementTagNameMap;
 
@@ -46,7 +52,7 @@ export async function renderReader(root: HTMLElement, blocks: readonly RenderBlo
     try { await loadMathJax(); } catch { /* Individual formulas retain their source-page fallback. */ }
   }
   if (options.isCurrent?.() === false) return;
-  const context: RenderContext = { document: root.ownerDocument, options, markedPages: new Set(), mathDocuments: new Set() };
+  const context: RenderContext = { document: root.ownerDocument, options, markedPages: new Set(), mathDocuments: new Set(), pendingMath: new Set() };
   setTypography(root, options.fontSize, options.lineHeight);
   root.dataset.lang = options.language ?? 'en';
   root.empty();
@@ -142,7 +148,7 @@ export async function updateTranslations(root: HTMLElement, blocks: readonly Ren
     try { await loadMathJax(); } catch { /* Fallback code spans remain. */ }
   }
   const context: RenderContext = {
-    document: root.ownerDocument, markedPages: new Set(), mathDocuments: new Set(),
+    document: root.ownerDocument, markedPages: new Set(), mathDocuments: new Set(), pendingMath: new Set(),
     options: { fontSize: 0, lineHeight: 0, assetUrl: () => '', onSource: () => {}, onCopy: () => {}, onZoom: () => {}, translation, ...options },
   };
   const batch = batcher();
@@ -699,9 +705,29 @@ function escapeInlineText(text: string): string {
 function appendMath(parent: HTMLElement, source: string, display: boolean, context: RenderContext): boolean {
   try {
     if (!source.trim()) throw new Error('empty equation');
-    const math = renderMath(source, display);
-    if (math.querySelector('mjx-merror, .mjx-merror, [data-mjx-error]')) throw new Error('invalid equation');
-    context.mathDocuments.add(math.ownerDocument);
+    const key = `${display ? 'display' : 'inline'}:${source}`;
+    let templates = mathTemplates.get(context.document);
+    let template = templates?.get(key);
+    if (!template) {
+      const element = renderMath(source, display);
+      if (element.querySelector('mjx-merror, .mjx-merror, [data-mjx-error]')) throw new Error('invalid equation');
+      // Named equation links need MathJax's label registration on each render.
+      const reusable = !/\\(?:label|(?:eq)?ref)\s*\{/.test(source);
+      template = { element, flushed: false, scopeIds: reusable && Boolean(element.id || element.querySelector('[id]')) };
+      if (reusable) {
+        if (!templates) { templates = new Map(); mathTemplates.set(context.document, templates); }
+        templates.set(key, template);
+        while (templates.size > MATH_TEMPLATE_LIMIT) templates.delete(templates.keys().next().value!);
+      }
+    } else {
+      templates!.delete(key);
+      templates!.set(key, template);
+    }
+    if (!template.flushed) {
+      context.mathDocuments.add(template.element.ownerDocument);
+      context.pendingMath.add(template);
+    }
+    const math = cloneMath(template);
     const element = math.ownerDocument === context.document ? math : context.document.adoptNode(math);
     element.classList.add(display ? 'pdf-reader-display-math' : 'pdf-reader-inline-math');
     parent.append(element);
@@ -710,6 +736,25 @@ function appendMath(parent: HTMLElement, source: string, display: boolean, conte
     parent.createEl('code', { cls: 'pdf-reader-math-fallback', text: source || '公式未能排版', title: '公式未能排版，请用原文按钮查看源页' });
     return false;
   }
+}
+
+function cloneMath(template: MathTemplate): HTMLElement {
+  const clone = template.element.cloneNode(true) as HTMLElement;
+  if (!template.scopeIds) return clone;
+  const elements = [clone, ...Array.from(clone.querySelectorAll('*'))];
+  const prefix = `pw-math-${++mathInstance}`;
+  const ids = new Map(elements.filter(element => element.id).map((element, index) => [element.id, `${prefix}-${index}`]));
+  for (const element of elements) {
+    if (element.id) element.id = ids.get(element.id)!;
+    for (const attribute of Array.from(element.attributes)) {
+      let value = attribute.value;
+      if ((attribute.name === 'href' || attribute.name === 'xlink:href') && value.startsWith('#')) value = `#${ids.get(value.slice(1)) ?? value.slice(1)}`;
+      else if (attribute.name === 'aria-labelledby' || attribute.name === 'aria-describedby') value = value.split(/\s+/).map(id => ids.get(id) ?? id).join(' ');
+      value = value.replace(/url\((['"]?)#([^'")\s]+)\1\)/g, (match: string, quote: string, id: string) => ids.has(id) ? `url(${quote}#${ids.get(id)!}${quote})` : match);
+      if (value !== attribute.value) element.setAttributeNS(attribute.namespaceURI, attribute.name, value);
+    }
+  }
+  return clone;
 }
 
 async function flushMath(context: RenderContext, onFailure: () => void): Promise<void> {
@@ -725,6 +770,7 @@ async function flushMath(context: RenderContext, onFailure: () => void): Promise
         if (sourceStyle?.tagName === 'STYLE') adoptMathStyles(context.document, id, sourceStyle.textContent ?? '');
       }
     }
+    for (const template of context.pendingMath) template.flushed = true;
   } catch {
     onFailure();
   }

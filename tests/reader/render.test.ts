@@ -34,6 +34,77 @@ test("cold-start rendering waits for MathJax before both block and inline formul
   assert.equal(root.querySelectorAll(".pdf-reader-math-fallback").length, 0);
 });
 
+test("reopening a rendered paper reuses finished formulas without another MathJax flush", async () => {
+  const blocks = [block("body", "paragraph", "The field is $E=U/d$.")];
+  const { root, harness: math } = await render(blocks);
+  const first = root.querySelector(".test-math")!;
+  math.calls.length = 0;
+  await (await renderer).renderReader(root, blocks, {
+    fontSize: 18, lineHeight: 1.5, assetUrl: () => "", onSource: () => {}, onCopy: () => {}, onZoom: () => {},
+  });
+  const reopened = root.querySelector<HTMLElement>(".test-math")!;
+  assert.equal(reopened.dataset.source, "E=U/d");
+  assert.notEqual(reopened, first);
+  assert.equal(math.calls.filter(call => call.startsWith("math:")).length, 0);
+  assert.equal(math.calls.includes("flush"), false);
+});
+
+test("repeated formulas keep independent nodes and distinct inline/display layouts", async () => {
+  const { root, harness: math } = await render([
+    block("body", "paragraph", "$x=1$ and $x=1$."),
+    block("equation", "equation", "$$x=1$$"),
+  ]);
+  assert.equal(root.querySelectorAll(".test-math").length, 3);
+  assert.equal(root.querySelectorAll(".pdf-reader-inline-math").length, 2);
+  assert.equal(root.querySelectorAll(".pdf-reader-display-math").length, 1);
+  assert.equal(math.calls.filter(call => call.startsWith("math:")).length, 2);
+});
+
+test("a failed MathJax stylesheet flush is retried when the paper reopens", async () => {
+  const { document } = dom({ failFlush: true });
+  const root = document.body.createDiv();
+  const options: ReaderRenderOptions = { fontSize: 18, lineHeight: 1.5, assetUrl: () => "", onSource: () => {}, onCopy: () => {}, onZoom: () => {} };
+  const blocks = [block("body", "paragraph", "$x=1$.")];
+  const api = await renderer;
+  await api.renderReader(root, blocks, options);
+  assert.equal(root.querySelectorAll(".pdf-reader-render-notice").length, 1);
+  harness().failFlush = false;
+  harness().calls.length = 0;
+  await api.renderReader(root, blocks, options);
+  assert.equal(root.querySelectorAll(".test-math").length, 1);
+  assert.equal(root.querySelectorAll(".pdf-reader-render-notice").length, 0);
+  assert.equal(harness().calls.includes("flush"), true);
+});
+
+test("cached numbered formulas get independent IDs and preserve their local references", async () => {
+  const { document } = dom({ mathIds: true });
+  const root = document.body.createDiv();
+  await (await renderer).renderReader(root, [block("body", "paragraph", "$x=1$ and $x=1$.")], {
+    fontSize: 18, lineHeight: 1.5, assetUrl: () => "", onSource: () => {}, onCopy: () => {}, onZoom: () => {},
+  });
+  const formulas = Array.from(root.querySelectorAll<HTMLElement>(".test-math"));
+  assert.equal(formulas.length, 2);
+  assert.notEqual(formulas[0]!.id, formulas[1]!.id);
+  for (const formula of formulas) {
+    assert.equal(formula.querySelector("a")!.getAttribute("href"), `#${formula.id}`);
+    const glyph = formula.querySelector("path")!;
+    const use = formula.querySelector("use")!;
+    assert.equal(use.getAttribute("xlink:href"), `#${glyph.id}`);
+    assert.equal(use.getAttribute("clip-path"), `url(#${glyph.id})`);
+    assert.equal(formula.getAttribute("aria-labelledby"), glyph.id);
+  }
+  assert.equal(harness().calls.filter(call => call.startsWith("math:")).length, 1);
+});
+
+test("named equation labels and references retain MathJax registration on each render", async () => {
+  const { root, harness: math } = await render([
+    block("body", "paragraph", "$x=1\\label{eq:x}$ and $x=1\\label{eq:x}$."),
+    block("reference", "paragraph", "$\\eqref{eq:x}$ and $\\eqref{eq:x}$."),
+  ]);
+  assert.equal(root.querySelectorAll(".test-math").length, 4);
+  assert.equal(math.calls.filter(call => call.startsWith("math:")).length, 4);
+});
+
 test("scientific tags in text, captions and footnotes coexist with comparisons and TeX", async () => {
   const { root } = await render([
     block("body", "paragraph", "ZrO<sub>2</sub> has units m<sup>3</sup>; $x < y & z$ and 2 < 3."),
