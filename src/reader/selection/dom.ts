@@ -16,25 +16,28 @@ export function normalizePdfSelection(value: string): string {
     .trim();
 }
 
-const READER_BREAKS = 'p, li, h1, h2, h3, h4, h5, h6, figcaption, .pw-block';
+/** Reading-layer DOM contract (docs/contracts.md §6.1). */
+const READER_EXCLUDED = '[aria-hidden="true"], [data-pw-ui]';
+const READER_BREAKS = '.pw-block, p, li, h1, h2, h3, h4, h5, h6';
 
 /**
- * Text of a selection in the reading layer. The hidden layer (aria-hidden) may sit inside the
- * range when it spans several blocks; it is dropped so only the visible English is sent.
+ * Text of a selection in the reading layer. A range across blocks also holds the hidden layer
+ * (aria-hidden) and interface elements (data-pw-ui); both are dropped so only the paper's
+ * visible English is sent.
  */
 export function readerSelectionText(range: Range): string {
   const fragment = range.cloneContents();
-  fragment.querySelectorAll('[aria-hidden="true"]').forEach(element => element.remove());
+  fragment.querySelectorAll(READER_EXCLUDED).forEach(element => element.remove());
   fragment.querySelectorAll('br').forEach(element => element.replaceWith('\n'));
   fragment.querySelectorAll(READER_BREAKS).forEach(element => element.append('\n'));
   return Array.from(fragment.childNodes, node => node.textContent ?? '').join('');
 }
 
-/** True when the node sits in an aria-hidden subtree below `root` (the reading layer's inactive language). */
-export function isInHiddenLayer(node: Node, root: Element): boolean {
+/** True when the node sits in the Chinese layer or a hidden (aria-hidden) subtree below the reading-layer `root`. */
+export function isInExcludedLayer(node: Node, root: Element): boolean {
   const element = node.nodeType === 1 ? node as Element : node.parentElement;
-  const hidden = element?.closest('[aria-hidden="true"]');
-  return !!hidden && root.contains(hidden);
+  const excluded = element?.closest('.pw-layer[lang="zh"], [aria-hidden="true"]');
+  return !!excluded && root.contains(excluded);
 }
 
 export function chooseRangeRect(range: Range, pointer?: PointerLocation): RectLike | null {

@@ -4,7 +4,7 @@ import type { ModuleContext } from '../../core/module';
 import { leafId } from '../../core/pdf-toolbar';
 import { SELECTION_MODEL, termsKey } from '../../core/qwen-mt';
 import { errorMessage } from '../../core/secrets';
-import { chooseRangeRect, convertRectToDocument, isInHiddenLayer, isNode, isNodeInsideView, normalizePdfSelection, readerSelectionText } from './dom';
+import { chooseRangeRect, convertRectToDocument, isInExcludedLayer, isNode, isNodeInsideView, normalizePdfSelection, readerSelectionText } from './dom';
 import type { PointerLocation } from './dom';
 import { placePopup } from './geometry';
 import type { SelectionSettings } from './settings';
@@ -14,6 +14,8 @@ const MAX_CACHE_ENTRIES = 100;
 export const BUTTON_ID = 'selection-translate';
 /** DOM contract with the reading mode (architecture §6.3). */
 const READER_ROOT = '.pdf-reader-content[data-pdf-reader-active="true"]';
+/** `toString()` of a reading-layer range also counts the hidden layer and interface text. */
+const READER_ROUGH_FACTOR = 2;
 const NATIVE_ROOTS = ['.pdf-viewer-container', '.pdf-content-container', '.pdf-container', '.view-content'];
 
 interface SelectionSnapshot {
@@ -43,7 +45,8 @@ export class SelectionTranslator {
   private readonly selectingDocuments = new WeakSet<Document>();
   private readonly selectionTimers = new Map<Document, number>();
   private readonly cache = new Map<string, string>();
-  private activePdfLeaf: WorkspaceLeaf | undefined;
+  /** Most recently focused leaf of any type; checked for PDF each time the command runs. */
+  private activeLeaf: WorkspaceLeaf | undefined;
   private refreshTimer = 0;
 
   constructor(private readonly context: ModuleContext<SelectionSettings>) {}
@@ -54,8 +57,8 @@ export class SelectionTranslator {
       id: 'toggle-selection-translation',
       name: '切换当前 PDF 的划线翻译',
       checkCallback: checking => {
-        const leaf = this.activePdfLeaf;
-        if (!leaf) return false;
+        const leaf = this.activeLeaf;
+        if (!leaf || leaf.view.getViewType() !== PDF_VIEW_TYPE || !leaf.view.containerEl.isConnected) return false;
         if (!checking) this.toggle(leaf);
         return true;
       },
@@ -71,9 +74,12 @@ export class SelectionTranslator {
     plugin.register(events.on('reader:mode-change', payload => this.onReaderModeChange(payload)));
 
     plugin.registerEvent(app.workspace.on('layout-change', () => this.queueRefresh()));
-    plugin.registerEvent(app.workspace.on('file-open', () => this.queueRefresh()));
+    plugin.registerEvent(app.workspace.on('file-open', () => {
+      this.activeLeaf ??= app.workspace.getMostRecentLeaf() ?? undefined;
+      this.queueRefresh();
+    }));
     plugin.registerEvent(app.workspace.on('active-leaf-change', leaf => {
-      this.activePdfLeaf = leaf?.view.getViewType() === PDF_VIEW_TYPE ? leaf : undefined;
+      this.activeLeaf = leaf ?? undefined;
       this.queueRefresh();
     }));
     plugin.registerEvent(app.workspace.on('resize', () => this.repositionAllPopups()));
@@ -83,7 +89,10 @@ export class SelectionTranslator {
     }));
 
     this.observeDocument(activeDocument);
-    app.workspace.onLayoutReady(() => this.refresh());
+    app.workspace.onLayoutReady(() => {
+      this.activeLeaf ??= app.workspace.getMostRecentLeaf() ?? undefined;
+      this.refresh();
+    });
   }
 
   dispose(): void {
@@ -172,14 +181,19 @@ export class SelectionTranslator {
     if (!found) return;
     const { state, inReader } = found;
 
-    const text = normalizePdfSelection(inReader ? readerSelectionText(range) : selection.toString());
+    const limit = this.context.settings.maxSelectionCharacters;
+    const raw = selection.toString();
+    // The reading-layer text needs a DOM clone; a selection far past the limit (even counting the
+    // hidden layer and interface text in `raw`) is rejected without cloning half the paper.
+    const roughlyTooLong = inReader && raw.length > limit * READER_ROUGH_FACTOR;
+    const text = normalizePdfSelection(inReader && !roughlyTooLong ? readerSelectionText(range) : raw);
     if (!text) return;
 
-    const limit = this.context.settings.maxSelectionCharacters;
-    if (text.length > limit) {
+    if (roughlyTooLong || text.length > limit) {
       this.closeOtherPopups(state);
       this.showPopup(state, { document, range: range.cloneRange(), text, pointer }, pointer);
-      this.renderError(state, `已选择 ${text.length.toLocaleString()} 个字符，超过当前上限 ${limit.toLocaleString()}。请缩小选区或在设置中提高上限。`, false);
+      const count = `${roughlyTooLong ? '约 ' : ''}${text.length.toLocaleString()}`;
+      this.renderError(state, `已选择${count} 个字符，超过当前上限 ${limit.toLocaleString()}。请缩小选区或在设置中提高上限。`, false);
       return;
     }
 
@@ -213,7 +227,7 @@ export class SelectionTranslator {
       if (!reader) return { state, inReader: false };
       const chinese = reader.dataset.lang === 'zh' || (state.reader?.active === true && state.reader.language === 'zh');
       if (chinese) return undefined;
-      if ([node, range.startContainer, range.endContainer].some(candidate => isInHiddenLayer(candidate, reader))) return undefined;
+      if ([node, range.startContainer, range.endContainer].some(candidate => isInExcludedLayer(candidate, reader))) return undefined;
       return { state, inReader: true };
     }
     return undefined;
@@ -222,8 +236,8 @@ export class SelectionTranslator {
   private onReaderModeChange(payload: { leafId: string; active: boolean; language: 'en' | 'zh' }): void {
     for (const state of this.states.values()) {
       if (leafId(state.leaf) !== payload.leafId) continue;
-      state.reader = { active: payload.active, language: payload.language };
       this.resetLeafSelection(state);
+      state.reader = { active: payload.active, language: payload.language };
     }
   }
 
@@ -380,6 +394,7 @@ export class SelectionTranslator {
 
   /** Mode switch or a new file in the same tab: drop popup, request, pending timers and the selection. */
   private resetLeafSelection(state: LeafState): void {
+    state.reader = undefined;
     const documents = new Set<Document>([state.leaf.view.containerEl.ownerDocument]);
     if (state.snapshot) documents.add(state.snapshot.document);
     this.closePopup(state);

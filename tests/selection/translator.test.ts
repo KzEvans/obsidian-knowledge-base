@@ -7,6 +7,7 @@ import type { ModuleContext } from '../../src/core/module';
 import { leafId } from '../../src/core/pdf-toolbar';
 import { SELECTION_MODEL } from '../../src/core/qwen-mt';
 import type { TranslateRequest } from '../../src/core/qwen-mt';
+import type { Term } from '../../src/core/types';
 import type { PdfToolbarButton } from '../../src/core/services';
 import { importLegacySettings, readSettings } from '../../src/reader/selection/settings';
 import type { SelectionSettings } from '../../src/reader/selection/settings';
@@ -19,9 +20,10 @@ interface ElementInfo { cls?: string; text?: string; attr?: Record<string, strin
 
 const XHTML = 'http://www.w3.org/1999/xhtml';
 
-/** One PDF leaf's container, as Obsidian lays it out; `content` goes into .view-content. */
-function createDom(content: string) {
-  const { window, document, HTMLElement } = parseHTML(`<!doctype html><html><body><div class="leaf"><div class="view-header"><div class="view-actions"></div></div><div class="view-content">${content}</div></div></body></html>`);
+/** One `.leaf` container per PDF tab, laid out as Obsidian does; each content goes into its .view-content. */
+function createDom(contents: readonly string[]) {
+  const leaves = contents.map(content => `<div class="leaf"><div class="view-header"><div class="view-actions"></div></div><div class="view-content">${content}</div></div>`).join('');
+  const { window, document, HTMLElement } = parseHTML(`<!doctype html><html><body>${leaves}<div class="elsewhere">Sidebar text.</div></body></html>`);
   const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
   const append = (parent: HTMLElement, tag: string, info: ElementInfo = {}) => {
     const element = parent.ownerDocument.createElementNS(XHTML, tag);
@@ -41,38 +43,42 @@ function createDom(content: string) {
 
 const NATIVE = '<div class="pdf-container"><div class="pdf-viewer-container"><div class="textLayer"><span class="native">Dielectric elastomers deform under voltage.</span></div></div></div>';
 
+/** Reading layer per docs/contracts.md §6.1, including interface elements marked data-pw-ui. */
 const READER = (active: boolean, lang: 'en' | 'zh') => `${NATIVE}
   <div class="pdf-reader-content" data-pdf-reader-active="${active}" data-lang="${lang}">
+    <div data-pw-ui class="pw-reader-status">翻译中 3/10</div>
     <div class="pw-block" data-block-id="b1">
-      <div class="pw-layer en1" lang="en"${lang === 'zh' ? ' aria-hidden="true"' : ''}>Soft actuators are compliant.</div>
-      <div class="pw-layer zh1" lang="zh"${lang === 'en' ? ' aria-hidden="true"' : ''}>软执行器是柔顺的。</div>
+      <div class="pw-layer en1" lang="en"${lang === 'zh' ? ' aria-hidden="true"' : ''}>Soft actuators are compliant.<button data-pw-ui>原文 p.1</button><button data-pw-ui>复制页链</button></div>
+      <div class="pw-layer zh1" lang="zh"${lang === 'en' ? ' aria-hidden="true"' : ''}>软执行器是柔顺的。<button data-pw-ui>原文 p.1</button></div>
     </div>
+    <span data-pw-ui class="pw-page-marker">p. 2</span>
+    <div data-pw-ui class="pw-fold">▸ References</div>
     <div class="pw-block" data-block-id="b2">
       <div class="pw-layer en2" lang="en"${lang === 'zh' ? ' aria-hidden="true"' : ''}>They are light.</div>
-      <div class="pw-layer zh2" lang="zh"${lang === 'en' ? ' aria-hidden="true"' : ''}>它们很轻。</div>
+      <div class="pw-layer zh2" lang="zh"${lang === 'en' ? ' aria-hidden="true"' : ''}>它们很轻。<span data-pw-ui>缺译文</span></div>
     </div>
   </div>`;
 
-function makeLeaf(document: Document, file = 'papers/a.pdf') {
-  const containerEl = document.querySelector<HTMLElement>('.leaf')!;
-  const handle = { file };
-  const leaf = { view: { containerEl, getViewType: () => 'pdf', getState: () => ({ file: handle.file }) } } as unknown as WorkspaceLeaf;
+function makeLeaf(containerEl: HTMLElement, file: string) {
+  const handle = { file, type: 'pdf' };
+  const leaf = { view: { containerEl, getViewType: () => handle.type, getState: () => ({ file: handle.file }) } } as unknown as WorkspaceLeaf;
   return { leaf, containerEl, handle };
 }
 
 /** linkedom has no Selection; this stands in for document.getSelection(). */
-function select(document: Document, node: Node, text: string, extra: Partial<Range> = {}) {
+function select(document: Document, node: Node, text: string) {
   const rect = { left: 100, top: 100, right: 200, bottom: 120, width: 100, height: 20 };
+  let clones = 0;
   const range = {
     commonAncestorContainer: node, startContainer: node, endContainer: node,
     cloneRange: () => range,
-    cloneContents: () => { const real = document.createRange(); real.selectNode(node); return real.cloneContents(); },
+    cloneContents: () => { clones += 1; const real = document.createRange(); real.selectNode(node); return real.cloneContents(); },
     getClientRects: () => [rect],
     getBoundingClientRect: () => rect,
-    ...extra,
   } as unknown as Range;
   const selection = {
     isCollapsed: false, rangeCount: 1, cleared: false,
+    get clones() { return clones; },
     getRangeAt: () => range,
     toString: () => text,
     removeAllRanges() { selection.rangeCount = 0; selection.cleared = true; },
@@ -82,33 +88,50 @@ function select(document: Document, node: Node, text: string, extra: Partial<Ran
 }
 
 interface Pending { request: TranslateRequest; resolve(value: string): void; reject(error: Error): void }
+type Command = { id: string; checkCallback(checking: boolean): boolean | void };
 
-function harness(content: string = NATIVE, options: { key?: string | null; glossary?: { source: string; target: string }[] } = {}) {
-  const { window, document } = createDom(content);
+function harness(content: string | readonly string[] = NATIVE, options: { key?: string | null; glossary?: Term[] } = {}) {
+  const contents = typeof content === 'string' ? [content] : content;
+  const { window, document } = createDom(contents);
   (globalThis as unknown as { activeDocument: Document }).activeDocument = document;
-  const leaves: WorkspaceLeaf[] = [];
+  const tabs = Array.from(document.querySelectorAll<HTMLElement>('.leaf'), (element, index) => makeLeaf(element, `papers/${index}.pdf`));
+  const leaves: WorkspaceLeaf[] = tabs.map(tab => tab.leaf);
   const buttons: PdfToolbarButton[] = [];
-  const commands: Array<{ id: string; checkCallback?(checking: boolean): boolean | void }> = [];
+  const commands: Command[] = [];
   const pending: Pending[] = [];
+  const cleanups: Array<() => void> = [];
+  const workspaceHandlers = new Map<string, (...args: unknown[]) => void>();
+  let mostRecent: WorkspaceLeaf | null = null;
+  let domListeners = 0;
   let auto = true;
   const events = new EventBus();
   const settings = readSettings(undefined);
+  const core = { qwenMtEndpoint: '', glossary: options.glossary ?? [] };
   const context = {
     app: {
-      workspace: { iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => leaves.forEach(callback), on: () => ({}), onLayoutReady: (callback: () => void) => callback() },
+      workspace: {
+        iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => leaves.forEach(callback),
+        on: (name: string, callback: (...args: unknown[]) => void) => { workspaceHandlers.set(name, callback); return {}; },
+        onLayoutReady: (callback: () => void) => callback(),
+        getMostRecentLeaf: () => mostRecent,
+      },
       vault: { configDir: '.obsidian', adapter: { exists: () => Promise.resolve(false), read: () => Promise.reject(new Error('no file')) } },
     },
     plugin: {
-      addCommand: (command: (typeof commands)[number]) => { commands.push(command); },
-      register: () => {},
+      addCommand: (command: Command) => { commands.push(command); },
+      register: (cleanup: () => void) => { cleanups.push(cleanup); },
       registerEvent: () => {},
-      registerDomEvent: (target: EventTarget, type: string, listener: EventListener, opts?: AddEventListenerOptions) => target.addEventListener(type, listener, opts),
+      registerDomEvent: (target: EventTarget, type: string, listener: EventListener, opts?: AddEventListenerOptions) => {
+        target.addEventListener(type, listener, opts);
+        domListeners += 1;
+        cleanups.push(() => { target.removeEventListener(type, listener, opts); domListeners -= 1; });
+      },
     },
     events,
-    services: { pdfToolbar: { register: (button: PdfToolbarButton) => { buttons.push(button); return () => {}; }, refresh: () => {} } },
+    services: { pdfToolbar: { register: (button: PdfToolbarButton) => { buttons.push(button); return () => { buttons.splice(buttons.indexOf(button), 1); }; }, refresh: () => {} } },
     settings,
     saveSettings: () => Promise.resolve(),
-    core: { qwenMtEndpoint: '', glossary: options.glossary ?? [] },
+    core,
     secrets: { get: () => options.key === undefined ? 'test-key-not-real-0000' : options.key, set: () => {} },
     qwenMt: {
       translate: (request: TranslateRequest) => new Promise<string>((resolve, reject) => {
@@ -122,15 +145,27 @@ function harness(content: string = NATIVE, options: { key?: string | null; gloss
 
   const translator = new SelectionTranslator(context);
   translator.start();
-  const { leaf, containerEl, handle } = makeLeaf(document);
-  leaves.push(leaf);
   translator.refresh();
+  const first = tabs[0]!;
+
+  const dispatch = (target: EventTarget, type: string, init: Record<string, unknown> = {}) => {
+    const event = new window.Event(type, { bubbles: true });
+    Object.assign(event, init);
+    target.dispatchEvent(event);
+  };
 
   return {
-    window, document, translator, leaf, containerEl, handle, events, settings, buttons, commands, pending,
+    window, document, translator, tabs, leaves, events, settings, core, buttons, commands, pending, workspaceHandlers, dispatch,
+    leaf: first.leaf, containerEl: first.containerEl, handle: first.handle,
     manual() { auto = false; },
-    enable() { buttons[0]!.onClick(leaf, document.body.createEl('button')); },
+    domListeners: () => domListeners,
+    busListeners: (name: string) => (events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(name)?.size ?? 0,
+    setMostRecent(leaf: WorkspaceLeaf | null) { mostRecent = leaf; },
+    enable(leaf: WorkspaceLeaf = first.leaf) { buttons[0]!.onClick(leaf, document.body.createEl('button')); },
+    /** What Obsidian does on plugin unload: dispose, then run everything registered through the plugin. */
+    unload() { translator.dispose(); for (const cleanup of cleanups.splice(0)) cleanup(); },
     popup: () => document.querySelector('.pw-selection-popup'),
+    popups: () => document.querySelectorAll('.pw-selection-popup').length,
     popupText: () => document.querySelector('.pw-selection-popup-body')?.textContent ?? '',
   };
 }
@@ -190,15 +225,13 @@ test('selection end (mouseup) triggers translation after the debounce', async ()
   const h = harness();
   h.enable();
   select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers deform under voltage.');
-  const mouseup = new h.window.Event('mouseup') as unknown as MouseEvent;
-  Object.assign(mouseup, { clientX: 150, clientY: 110 });
-  h.document.dispatchEvent(mouseup);
+  h.dispatch(h.document, 'mouseup', { clientX: 150, clientY: 110 });
   assert.equal(h.pending.length, 0);
   await new Promise(resolve => setTimeout(resolve, 40));
   assert.equal(h.pending.length, 1);
 });
 
-test('reading mode English layer translates; a selection across blocks drops the hidden Chinese', async () => {
+test('reading mode English layer translates; a selection across blocks drops the hidden Chinese and interface text', async () => {
   const h = harness(READER(true, 'en'));
   h.enable();
   const reader = h.containerEl.querySelector('.pdf-reader-content')!;
@@ -352,9 +385,7 @@ test('Escape closes the popup and aborts the request', () => {
   h.enable();
   select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers.');
   h.translator.handleSelection(h.document);
-  const escape = new h.window.Event('keydown') as unknown as KeyboardEvent;
-  Object.assign(escape, { key: 'Escape' });
-  h.document.dispatchEvent(escape);
+  h.dispatch(h.document, 'keydown', { key: 'Escape' });
   assert.equal(h.popup(), null);
   assert.equal(h.pending[0]!.request.signal!.aborted, true);
 });
@@ -377,4 +408,182 @@ test('settings: defaults, clamping, and a one-time import from the old plugin', 
   assert.equal(await importLegacySettings(adapter, '.obsidian', settings), false);
   assert.equal(settings.timeoutSeconds, 10);
   assert.equal(reads.length, 1);
+});
+
+test('settings: a failed legacy read leaves the import pending for the next load', async () => {
+  const settings = readSettings(undefined);
+  const broken = { exists: () => Promise.resolve(true), read: () => Promise.resolve('{not json') };
+  await assert.rejects(importLegacySettings(broken, '.obsidian', settings));
+  assert.equal(settings.legacyImported, false);
+  const missing = { exists: () => Promise.resolve(false), read: () => Promise.reject(new Error('unreachable')) };
+  assert.equal(await importLegacySettings(missing, '.obsidian', settings), true);
+  assert.equal(settings.legacyImported, true);
+});
+
+test('interface-only selections in the reading layer send nothing', async () => {
+  const h = harness(READER(true, 'en'));
+  h.enable();
+  select(h.document, h.containerEl.querySelector('.pw-page-marker')!, 'p. 2');
+  h.translator.handleSelection(h.document);
+  await settle();
+  assert.equal(h.pending.length, 0);
+  assert.equal(h.popup(), null);
+});
+
+test('a reading-layer selection far past the limit is rejected before cloning the DOM', async () => {
+  const h = harness(READER(true, 'en'));
+  h.enable();
+  h.settings.maxSelectionCharacters = 1_000;
+  const selection = select(h.document, h.containerEl.querySelector('.pdf-reader-content')!, 'x'.repeat(2_500));
+  h.translator.handleSelection(h.document);
+  await settle();
+  assert.equal(selection.clones, 0);
+  assert.equal(h.pending.length, 0);
+  assert.match(h.popupText(), /约 2,500 个字符，超过当前上限 1,000/);
+});
+
+test('the configured timeout is passed to the request', async () => {
+  const h = harness();
+  h.enable();
+  h.settings.timeoutSeconds = 45;
+  select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers.');
+  h.translator.handleSelection(h.document);
+  await settle();
+  assert.equal(h.pending[0]!.request.timeoutMs, 45_000);
+});
+
+test('keyboard selection (Shift+Arrow) triggers translation', async () => {
+  const h = harness();
+  h.enable();
+  select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers.');
+  h.dispatch(h.document, 'keydown', { key: 'ArrowRight', shiftKey: true });
+  assert.equal(h.pending.length, 0);
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal(h.pending.length, 1);
+});
+
+test('the command is available only while a PDF tab is active, checked on every call', () => {
+  const h = harness();
+  const command = h.commands[0]!;
+  assert.equal(command.checkCallback(true), false, 'no active leaf yet');
+
+  h.setMostRecent(h.leaf);
+  h.workspaceHandlers.get('file-open')!(null);
+  assert.equal(command.checkCallback(true), true);
+
+  h.handle.type = 'markdown';
+  assert.equal(command.checkCallback(true), false, 'same leaf now shows a note');
+  h.handle.type = 'pdf';
+
+  h.workspaceHandlers.get('active-leaf-change')!(null);
+  assert.equal(command.checkCallback(true), false);
+  h.workspaceHandlers.get('active-leaf-change')!(h.leaf);
+  command.checkCallback(false);
+  assert.equal(h.translator.isEnabled(h.leaf), true);
+});
+
+test('only one popup across tabs: a selection in another tab closes and cancels the first', () => {
+  const h = harness([NATIVE, NATIVE]);
+  h.manual();
+  const [one, two] = h.tabs;
+  h.enable(one!.leaf);
+  h.enable(two!.leaf);
+  select(h.document, one!.containerEl.querySelector('.native')!, 'First tab.');
+  h.translator.handleSelection(h.document);
+  select(h.document, two!.containerEl.querySelector('.native')!, 'Second tab.');
+  h.translator.handleSelection(h.document);
+  assert.equal(h.popups(), 1);
+  assert.equal(h.pending[0]!.request.signal!.aborted, true);
+  assert.equal(h.pending[1]!.request.text, 'Second tab.');
+});
+
+test('closing a tab removes its popup and cancels its request', () => {
+  const h = harness([NATIVE, NATIVE]);
+  h.manual();
+  h.enable();
+  select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers.');
+  h.translator.handleSelection(h.document);
+  assert.ok(h.popup());
+  h.leaves.splice(0, 1);
+  h.translator.refresh();
+  assert.equal(h.popup(), null);
+  assert.equal(h.pending[0]!.request.signal!.aborted, true);
+  assert.equal(h.translator.isEnabled(h.leaf), false);
+});
+
+test('pointer down outside the popup closes it; inside keeps it', async () => {
+  const h = harness();
+  h.enable();
+  select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers.');
+  h.translator.handleSelection(h.document);
+  await settle();
+  h.dispatch(h.document.querySelector('.pw-selection-result')!, 'pointerdown');
+  assert.ok(h.popup());
+  h.dispatch(h.document.querySelector('.elsewhere')!, 'pointerdown');
+  assert.equal(h.popup(), null);
+});
+
+test('retry sends the request again', async () => {
+  const h = harness();
+  h.manual();
+  h.enable();
+  select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers.');
+  h.translator.handleSelection(h.document);
+  h.pending[0]!.reject(new Error('Qwen-MT 请求失败（503）'));
+  await settle();
+  h.document.querySelector<HTMLElement>('.pw-selection-retry')!.click();
+  assert.equal(h.pending.length, 2);
+  assert.equal(h.pending[1]!.request.text, 'Dielectric elastomers.');
+  h.pending[1]!.resolve('介电弹性体。');
+  await settle();
+  assert.equal(h.popupText(), '介电弹性体。');
+});
+
+test('a glossary change for the selected text misses the cache; old entries are evicted after 100', async () => {
+  const h = harness();
+  h.enable();
+  const node = h.containerEl.querySelector('.native')!;
+  const translate = async (text: string) => {
+    h.document.querySelector<HTMLElement>('.pw-selection-close')?.click();
+    select(h.document, node, text);
+    h.translator.handleSelection(h.document);
+    await settle();
+  };
+
+  await translate('Dielectric elastomer film.');
+  await translate('Dielectric elastomer film.');
+  assert.equal(h.pending.length, 1);
+  h.core.glossary.push({ source: 'dielectric elastomer', target: '介电弹性体' });
+  await translate('Dielectric elastomer film.');
+  assert.equal(h.pending.length, 2);
+  h.core.glossary.push({ source: 'unrelated term', target: '无关' });
+  await translate('Dielectric elastomer film.');
+  assert.equal(h.pending.length, 2, 'terms not in the text do not affect the cache');
+
+  for (let index = 0; index < 100; index++) await translate(`Sentence ${index}.`);
+  assert.equal(h.pending.length, 102);
+  await translate('Sentence 99.');
+  assert.equal(h.pending.length, 102, 'recent entries stay');
+  await translate('Dielectric elastomer film.');
+  assert.equal(h.pending.length, 103, 'the oldest entry was evicted');
+});
+
+test('unload removes popups, cancels requests and stops listening', async () => {
+  const h = harness();
+  h.manual();
+  h.enable();
+  select(h.document, h.containerEl.querySelector('.native')!, 'Dielectric elastomers.');
+  h.translator.handleSelection(h.document);
+  const signal = h.pending[0]!.request.signal!;
+  h.unload();
+  assert.equal(h.popup(), null);
+  assert.equal(signal.aborted, true);
+  assert.equal(h.buttons.length, 0);
+  assert.equal(h.domListeners(), 0);
+  assert.equal(h.busListeners('reader:mode-change'), 0);
+
+  h.dispatch(h.document, 'mouseup', { clientX: 1, clientY: 1 });
+  h.events.emit('reader:mode-change', { leafId: leafId(h.leaf), active: true, language: 'en' });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(h.pending.length, 1);
 });

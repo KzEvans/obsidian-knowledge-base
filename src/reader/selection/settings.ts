@@ -25,12 +25,14 @@ export function readSettings(saved: unknown): SelectionSettings {
 /** Copy the character limit and timeout from pdf-selection-translator's data.json, once. Returns whether settings changed. */
 export async function importLegacySettings(adapter: Pick<DataAdapter, 'exists' | 'read'>, configDir: string, settings: SelectionSettings): Promise<boolean> {
   if (settings.legacyImported) return false;
-  settings.legacyImported = true;
   const file = `${configDir}/plugins/pdf-selection-translator/data.json`;
-  if (!await adapter.exists(file)) return true;
-  const legacy = JSON.parse(await adapter.read(file)) as Record<string, unknown> | null;
-  if (typeof legacy?.maxSelectionCharacters === 'number') settings.maxSelectionCharacters = clampInt(legacy.maxSelectionCharacters, CHARACTERS);
-  if (typeof legacy?.timeoutSeconds === 'number') settings.timeoutSeconds = clampInt(legacy.timeoutSeconds, TIMEOUT);
+  if (await adapter.exists(file)) {
+    // A read or parse failure leaves the flag unset, so the import is tried again next load.
+    const legacy = JSON.parse(await adapter.read(file)) as Record<string, unknown> | null;
+    if (typeof legacy?.maxSelectionCharacters === 'number') settings.maxSelectionCharacters = clampInt(legacy.maxSelectionCharacters, CHARACTERS);
+    if (typeof legacy?.timeoutSeconds === 'number') settings.timeoutSeconds = clampInt(legacy.timeoutSeconds, TIMEOUT);
+  }
+  settings.legacyImported = true;
   return true;
 }
 
