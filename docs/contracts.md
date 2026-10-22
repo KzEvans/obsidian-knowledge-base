@@ -10,6 +10,7 @@
   conflicts/<时间戳>/            你确认处理冲突后，被替下的文件移到这里
   papers/<sha256>/
     manifest.json
+    uploads/<batchId-sha256>.json  PUT 前持久化的不可变上传记录（仅 library 可读写）
     raw/                        MinerU 原始文件，写一次后不再修改
       IMPORTED.json             仅从旧缓存导入时存在，说明来源和缺失的成员
       <MinerU 结果包里的全部成员，保持原相对路径>
@@ -40,7 +41,8 @@
   "failure": null,           // { "stage": "parsing", "error": "已脱敏的信息", "attempts": 3, "at": "ISO", "retryable": true }
   "priority": false,
   "mineru": {
-    "batchId": "…",          // 上传成功后立即写入；有值就只续取不重传
+    "batchId": "…",          // 申请地址后、PUT 前写入；重启先 poll，仅 waiting-file 才复用原地址 PUT
+    "previousBatchIds": [],   // 已失效或冲突选择中未采用的 batch 留痕，不静默丢弃
     "modelVersion": "vlm",
     "options": { "enable_formula": true, "enable_table": true, "language": "en" },
     "uploadedAt": "ISO",
@@ -54,6 +56,9 @@
 }
 ```
 
+- `uploads/` 中每条记录为 `{ batchId, uploadUrl, createdAt }`，先 fsync 再 link 写一次，独立于 manifest 冲突。签名 URL 只用于恢复 PUT，不放入 manifest、日志、事件或智能体输入；MinerU Token / DashScope Key 仍只在 SecretStorage。重启或 PUT 报错后先 poll 同一 batch；仅 `waiting-file` 可复用原地址 PUT，其他状态只续取。
+- 选择冲突 manifest 副本时保留两份的 batch 历史、raw 哈希和来源路径；先保存事实并集再归档，处理中断也不会丢失上传依据。其他 JSON 冲突沿用用户选择的版本。
+- 旧缓存目录存在但尚未导入时，等待并从存量上传清单排除；`IMPORTED.json` 不含时间戳，已有旧标记经忽略 `importedAt` 校验后原样保留。raw 每个成员必须与已有字节一致，才补写 manifest。
 - `raw.files` 记录 `raw/` 中每个文件的哈希，读取时可校验没被改动。
 - `raw.complete: false` 表示从旧缓存导入，结果包的部分成员缺失（例如 PDF 原件、未知格式文件）。规范化只用到 content_list 和图片，不受影响。
 - `failure.error` 已经过脱敏，不含 Token、Key、带签名的 URL。
@@ -160,6 +165,8 @@ interface StoreReader {
   paths(): Promise<Record<string, string>>;                   // 完整的路径 → sha 索引
 }
 interface StoreWriter extends StoreReader {
+  mineruUploads(sha): Promise<{ batchId; uploadUrl; createdAt }[]>; // 校验记录，损坏时暂停而不新建 batch
+  writeMinerUUpload(sha, upload: { batchId; uploadUrl; createdAt }): Promise<void>; // write-once
   writeManifest(sha, manifest): Promise<void>;                 // manifest.sha256 必须等于 sha
   writeRaw(sha, files: Record<string, Uint8Array>): Promise<void>;   // 已存在且内容不同 → StoreError('exists')
   writeDerived(sha, relativePath, bytes): Promise<void>;
@@ -196,13 +203,13 @@ function openPdf(bytes: ArrayBuffer | Uint8Array): Promise<PdfDocument>;   // �
 ```ts
 // mineru.ts —— 只管 HTTP，调度在 library
 interface MinerUClient {
-  requestUpload(sha): Promise<{ batchId: string; uploadUrl: string }>;
-  upload(uploadUrl, pdf: ArrayBuffer): Promise<void>;
-  poll(batchId): Promise<{ state: 'pending' | 'running' | 'converting' | 'done' | 'failed'; zipUrl?; progress?: { done; total }; error? }>;
-  download(zipUrl): Promise<Record<string, Uint8Array>>;   // 结果包全部成员，已做路径与大小检查
+  requestUpload(sha, signal?: AbortSignal): Promise<{ batchId: string; uploadUrl: string }>;
+  upload(uploadUrl, pdf: ArrayBuffer, signal?: AbortSignal): Promise<void>;
+  poll(batchId, signal?: AbortSignal): Promise<{ state: 'waiting-file' | 'pending' | 'running' | 'converting' | 'done' | 'failed'; zipUrl?; progress?: { done; total }; error? }>;
+  download(zipUrl, signal?: AbortSignal): Promise<Record<string, Uint8Array>>;   // 结果包全部成员，已做路径与大小检查
 }
-function createMinerUClient(http: Http, token: () => string | null): MinerUClient;
-class MinerUError { retryable: boolean; status?: number }
+function createMinerUClient(http: Http, token: () => string | null, timeoutMs?: number): MinerUClient;
+class MinerUError { retryable: boolean; status?: number; code?: number | string; readonly taskMissing: boolean }
 const MAX_PDF_BYTES, MAX_PDF_PAGES;
 
 // qwen-mt.ts
@@ -217,6 +224,8 @@ function termsFor(text, terms): Term[];
 type Http = (request: RequestUrlParam) => Promise<{ status; headers /* 小写名 */; text; arrayBuffer; json }>;
 function obsidianHttp(requestUrl): Http;
 ```
+
+MinerU 每个 HTTP 操作默认 120 秒超时，可取消等待；Obsidian requestUrl 底层请求可能继续，因此取消或超时不代表 PUT 未到服务端。`taskMissing` 仅对应官方 `-60012`（找不到任务）：仅导入的旧 batch 在该错误下可退回首次上传，并保留到 previousBatchIds。认证、额度、限流、普通 HTTP 错误、服务端 failed 都保留 batch。错误码依据 [MinerU 官方文档](https://mineru.net/apiManage/docs)。
 
 ### 5.5 任务执行（`queue.ts`）
 
@@ -313,7 +322,8 @@ selection 取选区文字时，删除克隆内容中所有 `[aria-hidden="true"]
 - 模板的 9 个二级标题（按顺序）：摘要翻译、研究背景、前人工作与不足、作者的思考路径、本文内容与创新点、论点与证据、Takeaways、Follow-up ideas、与现有知识的候选关联。
 - "摘要翻译"一节由 agent 程序填入（取 `role: "abstract"` 块的译文），模型输出时该节留空标记 `<!-- abstract-translation -->`，agent 替换。
 - `skills/paper-note/fulltext.ts` 导出 `fullText(document: StoredDocument): string`：交给 CLI 的规范化全文（Markdown，不含页码；行首标记 `[摘要]`、`[图]`、`[表]`、`[参考文献]`）。全文格式由 skill 一方定义，agent 和评测都调用它，不各自实现。
-- 模型写出的 `note.md`：可选的 YAML frontmatter 只含 `concepts`、`materials`、`methods`、`phenomena` 四个列表（`[[链接]]` 字符串）；正文从 `## 摘要翻译` 开始，不写一级标题和其他 frontmatter。agent 取出四个列表并写入完整 frontmatter 和一级标题。
+- 生产生成调用的两个 CLI 均为 read-only，通过 JSON schema 返回 `{ noteMarkdown: string }`，程序将字符串保存为临时 `note.md`。CLI 不得写工作区输入、vault 或其他文件。
+- 候选 `note.md`：可选的 YAML frontmatter 只含 `concepts`、`materials`、`methods`、`phenomena` 四个列表（`[[链接]]` 字符串）；正文从 `## 摘要翻译` 开始，不写一级标题和其他 frontmatter。agent 取出四个列表并写入完整 frontmatter 和一级标题。
 
 ## 10. 样式
 

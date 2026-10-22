@@ -46,7 +46,7 @@ test('poll maps running progress, done and failed states', async () => {
   ]);
   const client = createMinerUClient(http, () => TOKEN);
   assert.deepEqual(await client.poll('b1'), { state: 'running', progress: { done: 3, total: 12 } });
-  assert.deepEqual(await client.poll('b1'), { state: 'pending', progress: undefined });
+  assert.deepEqual(await client.poll('b1'), { state: 'waiting-file', progress: undefined });
   assert.deepEqual(await client.poll('b1'), { state: 'done', zipUrl: 'https://cdn.example/r.zip' });
   assert.deepEqual(await client.poll('b1'), { state: 'failed', error: 'bad pdf' });
 });
@@ -75,4 +75,30 @@ test('archives with traversal paths or without a content list are refused', () =
   assert.throws(() => unpackArchive(zipSync({ 'full.md': strToU8('x') })), /content_list/);
   assert.equal(contentListName(['a_content_list.json', 'a_content_list_v2.json']), 'a_content_list.json');
   assert.equal(contentListName(['x/content_list.json', 'y/content_list.json']), undefined);
+});
+
+
+test('only an explicit missing-task code permits abandoning an old batch', async () => {
+  for (const code of [-60012, '-60012', -60018, -60013, 'A0211', -10001]) {
+    const { http } = fakeHttp([{ status: 200, json: { code } }]);
+    await assert.rejects(createMinerUClient(http, () => TOKEN).poll('old'), (error: unknown) =>
+      error instanceof MinerUError && error.code === code && error.taskMissing === (String(code) === '-60012'));
+  }
+});
+
+test('each MinerU operation times out and accepts cancellation without exposing URLs', async () => {
+  const client = createMinerUClient(() => new Promise(() => undefined), () => TOKEN, 5);
+  const runs = [
+    (signal?: AbortSignal) => client.requestUpload(SHA, signal),
+    (signal?: AbortSignal) => client.upload('https://upload.example/put', new ArrayBuffer(0), signal),
+    (signal?: AbortSignal) => client.poll('batch', signal),
+    (signal?: AbortSignal) => client.download('https://cdn.example/result.zip', signal),
+  ];
+  for (const run of runs) {
+    await assert.rejects(run(), /超时/);
+    const controller = new AbortController();
+    const request = run(controller.signal);
+    controller.abort();
+    await assert.rejects(request, { name: 'AbortError' });
+  }
 });
