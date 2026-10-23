@@ -94,7 +94,10 @@ export function register(ctx: ModuleContext): ModuleHandle
 
 输入 `raw/` 和原 PDF，输出 `document.json` 和 `derived/`：
 
-1. `normalizeContentList`（原样迁移）。
+1. `normalizeContentList`。在 0.1.9 规则基础上：
+   - 读 `raw/layout.json` 中 MinerU 的跨栏/跨页合并标记（`lines_deleted`）：被并入上一段的空块只把区域并给那一段，不再用原生文字层补文字（旧做法会让段落重复出现）。
+   - 一段在句子中间停下、越过图、表、脚注或页眉页脚后以小写字母接续，就把两半合成一段，图表因此排在整段之后；公式之后的 “where …” 不合并。
+   - 折叠首页一级标题之前的短文字（栏目名、期刊 logo 的 OCR）、首页小图标、带 ISSN/年/期前缀的 Wiley 下载声明，以及文末出版商声明（SI 获取说明、转载许可、开放获取许可、ORCID、引用格式、在线发表日期、Check for updates）。
 2. 解析资源引用；缺失的记一条警告。
 3. `auditNativeText`：用 Obsidian 自带的 pdf.js（`loadPdfJs()`）读原生文字层校对（原样迁移）。
 4. 为表格、无资源的图片和公式从原 PDF 裁图，写 `derived/source-tables-v1/`、`derived/fallback-v2/`。这一步原来在阅读模式里做。
@@ -109,7 +112,8 @@ export function register(ctx: ModuleContext): ModuleHandle
 
 - 从现有 `qwen-mt.ts` 迁移：OpenAI 兼容接口、`translation_options`、超时、取消、错误信息。
 - 术语表：设置里维护的 `{source, target}` 列表。每段只发送该段实际出现的术语（`translation_options.terms`，以百炼文档为准，阶段 1 实测确认）。
-- 占位符保护：送出前把公式 `$…$`、`$$…$$`、`<sup>…</sup>`、`<sub>…</sub>` 换成 `⟦n⟧`，返回后校验还原。首次占位符不匹配就丢弃该次结果，公式和上下标留在本地，按源文顺序只翻译周围文字，再保留原有空白拼回。纯标点和数字片段直接保留，各文字片段顺序请求并独立筛选术语。分段返回仍含占位符则抛 `PlaceholderMismatchError`，调用方记录缺译，不再重复整段请求，绝不写入损坏或未完成的译文。网络与限流错误仍按原策略重试。
+- 占位符保护：送出前把公式 `$…$`、`$$…$$`、`<sup>…</sup>`、`<sub>…</sub>` 换成 `⟦n⟧`，返回后校验还原。占位符不匹配时，整句再交给同账号的通用模型 `qwen-plus` 翻译一次，系统提示要求每个占位符原样保留、按中文语序放置，并带上本段命中的术语；仍不匹配则抛 `PlaceholderMismatchError`，调用方记录缺译、显示英文，绝不写入损坏的译文。**不把句子按公式切开分段翻译**：中英文语序不同，分段译文按英文顺序拼回必然错序。网络与限流错误仍按原策略重试。
+- 译文记录 `translator`（`TRANSLATOR_VERSION`）。翻译方法变化后，含公式或上下标的旧译文和旧缺译记录会重译一次，纯文字译文继续复用（`translationIsCurrent`）。
 - 调用方传模型名：全文翻译和划线翻译可以用不同模型（全文 `qwen-mt-plus`，划线 `qwen-mt-flash`）。
 
 ### 3.4 MinerU 客户端
