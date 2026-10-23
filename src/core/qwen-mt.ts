@@ -13,10 +13,12 @@ export const SELECTION_MODEL = 'qwen-mt-flash';
  */
 export const PLACEHOLDER_FALLBACK_MODEL = 'qwen-plus';
 /**
- * Bump when the translation method changes in a way that makes older stored translations
- * of formula-bearing text untrustworthy. v2: no more split-and-join fallback.
+ * The translation method. Stored failures from an older method are retried.
+ * v2: no more split-and-join fallback. v3: the fallback gets one correction round.
  */
-export const TRANSLATOR_VERSION = 2;
+export const TRANSLATOR_VERSION = 3;
+/** Formula-bearing translations from methods older than this are redone (v1 split sentences). */
+export const OLDEST_TRUSTED_TRANSLATOR = 2;
 
 export class QwenMtError extends Error {
   constructor(message: string, readonly retryable: boolean, readonly status?: number) {
@@ -86,16 +88,40 @@ export function createQwenMtClient(http: Http, apiKey: () => string | null, endp
       }
       // Never split the sentence around formulas: Chinese word order differs, so the pieces
       // cannot be joined back in English order. Ask a general model to keep the placeholders.
+      const messages = [
+        { role: 'system', content: placeholderInstructions(terms) },
+        { role: 'user', content: masked },
+      ];
+      const first = await send({ model: PLACEHOLDER_FALLBACK_MODEL, temperature: 0, messages });
+      const problems = placeholderProblems(first, spans.length);
+      if (!problems) return restoreSpans(first, spans);
+      // One correction round with the exact placeholders that went wrong; then give up.
       return restoreSpans(await send({
         model: PLACEHOLDER_FALLBACK_MODEL,
         temperature: 0,
-        messages: [
-          { role: 'system', content: placeholderInstructions(terms) },
-          { role: 'user', content: masked },
-        ],
+        messages: [...messages, { role: 'assistant', content: first }, { role: 'user', content: `${problems}请重新输出完整译文，每个占位符恰好出现一次，只输出译文。` }],
       }), spans);
     },
   };
+}
+
+/** What is wrong with the placeholders in a translation, as one Chinese sentence; undefined when nothing is. */
+export function placeholderProblems(translated: string, count: number): string | undefined {
+  const seen = new Map<number, number>();
+  for (const match of translated.matchAll(PLACEHOLDER)) seen.set(Number(match[1]), (seen.get(Number(match[1])) ?? 0) + 1);
+  const missing: string[] = [], repeated: string[] = [], extra: string[] = [];
+  for (let index = 1; index <= count; index++) {
+    const times = seen.get(index) ?? 0;
+    if (times === 0) missing.push(`⟦${index}⟧`);
+    else if (times > 1) repeated.push(`⟦${index}⟧`);
+  }
+  for (const index of seen.keys()) if (index < 1 || index > count) extra.push(`⟦${index}⟧`);
+  const parts = [
+    missing.length ? `缺少 ${missing.join('')}` : '',
+    repeated.length ? `重复了 ${repeated.join('')}` : '',
+    extra.length ? `多出了原文没有的 ${extra.join('')}` : '',
+  ].filter(Boolean);
+  return parts.length ? `译文${parts.join('，')}。` : undefined;
 }
 
 function placeholderInstructions(terms: readonly Term[]): string {
@@ -118,7 +144,7 @@ export function hasProtectedSpans(text: string): boolean {
  */
 export function translationIsCurrent(entry: { termsKey: string; translator?: number } | undefined, text: string, terms: readonly Term[]): boolean {
   if (!entry || entry.termsKey !== termsKey(text, terms)) return false;
-  return (entry.translator ?? 1) >= TRANSLATOR_VERSION || !hasProtectedSpans(text);
+  return (entry.translator ?? 1) >= OLDEST_TRUSTED_TRANSLATOR || !hasProtectedSpans(text);
 }
 
 // ---- Placeholder protection (architecture §3.3) ----

@@ -117,7 +117,7 @@ interface Segment {
 
 - 按 `sourceHash` 存，不按 block id。规范化升级后文本没变的段落直接复用译文。
 - 术语表修改后，只重译 `termsKey` 变化了的段落。
-- `TRANSLATOR_VERSION` 变化后，含公式或上下标的段落（以及旧版本记下的失败）重译一次；纯文字段落继续复用。判断统一用 core 的 `translationIsCurrent`。
+- 旧版本记下的翻译失败在 `TRANSLATOR_VERSION` 变化后自动重试；含公式或上下标、且版本低于 `OLDEST_TRUSTED_TRANSLATOR`（v1 分段拼接）的译文重译一次，其余继续复用。判断统一用 core 的 `translationIsCurrent`。
 - 不在当前 `document.json` 中的条目保留不删（旧版本可能还会用到），文件过大时再考虑清理。
 
 ## 5. core 接口
@@ -227,7 +227,7 @@ type Http = (request: RequestUrlParam) => Promise<{ status; headers /* 小写名
 function obsidianHttp(requestUrl): Http;
 ```
 
-`QwenMtClient.translate` 先用 Qwen-MT 翻译带占位符的完整段落；占位符校验失败时，整段交给 `PLACEHOLDER_FALLBACK_MODEL`（`qwen-plus`）按“保留每个占位符”的指令再翻一次，仍失败则抛 `PlaceholderMismatchError`。不做分段翻译。认证、网络、限流错误分类不变。`hasProtectedSpans(text)`、`translationIsCurrent(entry, text, terms)`、`TRANSLATOR_VERSION` 一并导出。
+`QwenMtClient.translate` 先用 Qwen-MT 翻译带占位符的完整段落；占位符校验失败时，整段交给 `PLACEHOLDER_FALLBACK_MODEL`（`qwen-plus`）按“保留每个占位符”的指令再翻一次，仍失败就把缺少、重复或多出的占位符逐个告诉它，纠正一次；再失败才抛 `PlaceholderMismatchError`。不做分段翻译。认证、网络、限流错误分类不变。`hasProtectedSpans(text)`、`translationIsCurrent(entry, text, terms)`、`TRANSLATOR_VERSION` 一并导出。
 
 MinerU 每个 HTTP 操作默认 120 秒超时，可取消等待；Obsidian requestUrl 底层请求可能继续，因此取消或超时不代表 PUT 未到服务端。`taskMissing` 仅对应官方 `-60012`（找不到任务）：仅导入的旧 batch 在该错误下可退回首次上传，并保留到 previousBatchIds。认证、额度、限流、普通 HTTP 错误、服务端 failed 都保留 batch。错误码依据 [MinerU 官方文档](https://mineru.net/apiManage/docs)。
 

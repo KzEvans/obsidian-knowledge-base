@@ -112,8 +112,8 @@ export function register(ctx: ModuleContext): ModuleHandle
 
 - 从现有 `qwen-mt.ts` 迁移：OpenAI 兼容接口、`translation_options`、超时、取消、错误信息。
 - 术语表：设置里维护的 `{source, target}` 列表。每段只发送该段实际出现的术语（`translation_options.terms`，以百炼文档为准，阶段 1 实测确认）。
-- 占位符保护：送出前把公式 `$…$`、`$$…$$`、`<sup>…</sup>`、`<sub>…</sub>` 换成 `⟦n⟧`，返回后校验还原。占位符不匹配时，整句再交给同账号的通用模型 `qwen-plus` 翻译一次，系统提示要求每个占位符原样保留、按中文语序放置，并带上本段命中的术语；仍不匹配则抛 `PlaceholderMismatchError`，调用方记录缺译、显示英文，绝不写入损坏的译文。**不把句子按公式切开分段翻译**：中英文语序不同，分段译文按英文顺序拼回必然错序。网络与限流错误仍按原策略重试。
-- 译文记录 `translator`（`TRANSLATOR_VERSION`）。翻译方法变化后，含公式或上下标的旧译文和旧缺译记录会重译一次，纯文字译文继续复用（`translationIsCurrent`）。
+- 占位符保护：送出前把公式 `$…$`、`$$…$$`、`<sup>…</sup>`、`<sub>…</sub>` 换成 `⟦n⟧`，返回后校验还原。占位符不匹配时，整句再交给同账号的通用模型 `qwen-plus` 翻译一次，系统提示要求每个占位符原样保留、按中文语序放置，并带上本段命中的术语；仍不匹配就指出具体哪些占位符缺少、重复或多出，让它纠正一次；再不匹配才抛 `PlaceholderMismatchError`，调用方记录缺译、显示英文，绝不写入损坏的译文。**不把句子按公式切开分段翻译**：中英文语序不同，分段译文按英文顺序拼回必然错序。网络与限流错误仍按原策略重试。
+- 译文记录 `translator`（`TRANSLATOR_VERSION`）。翻译方法变化后，旧缺译记录自动重试；v1 分段拼接留下的含公式译文重译一次，其余译文继续复用（`translationIsCurrent`、`OLDEST_TRUSTED_TRANSLATOR`）。
 - 调用方传模型名：全文翻译和划线翻译可以用不同模型（全文 `qwen-mt-plus`，划线 `qwen-mt-flash`）。
 
 ### 3.4 MinerU 客户端

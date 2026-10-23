@@ -68,10 +68,21 @@ test('the fallback receives the glossary terms used by this text as instructions
   assert.doesNotMatch(system, /凝胶/);
 });
 
-test('if the fallback also breaks a placeholder, the text fails instead of being split', async () => {
-  const { mt, calls } = client(() => ok('模量 ⟦1⟧ ⟦1⟧'));
-  await assert.rejects(mt.translate({ text: 'modulus $Y$ MPa', model: 'm', terms: [], timeoutMs: 1000 }), PlaceholderMismatchError);
-  assert.equal(calls.length, 2);
+test('a broken fallback gets one correction round naming the exact placeholders, then the text fails', async () => {
+  const { mt, calls } = client(() => ok('模量 ⟦1⟧ ⟦1⟧ ⟦3⟧'));
+  await assert.rejects(mt.translate({ text: 'modulus $Y$ and $Z$ MPa', model: 'm', terms: [], timeoutMs: 1000 }), PlaceholderMismatchError);
+  assert.equal(calls.length, 3);
+  const correction = JSON.parse(calls[2]!.body as string) as { messages: Array<{ role: string; content: string }> };
+  assert.deepEqual(correction.messages.map(message => message.role), ['system', 'user', 'assistant', 'user']);
+  assert.match(correction.messages[3]!.content, /缺少 ⟦2⟧/);
+  assert.match(correction.messages[3]!.content, /重复了 ⟦1⟧/);
+  assert.match(correction.messages[3]!.content, /多出了原文没有的 ⟦3⟧/);
+});
+
+test('the correction round can rescue the translation', async () => {
+  let call = 0;
+  const { mt } = client(() => ok(['坏', '模量 ⟦1⟧', '模量 ⟦1⟧ 与 ⟦2⟧'][call++]!));
+  assert.equal(await mt.translate({ text: 'modulus $Y$ and $Z$', model: 'm', terms: [], timeoutMs: 1000 }), '模量 $Y$ 与 $Z$');
 });
 
 test('text without protected spans never reaches the fallback', async () => {
@@ -86,6 +97,7 @@ test('stored translations of formula text from the old method are not reused; pr
   const prose = 'The modulus is low.';
   assert.equal(translationIsCurrent({ termsKey: termsKey(formula, terms) }, formula, terms), false);
   assert.equal(translationIsCurrent({ termsKey: termsKey(formula, terms), translator: TRANSLATOR_VERSION }, formula, terms), true);
+  assert.equal(translationIsCurrent({ termsKey: termsKey(formula, terms), translator: 2 }, formula, terms), true);
   assert.equal(translationIsCurrent({ termsKey: termsKey(prose, terms) }, prose, terms), true);
   assert.equal(translationIsCurrent({ termsKey: 'other' }, prose, terms), false);
   assert.equal(translationIsCurrent(undefined, prose, terms), false);
