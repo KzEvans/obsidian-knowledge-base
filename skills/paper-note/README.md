@@ -43,6 +43,7 @@
 export PAPER_WORKBENCH_VAULT="<vault 路径>"
 export PAPER_NOTE_EVAL_CACHE="<vault>/<配置目录>/plugins/pdf-reading-mode/cache"
 export PAPER_NOTE_EVAL_OUT="$HOME/Developer/paper-workbench-eval"   # 可省略，这是默认值
+export PAPER_NOTE_EVAL_SETTINGS="<vault>/<配置目录>/plugins/paper-workbench/data.json"   # 用插件里设置的模型和思考强度
 pnpm exec tsx --import ./tests/setup.ts skills/paper-note/eval/run.ts --round r1
 pnpm exec tsx --import ./tests/setup.ts skills/paper-note/eval/blind.ts --round r1
 ```

@@ -30,6 +30,14 @@ if (!vault) throw new Error('请设置 PAPER_WORKBENCH_VAULT。');
 const cacheRoot = process.env.PAPER_NOTE_EVAL_CACHE ?? '';
 if (!cacheRoot) throw new Error('请设置 PAPER_NOTE_EVAL_CACHE（旧阅读插件的 MinerU 缓存目录）。');
 const out = process.env.PAPER_NOTE_EVAL_OUT ?? path.join(os.homedir(), 'Developer/paper-workbench-eval');
+/**
+ * The plugin's own data.json, so the evaluation uses the same models and reasoning effort as
+ * note generation in Obsidian (the CLIs run with user config ignored). Optional.
+ */
+const settingsFile = process.env.PAPER_NOTE_EVAL_SETTINGS;
+const pluginAgentSettings: Record<string, unknown> = settingsFile
+  ? ((JSON.parse(await fs.readFile(settingsFile, 'utf8')) as { agent?: Record<string, unknown> }).agent ?? {})
+  : {};
 const TIMEOUT_MS = 30 * 60_000;
 
 function option(name: string): string | undefined {
@@ -115,12 +123,12 @@ async function generate(item: ZoteroItem, adapter: Adapter, notes: Awaited<Retur
   const work = await buildWorkspace(item, inputs, adapter, notes);
   const runDirectory = path.dirname(work);
   const started = Date.now();
-  const { adapter: client, model } = currentAgent(readSettings({ adapter, proxyUrl: process.env.PAPER_WORKBENCH_PROXY ?? '' }));
+  const { adapter: client, model, reasoningEffort } = currentAgent(readSettings({ ...pluginAgentSettings, adapter, ...(process.env.PAPER_WORKBENCH_PROXY ? { proxyUrl: process.env.PAPER_WORKBENCH_PROXY } : {}) }));
   let note = '';
   let code = 0;
   try {
     const result = await collect(client.run({
-      prompt: TASK, instructions: PAPER_NOTE_SKILL, cwd: work, model, mode: 'read-only', ephemeral: true,
+      prompt: TASK, instructions: PAPER_NOTE_SKILL, cwd: work, model, reasoningEffort, mode: 'read-only', ephemeral: true,
       timeoutMs: TIMEOUT_MS, outputSchema: NOTE_OUTPUT_SCHEMA,
     }, new AbortController().signal));
     note = noteMarkdown(result.text);
