@@ -32,7 +32,9 @@ const PROTECTED_SECTIONS = new Set(['人工复核', 'Human Review', '提问']);
 
 /** Body length bounds (characters as counted by {@link noteLength}). */
 export const MIN_LENGTH = 1500;
-export const MAX_LENGTH = 3000;
+export const MAX_LENGTH = 6000;
+/** A sentence longer than this (as counted by {@link noteLength}, a wiki link counting as one word) is reported. */
+export const MAX_SENTENCE_LENGTH = 100;
 /** Bold spans allowed in one section. */
 export const MAX_BOLD_PER_SECTION = 2;
 /** Hedge words (list in references/banned-phrases.md) allowed in the whole body. */
@@ -134,6 +136,14 @@ export function noteLength(text: string): number {
   return cjk + words;
 }
 
+/** Sentences over the limit; wiki links count as one word so long note titles do not trip it. */
+function longSentences(line: string): Array<{ text: string; length: number }> {
+  return prose(line.replace(/\[\[[^\]]*\]\]/g, '链'))
+    .split(/(?<=[。！？；!?;])/)
+    .map(text => ({ text: text.trim(), length: noteLength(text) }))
+    .filter(sentence => sentence.length > MAX_SENTENCE_LENGTH);
+}
+
 const LABELLED_NUMBER = /(?:图|表|式|公式|Fig(?:ure)?s?\.?|Tables?|Eqs?\.?|Ref(?:erence)?s?\.?|参考文献)\s*S?\d+[a-zA-Z]?(?:\s*[,，、–—-]\s*S?\d+[a-zA-Z]?)*/g;
 const NUMBER = /\d+(?:[.,]\d+)?/g;
 const CITATION = /\[\d+(?:\s*[,，;；–—-]\s*\d+)*\]/g;
@@ -204,6 +214,9 @@ export function lintNote(markdown: string, options: LintOptions = {}): LintResul
       bold += spans.length;
       if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*[^*\n]+?[:：]\*\*|\*\*[^*\n]+?\*\*\s*[:：]|__[^_\n]+?[:：]__|__[^_\n]+?__\s*[:：])/.test(line.text)) {
         problems.push({ rule: 'bold-label', message: '不要用加粗当行首小标题，改用标题或列表层级。', ...where(line) });
+      }
+      for (const sentence of longSentences(line.text)) {
+        problems.push({ rule: 'long-sentence', message: `句子过长（${sentence.length} 字），拆成两句：「${sentence.text.slice(0, 30)}……」`, ...where(line) });
       }
       sectionLength += noteLength(text);
       if (sectionName === EVIDENCE) numbers += text.replace(LABELLED_NUMBER, '').replace(CITATION, '').match(NUMBER)?.length ?? 0;

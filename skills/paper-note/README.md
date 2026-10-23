@@ -27,7 +27,8 @@
 | `bold` | 每节加粗处数 | `MAX_BOLD_PER_SECTION` = 2 |
 | `bold-label` | 行首 `**xx：**` 式的加粗小标题 | 0 |
 | `heading-skip` | 标题层级不跳级 | — |
-| `length` | 正文字数（不含 frontmatter、一级标题、摘要翻译） | `MIN_LENGTH`–`MAX_LENGTH` = 1500–3000 |
+| `length` | 正文字数（不含 frontmatter、一级标题、摘要翻译） | `MIN_LENGTH`–`MAX_LENGTH` = 1500–6000 |
+| `long-sentence` | 单句字数（`[[链接]]` 算一个词） | `MAX_SENTENCE_LENGTH` = 100 |
 | `evidence-numbers` | 「论点与证据」每 100 字中的数字个数（图、表、式、参考文献编号不算） | `MAX_EVIDENCE_NUMBERS_PER_100` = 2 |
 
 字数按中文字处理软件的习惯算：每个汉字、全角标点算 1，每个连续的英文单词或数字算 1。受保护区域（`人工复核`、`Human Review`、`提问` 节，`user-notes` 和 `intensive-reading` 块）由你维护，lint 不检查。

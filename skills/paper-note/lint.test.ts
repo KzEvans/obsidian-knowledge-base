@@ -130,7 +130,7 @@ describe('length', () => {
     assert.ok(rules(note(bodies)).includes('length'));
   });
   test('a long body is reported', () => {
-    const bodies = Object.fromEntries(SECTIONS.slice(1).map(title => [title, filler(400)]));
+    const bodies = Object.fromEntries(SECTIONS.slice(1).map(title => [title, filler(800)]));
     assert.ok(rules(note(bodies)).includes('length'));
   });
   test('frontmatter, the abstract and protected regions do not count', () => {
@@ -192,4 +192,12 @@ test('underscore bold labels are rejected just like asterisk labels', () => {
   for (const label of ['__机理：__交联点解离。', '__机理__：交联点解离。']) {
     assert.ok(rules(note({ 研究背景: filler(240) + '\n\n' + label })).includes('bold-label'));
   }
+});
+
+test('a sentence over the length limit is reported; wiki-link titles and normal sentences are not', () => {
+  const long = '短端块先从胶束核中拔出使桥链失去承载能力而长端块仍然锚定在原来的胶束核里因此整条链要等到长端块也拔出之后才能真正迁移到另一个胶束这一过程比应力松弛慢得多并且对长端块的长度极其敏感所以分散性会放大两个时间尺度之间的差距使得网络在宏观上已经流动而微观上仍未完成链交换。';
+  assert.ok(rules(note({ 研究背景: long })).includes('long-sentence'));
+  const linked = '- [[2026-10-12 - Fanlong Meng - Stress Relaxation, Dynamics, and Plasticity of Transient Polymer Networks in Concentrated Solutions]]：可对照承载链存活的理论。';
+  assert.ok(!rules(note({ 与现有知识的候选关联: linked })).includes('long-sentence'));
+  assert.ok(!rules(note()).includes('long-sentence'));
 });
