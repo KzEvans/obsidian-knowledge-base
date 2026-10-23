@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import type { RequestUrlParam } from 'obsidian';
 import type { HttpResponse } from '../../src/core/http';
-import { PlaceholderMismatchError, QwenMtError, createQwenMtClient, protectSpans, restoreSpans, termsFor, termsKey } from '../../src/core/qwen-mt';
+import { PLACEHOLDER_FALLBACK_MODEL, PlaceholderMismatchError, QwenMtError, TRANSLATOR_VERSION, createQwenMtClient, protectSpans, restoreSpans, termsFor, termsKey, translationIsCurrent } from '../../src/core/qwen-mt';
 
 const KEY = 'test-key-not-real-0000';
 
@@ -41,54 +41,57 @@ test('missing, duplicated, extra or out-of-range placeholders are rejected', () 
   assert.equal(restoreSpans('无公式', []), '无公式');
 });
 
-test('the first placeholder mismatch translates only surrounding prose and reassembles local spans', async () => {
-  const sent: string[] = [];
-  const replies = ['损坏的译文', '模量', '兆帕；氧化物', '在 10', '赫兹'];
-  const { mt } = client(masked => {
-    sent.push(masked);
-    return ok(replies.shift()!);
-  });
-  const result = await mt.translate({
-    text: 'The modulus $Y=0.11$ MPa; oxide<sub>2</sub> at 10<sup>3</sup> Hz $$E=mc^2$$, $a$⟦9⟧.',
-    model: 'm', terms: [], timeoutMs: 1000,
-  });
-  assert.deepEqual(sent, [
-    'The modulus ⟦1⟧ MPa; oxide⟦2⟧ at 10⟦3⟧ Hz ⟦4⟧, ⟦5⟧⟦6⟧.',
-    'The modulus', 'MPa; oxide', 'at 10', 'Hz',
-  ]);
-  assert.equal(result, '模量 $Y=0.11$ 兆帕；氧化物<sub>2</sub> 在 10<sup>3</sup> 赫兹 $$E=mc^2$$, $a$⟦9⟧.');
-});
-
-test('prose fallback filters glossary terms per fragment', async () => {
-  const sentTerms: unknown[] = [];
+test('a placeholder mismatch retries the whole sentence once with the fallback model, keeping word order', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
   const { mt } = client((masked, body) => {
-    sentTerms.push(body.translation_options);
-    return ok(masked.includes('⟦') ? '损坏的译文' : `译：${masked}`);
+    bodies.push(body);
+    // Qwen-MT drops a placeholder; the general model reorders it the Chinese way.
+    return ok(body.model === PLACEHOLDER_FALLBACK_MODEL ? '在 10⟦2⟧ 赫兹下测得的模量为 ⟦1⟧ MPa' : '模量 MPa 在 10 赫兹');
   });
-  await mt.translate({ text: 'modulus $Y$ actuator', model: 'm', terms: [
-    { source: 'modulus', target: '模量' }, { source: 'actuator', target: '驱动器' },
-  ], timeoutMs: 1000 });
-  assert.deepEqual(sentTerms, [
-    { source_lang: 'auto', target_lang: 'Chinese', terms: [{ source: 'modulus', target: '模量' }, { source: 'actuator', target: '驱动器' }] },
-    { source_lang: 'auto', target_lang: 'Chinese', terms: [{ source: 'modulus', target: '模量' }] },
-    { source_lang: 'auto', target_lang: 'Chinese', terms: [{ source: 'actuator', target: '驱动器' }] },
-  ]);
+  const result = await mt.translate({ text: 'The modulus $Y=0.11$ MPa at 10<sup>3</sup> Hz', model: 'qwen-mt-plus', terms: [], timeoutMs: 1000 });
+  assert.equal(result, '在 10<sup>3</sup> 赫兹下测得的模量为 $Y=0.11$ MPa');
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[1]!.model, PLACEHOLDER_FALLBACK_MODEL);
+  assert.equal(bodies[1]!.translation_options, undefined);
+  const messages = bodies[1]!.messages as Array<{ role: string; content: string }>;
+  assert.equal(messages[0]!.role, 'system');
+  assert.match(messages[0]!.content, /⟦1⟧/);
+  assert.equal(messages[1]!.content, 'The modulus ⟦1⟧ MPa at 10⟦2⟧ Hz');
 });
 
-test('formula-only fallback is local and punctuation-only gaps are not sent', async () => {
-  const { mt, calls } = client(() => ok('损坏的译文'));
-  assert.equal(await mt.translate({ text: '$a$ + $$b$$ / <sup>2</sup>', model: 'm', terms: [], timeoutMs: 1000 }), '$a$ + $$b$$ / <sup>2</sup>');
-  assert.equal(calls.length, 1);
+test('the fallback receives the glossary terms used by this text as instructions', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const { mt } = client((masked, body) => { bodies.push(body); return ok(bodies.length === 1 ? '坏' : '驱动器的模量 ⟦1⟧'); });
+  await mt.translate({ text: 'actuator modulus $Y$', model: 'm', terms: [{ source: 'actuator', target: '驱动器' }, { source: 'gel', target: '凝胶' }], timeoutMs: 1000 });
+  const system = (bodies[1]!.messages as Array<{ content: string }>)[0]!.content;
+  assert.match(system, /actuator → 驱动器/);
+  assert.doesNotMatch(system, /凝胶/);
 });
 
-test('a corrupt prose fallback is rejected without trying later fragments', async () => {
-  let count = 0;
-  const { mt, calls } = client(() => ok(++count === 1 ? '损坏的译文' : '模量 ⟦1⟧'));
+test('if the fallback also breaks a placeholder, the text fails instead of being split', async () => {
+  const { mt, calls } = client(() => ok('模量 ⟦1⟧ ⟦1⟧'));
   await assert.rejects(mt.translate({ text: 'modulus $Y$ MPa', model: 'm', terms: [], timeoutMs: 1000 }), PlaceholderMismatchError);
   assert.equal(calls.length, 2);
 });
 
-test('HTTP errors do not enter prose fallback', async () => {
+test('text without protected spans never reaches the fallback', async () => {
+  const { mt, calls } = client(() => ok('模量很低。'));
+  assert.equal(await mt.translate({ text: 'The modulus is low.', model: 'm', terms: [], timeoutMs: 1000 }), '模量很低。');
+  assert.equal(calls.length, 1);
+});
+
+test('stored translations of formula text from the old method are not reused; prose ones are', () => {
+  const terms = [{ source: 'modulus', target: '模量' }];
+  const formula = 'The modulus $Y$ is low.';
+  const prose = 'The modulus is low.';
+  assert.equal(translationIsCurrent({ termsKey: termsKey(formula, terms) }, formula, terms), false);
+  assert.equal(translationIsCurrent({ termsKey: termsKey(formula, terms), translator: TRANSLATOR_VERSION }, formula, terms), true);
+  assert.equal(translationIsCurrent({ termsKey: termsKey(prose, terms) }, prose, terms), true);
+  assert.equal(translationIsCurrent({ termsKey: 'other' }, prose, terms), false);
+  assert.equal(translationIsCurrent(undefined, prose, terms), false);
+});
+
+test('HTTP errors do not enter the fallback', async () => {
   const { mt, calls } = client(() => ({ status: 503 }));
   await assert.rejects(mt.translate({ text: 'modulus $Y$ MPa', model: 'm', terms: [], timeoutMs: 1000 }), QwenMtError);
   assert.equal(calls.length, 1);

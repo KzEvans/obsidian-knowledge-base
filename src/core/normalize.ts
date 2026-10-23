@@ -7,12 +7,18 @@ const FIRST_PAGE_CONTROL = /^(?:Read Online|ACCESS|Metrics & More|Article Recomm
 const BODY_TITLE =/^(?:\d+[.)]?\s+)?(?:abstract|summary|introduction|keywords?|highlights)\b/i;
 const SECTION_AFTER_REFERENCES = /^(?:\d+[.)]?\s+)?(?:acknowledg(?:e)?ments?|appendix(?:\s+[A-Z0-9])?|appendices|supplement(?:al|ary)\s+(?:information|materials?)|supporting information|author contributions?|credit authorship contribution statement|declaration of\s+.{1,70}|conflicts? of interest|data availability(?: statement)?|funding|致谢|附录)\s*[:：]?$/i;
 
+export interface NormalizeOptions {
+  /** Content-list indices MinerU merged into the previous paragraph (layout-merge.ts). */
+  mergedIntoPrevious?: ReadonlySet<number>;
+}
+
 /** Normalize MinerU's cloud Content List V1, without reordering provider blocks. */
 export function normalizeContentList(
   items: unknown,
   sourceHash: string,
   parserSignature: string,
   pageCount: number,
+  options: NormalizeOptions = {},
 ): ReaderDocument {
   if (!Array.isArray(items) || items.some(Array.isArray)) {
     throw new Error("MinerU 未返回兼容的扁平 Content List；请保留结果包并检查解析格式。");
@@ -29,11 +35,24 @@ export function normalizeContentList(
   let inReferences = false;
   let seenFirstPageTitle = false;
   let seenBody = false;
+  // Short text above the paper title on page 1 is a journal name, section label or logo OCR.
+  const firstPageTitleIndex = items.findIndex(raw => isRecord(raw) && raw.page_idx === 0 &&
+    (raw.text_level === 1 || raw.type === "doc_title"));
 
   items.forEach((raw: unknown, index: number) => {
     const item = isRecord(raw) ? raw : { text: raw };
     const type = typeof item.type === "string" ? item.type.toLowerCase() : "text";
     const sources = readSources(item, document, index);
+    if (options.mergedIntoPrevious?.has(index)) {
+      // The text already sits in the earlier paragraph; keep only this region as its source.
+      const owner = document.blocks.findLast(block => (block.kind === "paragraph" || block.kind === "list") && block.text);
+      if (owner) {
+        for (const source of sources) {
+          if (!owner.sources.some(existing => existing.page === source.page && JSON.stringify(existing.bbox) === JSON.stringify(source.bbox))) owner.sources.push(source);
+        }
+        return;
+      }
+    }
     const text = blockText(item, type);
     let kind = blockKind(item, type);
     const classificationText = htmlText(text.replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/gi, "")).trim();
@@ -59,8 +78,10 @@ export function normalizeContentList(
       if (
         isPublicationMetadata(classificationText) ||
         (sources[0]?.page === 1 && !seenBody && isFirstPagePublishingUi(classificationText, !seenFirstPageTitle)) ||
-        // Publisher margin imprint: a URL or path, then "by <user|guest|institution> ... on <date>".
-        ((type === "aside_text" || type === "page_aside_text") && /^Downloaded from\s+\S*[./]\S*\s+by\s+.+\bon\b/i.test(classificationText))
+        (sources[0]?.page === 1 && firstPageTitleIndex > index && classificationText.length < 120) ||
+        // Publisher margin imprint: a URL or path, then "by <user|guest|institution> ... on <date>",
+        // optionally after Wiley's "<ISSN>, <year>, <issue>," prefix.
+        ((type === "aside_text" || type === "page_aside_text") && /(?:^|[,.;]\s*)Downloaded from\s+\S*[./]\S*\s+by\s+.+\bon\b/i.test(classificationText))
       ) {
         kind = "metadata";
       } else if (
@@ -103,10 +124,10 @@ export function normalizeContentList(
       !text && !block.captions?.length && !block.footnotes?.length && logoBox;
     if (
       uncaptionedFirstPageImage && (
-        (seenFirstPageTitle && !seenBody && (
-          (logoBox[0] > 0.65 && logoBox[3] < 0.35 && logoBox[2] - logoBox[0] < 0.1 && logoBox[3] - logoBox[1] < 0.08) ||
-          (logoBox[2] - logoBox[0] <= 0.05 && logoBox[3] - logoBox[1] <= 0.05)
-        )) ||
+        (seenFirstPageTitle && !seenBody &&
+          logoBox[0] > 0.65 && logoBox[3] < 0.35 && logoBox[2] - logoBox[0] < 0.1 && logoBox[3] - logoBox[1] < 0.08) ||
+        // Icons (ACS "SI", "Read Online", citation badges) wherever they sit on page 1.
+        (logoBox[2] - logoBox[0] <= 0.05 && logoBox[3] - logoBox[1] <= 0.05) ||
         // Journal cover thumbnail beside the received/published dates (bottom right).
         (logoBox[0] > 0.65 && logoBox[1] > 0.75 && logoBox[2] - logoBox[0] < 0.1 && logoBox[3] - logoBox[1] < 0.1)
       )
@@ -139,8 +160,48 @@ export function normalizeContentList(
     }
   });
 
-  document.blocks = absorbInFigureText(groupFigureComponents(document.blocks));
+  document.blocks = joinSplitParagraphs(absorbInFigureText(groupFigureComponents(document.blocks)));
   return document;
+}
+
+/** Blocks that can sit between two halves of one paragraph without belonging to it. */
+const FLOATING = new Set<ReaderBlockKind>(["figure", "table", "footnote", "metadata", "header", "footer"]);
+const SENTENCE_END = /[.!?:;。！？：；]["'”’)\]]*$/;
+
+/**
+ * A paragraph that stops mid-sentence and resumes after a figure, table, page footer or
+ * column break is one paragraph: join the halves so figures follow the whole paragraph
+ * and translation sees whole sentences. Display equations end the search, since text
+ * after an equation ("where …") legitimately starts in lower case.
+ */
+function joinSplitParagraphs(blocks: ReaderBlock[]): ReaderBlock[] {
+  const result: ReaderBlock[] = [];
+  const consumed = new Set<ReaderBlock>();
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index]!;
+    if (consumed.has(block)) continue;
+    result.push(block);
+    if (block.kind !== "paragraph" || block.html || !block.text) continue;
+    for (let cursor = index + 1; cursor < blocks.length; cursor++) {
+      const next = blocks[cursor]!;
+      if (consumed.has(next) || FLOATING.has(next.kind)) continue;
+      if (next.kind !== "paragraph" || next.html || !next.text || !continuesSentence(block, next)) break;
+      block.text = joinContinuation(block.text, next.text);
+      block.sources.push(...next.sources.filter(source => !block.sources.some(existing => existing.page === source.page && JSON.stringify(existing.bbox) === JSON.stringify(source.bbox))));
+      consumed.add(next);
+    }
+  }
+  return result;
+}
+
+function continuesSentence(previous: ReaderBlock, next: ReaderBlock): boolean {
+  const lastPage = previous.sources[previous.sources.length - 1]?.page;
+  const nextPage = next.sources[0]?.page;
+  if (lastPage === undefined || nextPage === undefined || nextPage < lastPage || nextPage > lastPage + 1) return false;
+  const tail = htmlText(previous.text.replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/gi, "")).replace(/\[[\d\s,–-]+\]$/, "").trim();
+  const head = htmlText(next.text).trim();
+  if (!tail || !head || SENTENCE_END.test(tail)) return false;
+  return /^[a-z]/.test(head) || (tail.endsWith("-") && /^[A-Za-z]/.test(head));
 }
 
 function readSources(item: Item, document: ReaderDocument, index: number): SourceRef[] {
@@ -243,12 +304,18 @@ function isRecord(value: unknown): value is Item {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Publisher boilerplate that may close an article: access, reuse and supplementary-file notices. */
+const PUBLISHER_NOTICE = /^(?:(?:the\s+)?supporting information is available\b|supplementary (?:data|information|material)\b.{0,80}\b(?:online|available)\b|reprints and permissions\b|open access\b.{0,60}\blicen[cs]ed\b|complete contact information is available\b|how to cite this article\s*:|check for updates$)/i;
+
 function isPublicationMetadata(text: string): boolean {
+  if (PUBLISHER_NOTICE.test(text)) return true;
   if (text.length > 700) return false;
   return /^(?:©|copyright\b|all rights reserved\b|published by\b|https?:\/\/(?:dx\.)?doi\.org\/|doi\s*:\s*10\.)/i.test(text) ||
     /\ball rights reserved\b/i.test(text) ||
-    /^(?:received|accepted|available online|revised|published)\s*:?[\s]*(?:in\s+revised\s+form\s+)?(?:\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}|\d{4}[-/]\d{1,2})/i.test(text) ||
-    /^(?:[*⁎†‡]\s*)?(?:corresponding authors?\b|(?:these|those) authors contributed equally\b|authors? contributed equally\b|e[- ]?mail(?: address)?\s*:)/i.test(text);
+    /^(?:received|accepted|available online|revised|published(?: online)?)\s*:?[\s]*(?:in\s+revised\s+form\s+)?(?:\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}|\d{4}[-/]\d{1,2})/i.test(text) ||
+    /^(?:[*⁎†‡✉]\s*)?(?:corresponding authors?\b|(?:these|those) authors contributed equally\b|authors? contributed equally\b|e[- ]?mail(?: address)?\s*:)/i.test(text) ||
+    // An author's ORCID line.
+    (text.length < 200 && /\borcid\.org\/\d{4}-\d{4}-\d{4}-\d{3}[\dX]\b/i.test(text));
 }
 
 function isFirstPagePublishingUi(text: string, beforeTitle: boolean): boolean {

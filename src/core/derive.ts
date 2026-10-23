@@ -3,6 +3,7 @@ import type { AuditPdf } from './audit';
 import { normalizeSegmentText, segmentHash } from './hash';
 import { dimensionsFromHeader } from './image-size';
 import { contentListName } from './mineru';
+import { mergedIntoPrevious } from './layout-merge';
 import { normalizeContentList } from './normalize';
 import type { ReaderBlock, Segment, StoredAsset, StoredBlock, StoredDocument } from './types';
 
@@ -10,7 +11,7 @@ import type { ReaderBlock, Segment, StoredAsset, StoredBlock, StoredDocument } f
  * Bump whenever normalize, audit, crop or segment rules change. Stored documents
  * with an older version are rebuilt offline from raw/ — never re-uploaded.
  */
-export const NORMALIZER_VERSION = 1;
+export const NORMALIZER_VERSION = 2;
 
 export const TABLE_CROP_DIR = 'source-tables-v1';
 export const FALLBACK_CROP_DIR = 'fallback-v2';
@@ -56,7 +57,11 @@ export async function derive(input: DeriveInput): Promise<DeriveOutput> {
   const listName = contentListName(input.raw.names);
   if (!listName) throw new Error('原始结果中没有唯一的 content_list.json。');
   const items: unknown = JSON.parse(new TextDecoder().decode(await input.raw.read(listName)));
-  const reader = normalizeContentList(items, input.sha, `normalizer-v${NORMALIZER_VERSION}`, input.pdf.numPages);
+  const layoutName = input.raw.names.find(name => name === 'layout.json' || name.endsWith('/layout.json'));
+  const layout: unknown = layoutName ? JSON.parse(new TextDecoder().decode(await input.raw.read(layoutName))) : undefined;
+  const reader = normalizeContentList(items, input.sha, `normalizer-v${NORMALIZER_VERSION}`, input.pdf.numPages, {
+    mergedIntoPrevious: Array.isArray(items) ? mergedIntoPrevious(layout, items) : undefined,
+  });
 
   const contentBase = listName.includes('/') ? listName.slice(0, listName.lastIndexOf('/')) : '.';
   const assets: Record<string, StoredAsset> = {};

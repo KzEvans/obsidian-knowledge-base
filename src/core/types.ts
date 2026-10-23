@@ -111,8 +111,15 @@ export interface StoredDocument {
   assets: Record<string, StoredAsset>;
 }
 
-export interface TranslationEntry { text: string; model: string; termsKey: string; at: string }
-export interface TranslationFailure { error: string; attempts: number; at: string }
+export interface TranslationEntry {
+  text: string;
+  model: string;
+  termsKey: string;
+  at: string;
+  /** TRANSLATOR_VERSION that produced it; absent means 1. */
+  translator?: number;
+}
+export interface TranslationFailure { error: string; attempts: number; at: string; translator?: number }
 
 export interface TranslationFile {
   schemaVersion: 1;

@@ -7,12 +7,12 @@ import { MAX_PDF_BYTES, MAX_PDF_PAGES, MINERU_OPTIONS, MinerUError } from '../..
 import type { MinerUClient } from '../../core/mineru';
 import type { PdfDocument } from '../../core/obsidian-internal';
 import { CancelledError, RETRY_DELAYS_MS, TaskQueue, abortableSleep, attemptsOf, withRetry } from '../../core/queue';
-import { FULL_TEXT_MODEL, PlaceholderMismatchError, QwenMtError, termsKey } from '../../core/qwen-mt';
+import { FULL_TEXT_MODEL, PlaceholderMismatchError, QwenMtError, TRANSLATOR_VERSION, termsKey, translationIsCurrent } from '../../core/qwen-mt';
 import type { QwenMtClient } from '../../core/qwen-mt';
 import { errorMessage } from '../../core/secrets';
 import type { PipelineControl } from '../../core/services';
 import type { StoreWriter } from '../../core/store';
-import type { Manifest, ManifestSource, Stage, Term, TranslationFile } from '../../core/types';
+import type { Manifest, ManifestSource, Stage, Term, TranslationFailure, TranslationFile } from '../../core/types';
 import { documentSegments } from './segments';
 
 /** Concurrency per resource (architecture §3.5); constants, not settings. */
@@ -623,9 +623,8 @@ export class Pipeline implements PipelineControl {
     let index = 0;
     for (const [hash, text] of documentSegments(document)) {
       if (++index % 50 === 0) await nextTask();
-      if (file?.failures[hash]) continue;
-      const entry = file?.entries[hash];
-      if (!entry || entry.termsKey !== termsKey(text, terms)) return true;
+      if (failureIsCurrent(file?.failures[hash])) continue;
+      if (!translationIsCurrent(file?.entries[hash], text, terms)) return true;
     }
     return false;
   }
@@ -641,9 +640,8 @@ export class Pipeline implements PipelineControl {
     let index = 0;
     for (const [hash, text] of segments) {
       if (++index % 50 === 0) await nextTask();
-      if (file.failures[hash]) continue;
-      const key = termsKey(text, terms);
-      if (file.entries[hash]?.termsKey !== key) todo.push([hash, text, key]);
+      if (failureIsCurrent(file.failures[hash])) continue;
+      if (!translationIsCurrent(file.entries[hash], text, terms)) todo.push([hash, text, termsKey(text, terms)]);
     }
     this.checkActive(sha);
     const total = segments.size;
@@ -684,12 +682,12 @@ export class Pipeline implements PipelineControl {
           this.checkActive(sha);
           const translated = await this.qwenQueue.enqueue(queueKey, signal => this.translateSegment(text, terms, signal), { priority });
           this.checkActive(sha);
-          file.entries[hash] = { text: translated, model: FULL_TEXT_MODEL, termsKey: key, at: this.iso() };
+          file.entries[hash] = { text: translated, model: FULL_TEXT_MODEL, termsKey: key, at: this.iso(), translator: TRANSLATOR_VERSION };
           delete file.failures[hash];
           if (++unsaved >= FLUSH_EVERY) await flush();
         } catch (error) {
           if (error instanceof PlaceholderMismatchError) {
-            file.failures[hash] = { error: 'PlaceholderMismatch', attempts: attemptsOf(error), at: this.iso() };
+            file.failures[hash] = { error: 'PlaceholderMismatch', attempts: attemptsOf(error), at: this.iso(), translator: TRANSLATOR_VERSION };
             unsaved++;
             return;
           }
@@ -785,4 +783,9 @@ export function retryable(error: unknown): boolean {
   if (error instanceof PlaceholderMismatchError) return false;
   if (error instanceof CancelledError || error instanceof SourceMissingError || error instanceof LegacyCachePendingError || error instanceof ConflictError) return false;
   return true;
+}
+
+/** A recorded failure blocks automatic retries only until the translation method changes. */
+function failureIsCurrent(failure: TranslationFailure | undefined): boolean {
+  return failure !== undefined && (failure.translator ?? 1) >= TRANSLATOR_VERSION;
 }

@@ -4,8 +4,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { NORMALIZER_VERSION } from '../../src/core/derive';
 import { MinerUError } from '../../src/core/mineru';
-import { PlaceholderMismatchError, QwenMtError, createQwenMtClient } from '../../src/core/qwen-mt';
-import type { Manifest } from '../../src/core/types';
+import { PlaceholderMismatchError, QwenMtError, TRANSLATOR_VERSION } from '../../src/core/qwen-mt';
+import type { Manifest, TranslationFile } from '../../src/core/types';
 import { FLUSH_EVERY } from '../../src/library/pipeline/pipeline';
 import { deferred, settle } from './helpers';
 import { addPdf, pipelineFixture, resultFiles, retryableNetworkError } from './pipeline-fixture';
@@ -295,31 +295,35 @@ test('a PDF that is gone waits instead of failing, and continues when it reappea
   await untilStage(pipeline, () => f.store.manifest(sha), 'ready');
 });
 
-test('the pipeline stores a fully reassembled translation after the first placeholder mismatch', async () => {
+test('formula translations from the old method are redone once; prose translations and new ones are kept', async () => {
   const f = await pipelineFixture();
-  const sha = await addPdf(f, PDF, 'local formula fallback');
+  const sha = await addPdf(f, PDF, 'translator version');
   f.mineru.files = () => ({
     ...resultFiles(),
     'auto/paper_content_list.json': new TextEncoder().encode(JSON.stringify([
       { type: 'text', text: 'The modulus $Y$ is measured.', page_idx: 0, bbox: [100, 100, 900, 200] },
+      { type: 'text', text: 'Plain prose without formulas.', page_idx: 0, bbox: [100, 300, 900, 400] },
     ])),
   });
-  const sent: string[] = [];
-  const qwenMt = createQwenMtClient(async request => {
-    const body = JSON.parse(request.body as string) as { messages: Array<{ content: string }> };
-    const text = body.messages[0]!.content;
-    sent.push(text);
-    const content = text.includes('⟦') ? '损坏的译文' : text === 'The modulus' ? '模量' : '已测量。';
-    return { status: 200, headers: {}, text: '', arrayBuffer: new ArrayBuffer(0), json: { choices: [{ message: { content } }] } };
-  }, () => 'test-key-not-real', () => '');
-  const pipeline = f.create({ qwenMt });
+  const pipeline = f.create();
   await pipeline.discover(PDF);
   await untilStage(pipeline, () => f.store.manifest(sha), 'ready');
-  const file = (await f.store.translations(sha))!;
-  assert.deepEqual(sent, ['The modulus ⟦1⟧ is measured.', 'The modulus', 'is measured.']);
-  assert.deepEqual(Object.values(file.entries).map(entry => entry.text), ['模量 $Y$ 已测量。']);
-  assert.deepEqual(file.failures, {});
-  assert.equal((await f.store.manifest(sha))?.translation?.done, 1);
+  const first = (await f.store.translations(sha))!;
+  assert.ok(Object.values(first.entries).every(entry => entry.translator === TRANSLATOR_VERSION));
+
+  // Simulate entries written before the method change.
+  const downgraded: TranslationFile = JSON.parse(JSON.stringify(first)) as TranslationFile;
+  for (const entry of Object.values(downgraded.entries)) { delete entry.translator; entry.text = `旧：${entry.text}`; }
+  await f.store.writeTranslations(sha, downgraded);
+  const translated: string[] = [];
+  f.qwen.behaviour = request => { translated.push(request.text); return `译：${request.text}`; };
+  await f.store.writeManifest(sha, { ...(await f.store.manifest(sha))!, stage: 'translating' });
+  const restarted = f.create();
+  await restarted.start();
+  await untilStage(restarted, () => f.store.manifest(sha), 'ready');
+  assert.deepEqual(translated, ['The modulus $Y$ is measured.']);
+  const texts = Object.values((await f.store.translations(sha))!.entries).map(entry => entry.text).sort();
+  assert.deepEqual(texts, ['旧：译：Plain prose without formulas.', '译：The modulus $Y$ is measured.']);
   assert.equal(f.mineru.uploads, 1);
 });
 

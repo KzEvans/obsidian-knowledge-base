@@ -104,13 +104,30 @@ test("only explicit adjacent cross-page continuation merges and retains both sou
   assert.equal(doc.blocks[0]?.id, "block-1");
 });
 
-test("figures between fragments prevent an inferred continuation merge", () => {
+test("a sentence split by a figure is joined and the figure follows the whole paragraph", () => {
   const doc = normalize([
-    { type: "text", text: "Before figure", page_idx: 0 },
-    { type: "image", img_path: "images/fig.jpg", page_idx: 0 },
-    { type: "text", text: "after figure", page_idx: 1, continues_prev: true },
+    { type: "text", text: "Before the figure the sentence", page_idx: 0, bbox: [70, 100, 480, 300] },
+    { type: "image", img_path: "images/fig.jpg", image_caption: ["Figure 2. Setup."], page_idx: 0, bbox: [520, 100, 930, 400] },
+    { type: "page_footnote", text: "a Measured at 25 °C.", page_idx: 0, bbox: [70, 900, 480, 920] },
+    { type: "text", text: "continues after it.", page_idx: 1, bbox: [70, 60, 480, 120] },
   ]);
-  assert.equal(doc.blocks.length, 3);
+  assert.deepEqual(doc.blocks.map(block => block.kind), ["paragraph", "figure", "footnote"]);
+  assert.equal(doc.blocks[0]?.text, "Before the figure the sentence continues after it.");
+  assert.deepEqual(doc.blocks[0]?.sources.map(source => source.page), [1, 2]);
+});
+
+test("finished sentences, capitalised starts, equations and distant pages are never joined", () => {
+  const cases: unknown[][] = [
+    [{ type: "text", text: "A finished sentence.", page_idx: 0 }, { type: "image", img_path: "f.jpg", page_idx: 0 }, { type: "text", text: "lower case start", page_idx: 0 }],
+    [{ type: "text", text: "An unfinished clause", page_idx: 0 }, { type: "text", text: "New paragraph", page_idx: 0 }],
+    [{ type: "text", text: "The strain is", page_idx: 0 }, { type: "equation", text: "$$s = -p/Y$$", page_idx: 0 }, { type: "text", text: "where p is the pressure.", page_idx: 0 }],
+    [{ type: "text", text: "An unfinished clause", page_idx: 0 }, { type: "text", text: "far away", page_idx: 2 }],
+    [{ type: "text", text: "Cited work [12]", page_idx: 0 }, { type: "table", table_body: "<table></table>", page_idx: 0 }, { type: "text", text: "Results", page_idx: 0 }],
+  ];
+  for (const items of cases) {
+    const doc = normalize(items);
+    assert.equal(doc.blocks.filter(block => block.kind === "paragraph").length, 2, JSON.stringify(items));
+  }
 });
 
 test("unknown types and missing coordinates keep content without inventing a location", () => {
@@ -431,4 +448,83 @@ test("page-1 ACS control labels fold even when the provider lists them after the
     ["heading", "metadata", "metadata", "paragraph", "metadata", "metadata", "paragraph", "heading", "paragraph"]);
   assert.equal(doc.blocks[4]?.hiddenByDefault, true);
   assert.equal(doc.blocks[5]?.hiddenByDefault, true);
+});
+
+test("Wiley pre-title section label and journal logo OCR fold; the title and abstract stay", () => {
+  const doc = normalize([
+    { type: "text", text: "S O F T M A T T E R : S Y N T H E S I S , P R O C E S S I N G A N D P R O D U C T S", page_idx: 0, bbox: [70, 83, 359, 113] },
+    { type: "text", text: "AICEURNAL", page_idx: 0, bbox: [825, 71, 922, 97] },
+    { type: "text", text: "One-pot synthesis of octablock copolymers", text_level: 1, page_idx: 0, bbox: [68, 148, 902, 205] },
+    { type: "text", text: "Abstract", text_level: 2, page_idx: 0, bbox: [347, 289, 418, 305] },
+    { type: "text", text: "Multiblock copolymers could offer new opportunities.", page_idx: 0, bbox: [344, 308, 915, 710] },
+  ]);
+  assert.deepEqual(doc.blocks.map(block => [block.kind, block.hiddenByDefault === true]), [
+    ["metadata", true], ["metadata", true], ["heading", false], ["heading", false], ["paragraph", false],
+  ]);
+});
+
+test("without a level-1 title, short page-1 text is left alone", () => {
+  const doc = normalize([{ type: "text", text: "Short opening line", page_idx: 0 }, { type: "text", text: "Section", text_level: 2, page_idx: 0 }]);
+  assert.equal(doc.blocks[0]?.kind, "paragraph");
+});
+
+test("Wiley margin imprint with an ISSN, year and issue prefix folds on every page", () => {
+  const imprint = "15475905, 2020, 1, Downloaded from https://aiche.onlinelibrary.wiley.com/doi/10.1002/aic.16781 by Zhejiang University, Wiley Online Library on [10/10/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use";
+  const doc = normalize([
+    { type: "aside_text", text: imprint, page_idx: 1, bbox: [966, 17, 983, 980] },
+    { type: "text", text: `Body text that cites ${imprint.slice(0, 40)} in passing.`, page_idx: 1 },
+  ]);
+  assert.deepEqual(doc.blocks.map(block => block.kind), ["metadata", "paragraph"]);
+});
+
+test("tiny page-1 icons fold even before the title (ACS SI badge)", () => {
+  const doc = normalize([
+    { type: "image", img_path: "images/si.jpg", page_idx: 0, bbox: [708, 265, 728, 280] },
+    { type: "text", text: "How Does the Rate of Chain Exchange Relate to Stress Relaxation?", text_level: 1, page_idx: 0, bbox: [79, 135, 915, 181] },
+    { type: "image", img_path: "images/toc.jpg", page_idx: 0, bbox: [614, 292, 914, 430] },
+  ]);
+  assert.deepEqual(doc.blocks.map(block => block.kind), ["metadata", "heading", "figure"]);
+});
+
+test("blocks MinerU merged into the previous paragraph add their region instead of new text", () => {
+  const doc = normalizeContentList([
+    { type: "text", text: "With different polymer chains connected together, block copolymers offer opportunities.", page_idx: 0, bbox: [68, 847, 485, 934] },
+    { type: "text", text: "", page_idx: 0, bbox: [507, 813, 924, 934] },
+    { type: "header", text: "FANG ET AL.", page_idx: 1, bbox: [73, 28, 139, 39] },
+    { type: "text", text: "", page_idx: 1, bbox: [70, 60, 487, 90] },
+    { type: "text", text: "Compared with diblock copolymers, few multiblocks exist.", page_idx: 1, bbox: [72, 93, 490, 341] },
+  ], "pdf-hash", "mineru-v4-vlm", 9, { mergedIntoPrevious: new Set([1, 3]) });
+  const paragraphs = doc.blocks.filter(block => block.kind === "paragraph");
+  assert.equal(paragraphs.length, 2);
+  assert.deepEqual(paragraphs[0]?.sources.map(source => source.page), [1, 1, 2]);
+  assert.ok(!doc.warnings.some(warning => warning.includes("没有可显示内容")));
+});
+
+test("publisher notices, ORCID lines, online dates and update badges fold; science that mentions them stays", () => {
+  const folded = [
+    "The Supporting Information is available free of charge at https://pubs.acs.org/doi/10.1021/acscentsci.4c02031.",
+    "Supplementary data to this article can be found online at https:// doi.org/10.1016/j.cej.2020.126634.",
+    "Supplementary information The online version contains supplementary material available at https://doi.org/10.1038/x.",
+    "Reprints and permissions information is available at http://www.nature.com/reprints",
+    `Open Access This article is licensed under a Creative Commons Attribution 4.0 International License, ${"which permits use. ".repeat(60)}`,
+    "Complete contact information is available at: https://pubs.acs.org/10.1021/acscentsci.4c02031",
+    "How to cite this article: Fang J, Wang S, Luo Y. One-pot synthesis. AIChE J. 2020;66:e16781.",
+    "Check for updates",
+    "Published online: 22 May 2025",
+    "Published online 10 November 2021",
+    "Yingwu Luo https://orcid.org/0000-0003-2487-5226",
+    "✉e-mail: author@example.org",
+  ];
+  const kept = [
+    "Supporting information shows the full dataset, and we discuss it below in detail.",
+    "We checked for updates of the model parameters after each cycle.",
+    "Open questions remain about how the network relaxes.",
+  ];
+  const doc = normalize([...folded, ...kept].map((text, index) => ({ type: "text", text, page_idx: 5, bbox: [80, 100 + index * 10, 900, 105 + index * 10] })));
+  assert.deepEqual(doc.blocks.map(block => block.kind), [...folded.map(() => "metadata"), ...kept.map(() => "paragraph")]);
+});
+
+test("a Wiley imprint whose issue number is followed by a period still folds", () => {
+  const doc = normalize([{ type: "aside_text", text: "15475905, 2020, 1. Downloaded from https://aiche.onlinelibrary.wiley.com/doi/10.1002/aic.16781 by Zhejiang University, Wiley Online Library on [10/10/2026].", page_idx: 2 }]);
+  assert.equal(doc.blocks[0]?.kind, "metadata");
 });
