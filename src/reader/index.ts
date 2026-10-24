@@ -1,5 +1,6 @@
 import type { ModuleContext, ModuleHandle } from '../core/module';
 import { ReaderController } from './controller';
+import { FigurePreview } from './figure-preview';
 import { importLegacySettings, readerSettingsSection } from './settings';
 import type { ReaderSettings } from './settings';
 
@@ -12,12 +13,14 @@ const LEGACY_PLUGIN = 'pdf-reading-mode';
 export function register(context: ModuleContext<ReaderSettings>): ModuleHandle {
   const controller = new ReaderController(context);
   controller.start();
+  const figures = new FigurePreview(context);
+  figures.start();
   if (!context.settings.legacyImported) {
     context.app.workspace.onLayoutReady(() => void importLegacy(context, () => controller.refreshTypography()));
   }
   return {
     settingsSection: readerSettingsSection(context.settings, () => context.saveSettings(), () => controller.refreshTypography()),
-    dispose: () => controller.dispose(),
+    dispose: () => { figures.dispose(); controller.dispose(); },
   };
 }
 

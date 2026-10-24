@@ -510,3 +510,27 @@ test("search text covers reader content but not page markers or source-tool butt
   assert.ok(!text.includes("原文") && !text.includes("复制页链") && !text.includes("PDF p."));
   assert.ok(blockSearchText(figure!).includes("Relaxation modulus"));
 });
+
+test("a figure MinerU split into image blocks renders as one figure with its caption paragraph and without in-figure text", async () => {
+  const at = (page: number, bbox: [number, number, number, number]) => ({ sources: [{ page, bbox }] });
+  const { root } = await render([
+    block("intro", "paragraph", "Before the figure."),
+    block("panel-a", "figure", "", { asset: "a.png", captions: ["(a)"], ...at(7, [0.5, 0.1, 0.9, 0.3]) }),
+    block("panel-b", "figure", "", { asset: "b.png", captions: ["(b)"], ...at(7, [0.5, 0.3, 0.7, 0.5]) }),
+    block("panel-c", "figure", "", { asset: "c.png", ...at(7, [0.7, 0.3, 0.9, 0.5]) }),
+    block("formula", "equation", "$$PS_{300}$$", at(7, [0.6, 0.5, 0.8, 0.52])),
+    { ...block("caption", "paragraph", "F I G U R E 2 The evolution of particles", at(7, [0.5, 0.53, 0.9, 0.6])), segments: [{ field: "text", index: 0, sourceHash: "h-caption" }] },
+    block("after", "paragraph", "After the figure."),
+  ], undefined, { assetUrl: reference => `app://local/${reference}` });
+  const figures = root.querySelectorAll("figure");
+  assert.equal(figures.length, 1);
+  const images = Array.from(figures[0]!.querySelectorAll<HTMLImageElement>("img"));
+  assert.deepEqual(images.map(image => image.getAttribute("src")), ["app://local/a.png", "app://local/b.png", "app://local/c.png"]);
+  assert.deepEqual(images.map(image => (image.parentElement as HTMLElement).style.flexBasis), ["100.00%", "50.00%", "50.00%"]);
+  assert.equal(figures[0]!.querySelector("figcaption")?.textContent, "F I G U R E 2 The evolution of particles");
+  assert.ok(figures[0]!.querySelector('figcaption [data-segment="h-caption"]'), "the caption paragraph keeps its translation unit");
+  assert.ok(!root.textContent?.includes("(a)"));
+  assert.equal(root.querySelector(".pdf-reader-equation"), null);
+  const order = Array.from(root.querySelectorAll<HTMLElement>("[data-reader-block-id]")).map(element => element.dataset.readerBlockId);
+  assert.deepEqual(order, ["intro", "panel-a", "after"]);
+});

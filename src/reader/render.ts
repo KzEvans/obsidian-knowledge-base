@@ -1,9 +1,13 @@
 import { finishRenderMath, loadMathJax, renderMath, sanitizeHTMLToDom } from 'obsidian';
 import type { ReaderBlock, Segment } from '../core/types';
+import { figureGroups, isPanelCaption } from './figure-refs';
+import type { FigureGroup } from './figure-refs';
 
 export type Language = 'en' | 'zh';
 /** A stored block, or a plain ReaderBlock without translation units. */
-export type RenderBlock = ReaderBlock & { segments?: readonly Segment[] };
+export type RenderBlock = ReaderBlock & { segments?: readonly Segment[]; panels?: readonly Panel[] };
+/** One image of a figure MinerU split into several blocks; `width` is its share (0–1] of the figure's width. */
+interface Panel { asset: string; width: number }
 
 export interface ReaderRenderOptions {
   fontSize: number;
@@ -59,7 +63,7 @@ export async function renderReader(root: HTMLElement, blocks: readonly RenderBlo
   const article = root.createEl('article', { cls: 'pdf-reader-article', attr: { 'aria-label': 'PDF 阅读模式正文' } });
 
   const batch = batcher();
-  const ordered = sectionEndAncillary(blocks);
+  const ordered = sectionEndAncillary(mergeSplitFigures(blocks));
   for (let index = 0; index < ordered.length;) {
     const block = ordered[index];
     if (!block) break;
@@ -496,6 +500,19 @@ function appendList(parent: HTMLElement, text: string, context: RenderContext): 
 }
 
 function appendImageOrText(parent: HTMLElement, block: RenderBlock, context: RenderContext): void {
+  if (block.panels?.length) {
+    const caption = displayCaptions(block).join('\n');
+    const panels = parent.createDiv({ cls: 'pdf-reader-figure-panels' });
+    for (const panel of block.panels) {
+      const url = resolveAsset(panel.asset, context.options);
+      if (!url) continue;
+      const cell = panels.createDiv({ cls: 'pdf-reader-figure-panel' });
+      cell.style.flexBasis = `${(panel.width * 100).toFixed(2)}%`;
+      appendImage(cell, url, caption, context, caption, panel.asset);
+    }
+    if (panels.childElementCount) return;
+    panels.remove();
+  }
   const url = block.asset ? resolveAsset(block.asset, context.options) : undefined;
   if (url) {
     const caption = displayCaptions(block).join('\n');
@@ -564,6 +581,68 @@ function displayCaptions(block: ReaderBlock): string[] {
   const text = block.text.replace(/<[^>]*>/g, '').trim();
   if (block.kind === 'figure' && /^(?:fig(?:ure)?\.?\s*(?:s?\d+[a-z]?|[ivx]+)\b|图\s*(?:\d+|[一二三四五六七八九十]+))/i.test(text)) return [block.text];
   return [];
+}
+
+/**
+ * One figure split into several image blocks renders as one figure: its images laid out
+ * by their page boxes, panel-letter captions dropped, a caption paragraph moved into the
+ * figure, and text drawn inside the figure taken out of the body (figure-refs.ts).
+ */
+function mergeSplitFigures(blocks: readonly RenderBlock[]): readonly RenderBlock[] {
+  const replaced = new Map<RenderBlock, RenderBlock | null>();
+  for (const group of figureGroups(blocks)) {
+    const pictured = group.images.filter(image => image.asset);
+    const panelCaptions = group.images.some(image => image.captions?.some(isPanelCaption));
+    if (pictured.length < 2 && !group.caption && !group.inside.length && !panelCaptions) continue;
+    const merged = mergedFigure(group);
+    for (const image of group.images) replaced.set(image, null);
+    for (const block of [...group.inside, ...(group.caption ? [group.caption] : [])]) replaced.set(block, null);
+    replaced.set(group.images[0]!, merged);
+  }
+  if (!replaced.size) return blocks;
+  return blocks.flatMap(block => {
+    const replacement = replaced.get(block);
+    return replacement === undefined ? [block] : replacement ? [replacement] : [];
+  });
+}
+
+function mergedFigure(group: FigureGroup<RenderBlock>): RenderBlock {
+  const { images, caption } = group;
+  const captions: string[] = [];
+  const footnotes: string[] = [];
+  const segments: Segment[] = [];
+  for (const image of images) {
+    image.captions?.forEach((text, index) => {
+      if (isPanelCaption(text)) return;
+      const segment = segmentFor(image, 'caption', index);
+      if (segment) segments.push({ ...segment, index: captions.length });
+      captions.push(text);
+    });
+    image.footnotes?.forEach((text, index) => {
+      const segment = segmentFor(image, 'footnote', index);
+      if (segment) segments.push({ ...segment, index: footnotes.length });
+      footnotes.push(text);
+    });
+  }
+  if (caption) {
+    const segment = segmentFor(caption, 'text', 0);
+    if (segment) segments.push({ field: 'caption', index: captions.length, sourceHash: segment.sourceHash });
+    captions.push(caption.text);
+  }
+  const boxes = images.flatMap(image => image.sources.flatMap(source => source.bbox ? [source.bbox] : []));
+  const left = Math.min(...boxes.map(box => box[0]));
+  const span = Math.max(...boxes.map(box => box[2])) - left;
+  const panels = images.flatMap(image => {
+    const box = image.sources.find(source => source.bbox)?.bbox;
+    const width = box && span > 0 ? Math.min(1, Math.max(0.15, (box[2] - box[0]) / span)) : 1;
+    return image.asset ? [{ asset: image.asset, width }] : [];
+  });
+  // The captioned image keeps its id, so links and search hits to it still land on the figure.
+  const anchor = images.find(image => image.captions?.some(text => !isPanelCaption(text))) ?? images[0]!;
+  return {
+    id: anchor.id, kind: 'figure', text: '', sources: [...images, ...(caption ? [caption] : [])].flatMap(block => block.sources),
+    captions, footnotes, segments, panels, ...(anchor.asset ? { asset: anchor.asset } : {}),
+  };
 }
 
 function sectionEndAncillary(blocks: readonly RenderBlock[]): RenderBlock[] {

@@ -567,3 +567,54 @@ span.pw-layer {
 .pw-measure .pw-layer {
   align-self: start;
 }
+
+/* Figure preview on hover (figure-preview.ts): fills the other half of the workspace. */
+.pw-figure-preview {
+  position: fixed;
+  z-index: var(--layer-tooltip);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+  background: #fff;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-l);
+  pointer-events: none;
+}
+
+.pw-figure-preview img {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* Figure references that can be previewed (figure-preview.ts, CSS Custom Highlights). */
+::highlight(pw-figure-ref) {
+  color: var(--text-accent);
+}
+
+::highlight(pw-figure-ref-active) {
+  color: var(--text-accent-hover);
+  text-decoration: underline;
+}
+
+/* A figure MinerU split into several image blocks (render.ts mergeSplitFigures). */
+.pdf-reader-figure-panels {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.pdf-reader-figure-panel {
+  box-sizing: border-box;
+  flex-grow: 0;
+  flex-shrink: 0;
+  padding: 2px;
+}
