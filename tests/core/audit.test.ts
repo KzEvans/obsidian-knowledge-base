@@ -37,6 +37,94 @@ const pdfFromItems = (pages: ReturnType<typeof nativeItem>[][]) => ({
   }),
 });
 
+test('a missing prose span inside a paragraph is restored from its unique source region with citations and surrounding math intact', async () => {
+  const left = 'Earlier measurements of the polymer dispersion revealed broader distributions, causing';
+  const right = ' reduce branching, the subsequent reaction temperature was lowered for the remaining blocks.';
+  const original = left + ' ( – ) <sup>12,15</sup>' + right + ' The model is $T = T_0 - 5$.';
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  const items = [
+    nativeItem(left + ' substantially higher dispersity (1–3) in the final product.',10,100),
+    {str:'12,15',width:12,height:6,transform:[6,0,0,6,110,84]},
+    nativeItem(' In order to' + right,125,70),
+  ];
+  await auditNativeText(pdfFromItems([items]),doc);
+  assert.match(doc.blocks[0]!.text,/causing substantially higher dispersity \(1–3\) in the final product\./);
+  assert.match(doc.blocks[0]!.text,/<sup>12,15<\/sup> In order to reduce branching/);
+  assert.ok(doc.blocks[0]!.text.endsWith(' The model is $T = T_0 - 5$.'));
+  const repaired = JSON.stringify(doc);
+  await auditNativeText(pdfFromItems([items]),doc);
+  assert.equal(JSON.stringify(doc),repaired);
+});
+
+test('source gap repair leaves formulas, existing prose and differing citation numbers untouched', async () => {
+  const left = 'Earlier measurements of the polymer dispersion revealed broader distributions, causing';
+  const right = ' reduce branching, the subsequent reaction temperature was lowered for the remaining blocks.';
+  const native = left + ' substantially higher dispersity (1–3) in the final product.17,19 In order to' + right;
+  for (const gap of [' $2 - 4$ ', ' an existing scientific explanation ', ' ( – ) <sup>12,15</sup> ']) {
+    const original = left + gap + right;
+    const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+    await auditNativeText(pdfFromItems([[nativeItem(native)]]),doc);
+    assert.equal(doc.blocks[0]!.text,original);
+  }
+});
+
+test('source gap repair requires a unique pair of anchors inside the same geometric region', async () => {
+  const left = 'Earlier measurements of the polymer dispersion revealed broader distributions, causing';
+  const right = ' reduce branching, the subsequent reaction temperature was lowered for the remaining blocks.';
+  const original = left + ' ( – ) ' + right;
+  const native = left + ' substantially higher dispersity in the final product. In order to' + right;
+  const repeated = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(native + ' ' + native)]]),repeated);
+  assert.equal(repeated.blocks[0]!.text,original);
+  const elsewhere = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,500,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(native)]]),elsewhere);
+  assert.equal(elsewhere.blocks[0]!.text,original);
+});
+
+test('repairing a gap in a cross-page paragraph does not duplicate its existing continuation', async () => {
+  const left = 'Earlier measurements of the polymer dispersion revealed broader distributions, causing';
+  const right = ' reduce branching, the subsequent reaction temperature was lowered for the remaining blocks.';
+  const missing = ' substantially higher dispersity in the measured material. In order to';
+  const tail = 'The continuation describes the same experiment and retains the original measurements across repeated loading cycles without introducing another paragraph.';
+  const doc = normalizeContentList([
+    {type:'text',text:left + ' ( – )' + right + ' ' + tail,page_idx:0,bbox:[0,0,1000,350]},
+    {type:'text',text:'',page_idx:1,bbox:[0,0,1000,350]},
+  ],'hash','test',2);
+  const pdf = pdfFromItems([[nativeItem(left + missing + right)],[nativeItem(tail)]]);
+  await auditNativeText(pdf,doc);
+  assert.equal(doc.blocks.length,1);
+  assert.equal(doc.blocks[0]!.text,left + missing + right + ' ' + tail);
+  assert.equal(doc.blocks[0]!.text.split(tail).length - 1,1);
+  assert.deepEqual(doc.blocks[0]!.sources.map(source => source.page),[1,2]);
+  const once = JSON.stringify(doc);
+  await auditNativeText(pdf,doc);
+  assert.equal(JSON.stringify(doc),once);
+});
+
+test('native prose cannot be inserted into the interior of an existing TeX expression', async () => {
+  const left = 'Earlier measurements of the polymer dispersion revealed broader distributions, causing';
+  const right = ' reduce branching, the subsequent reaction temperature was lowered for the remaining blocks.';
+  const original = '$' + left + ' ( – )' + right + '$';
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(left + ' substantially higher dispersity in the measured material. In order to' + right)]]),doc);
+  assert.equal(doc.blocks[0]!.text,original);
+});
+
+test('a literal less-than comparison cannot hide existing prose and turn it into a false gap', async () => {
+  const left = 'The measured particle size increases steadily while the distribution remains very narrow (<0.02).';
+  const middle = ' It suggests that all particles grow at approximately the same rate.';
+  const right = ' Thus, the product composition remains uniform under the chosen experimental conditions.';
+  const original = left + middle + '<sup>12,15</sup>' + right;
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  const items = [
+    nativeItem(left + middle,10,100),
+    {str:'12,15',width:12,height:6,transform:[6,0,0,6,110,84]},
+    nativeItem(right,125,70),
+  ];
+  await auditNativeText(pdfFromItems([items]),doc);
+  assert.equal(doc.blocks[0]!.text,original);
+});
+
 test('empty second-column layout fragment already contained in cloud prose merges sources without duplicating text', async () => {
   const tail = 'The dielectric elastomer shows large reversible deformation with high efficiency and low driving voltage across repeated actuation cycles.';
   const full = 'An earlier part of this paragraph describes the specimen. ' + tail;

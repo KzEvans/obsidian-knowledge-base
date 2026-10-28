@@ -186,7 +186,7 @@ interface StoreWriter extends StoreReader {
 ### 5.3 规范化（`derive.ts`、`crop-canvas.ts`、`pdf.ts`）
 
 ```ts
-const NORMALIZER_VERSION: number;   // 当前为 1；改规则时加一
+const NORMALIZER_VERSION: number;   // 当前为 3；改规则时加一
 function derive(input: {
   sha: string;
   raw: { names: string[]; read(name: string): Promise<Uint8Array> };
@@ -199,6 +199,8 @@ function openPdf(bytes: ArrayBuffer | Uint8Array): Promise<PdfDocument>;   // �
 ```
 
 裁图规则：表格一律从原 PDF 裁图（`source-tables-v1/<blockId>.png`）；没有图片资源的图和公式裁图（`fallback-v2/<blockId>.png`）；图片题注区域涂白。
+
+正文中间的漏识别可从原 PDF 同一 bbox 的文本层补回：前后各 24 个字母须唯一匹配，缺口不得含已有正文或 TeX，已有数字须按原顺序保留。只替换被证实的缺口，保留其余段落和公式；匹配不唯一时保持原文。
 
 ### 5.4 外部服务客户端
 

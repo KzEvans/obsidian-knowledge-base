@@ -32,7 +32,10 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
       regionalTexts.push(...texts.filter(Boolean));
     }
     const sourceTexts = [native, ...regionalTexts];
-    for (const block of pageBlocks) repairBlockLigatures(block, sourceTexts, regions.get(block) ?? []);
+    for (const block of pageBlocks) {
+      repairBlockLigatures(block, sourceTexts, regions.get(block) ?? []);
+      if (block.kind === 'paragraph') block.text = restoreMissingProse(block.text, regions.get(block) ?? []);
+    }
 
     for (const block of pageBlocks) {
       if (!document.blocks.includes(block)) continue;
@@ -292,6 +295,53 @@ function findDuplicateOwner(blocks: ReaderBlock[], empty: ReaderBlock, regional:
 interface LetterMap {
   letters: string;
   spans: {start:number;end:number}[];
+}
+
+/** Recover omitted prose only between unique, adjacent cloud anchors in the same PDF region.
+ * Existing words and TeX are never replaced; native punctuation and citations travel with the gap. */
+function restoreMissingProse(cloud: string, regions: string[]): string {
+  const mapped = mapLetters(cloud);
+  const native = regions.filter(Boolean).map(text => ({ text, ...mapLetters(text) }));
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  const formulas = [...cloud.matchAll(/(?<!\\)\$\$?[\s\S]*?(?<!\\)\$\$?/g)];
+  const width = 24;
+  for (let split = width; split <= mapped.letters.length - width; split++) {
+    const start = mapped.spans[split - 1]!.end;
+    const end = mapped.spans[split]!.start;
+    const gap = cloud.slice(start, end);
+    const visibleGap = gap.replace(/<\/?sup\b[^>]*>/gi, '');
+    // A scientific comparison such as "<0.02" is not an opening HTML tag.
+    // Remove only citation tags here so malformed markup cannot hide existing prose.
+    if (!/\s/.test(gap) || /[$\\A-Za-z]/.test(visibleGap)) continue;
+    if (formulas.some(formula => start < formula.index + formula[0].length && end > formula.index)) continue;
+    const left = mapped.letters.slice(split - width, split);
+    const right = mapped.letters.slice(split, split + width);
+    const candidates = new Set<string>();
+    for (const source of native) {
+      const leftAt = source.letters.indexOf(left);
+      if (leftAt < 0 || source.letters.indexOf(left, leftAt + 1) >= 0) continue;
+      const afterLeft = leftAt + width;
+      const rightAt = source.letters.indexOf(right, afterLeft);
+      if (rightAt < 0 || source.letters.indexOf(right) !== rightAt || source.letters.indexOf(right, rightAt + 1) >= 0) continue;
+      const missing = rightAt - afterLeft;
+      if (missing < 8 || missing > 500) continue;
+      const text = source.text.slice(source.spans[afterLeft - 1]!.end, source.spans[rightAt]!.start);
+      if ((stripMarkup(text).match(/[A-Za-z]{2,}/g)?.length ?? 0) < 2) continue;
+      // Existing citation or measurement digits must survive in order, even when the cloud lost other numbers.
+      const numbers: string[] = stripMarkup(text).match(/\d+/g) ?? [];
+      let position = 0;
+      const preserved = (visibleGap.match(/\d+/g) ?? []).every(number => {
+        const at = numbers.indexOf(number, position);
+        position = at + 1;
+        return at >= 0;
+      });
+      if (preserved) candidates.add(text);
+    }
+    if (candidates.size === 1) edits.push({ start, end, text: [...candidates][0]! });
+  }
+  let result = cloud;
+  for (const edit of edits.reverse()) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  return result;
 }
 
 /** Locate visible letters while retaining offsets into the original inline markup. */

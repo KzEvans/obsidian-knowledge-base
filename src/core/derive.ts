@@ -11,7 +11,7 @@ import type { ReaderBlock, Segment, StoredAsset, StoredBlock, StoredDocument } f
  * Bump whenever normalize, audit, crop or segment rules change. Stored documents
  * with an older version are rebuilt offline from raw/ — never re-uploaded.
  */
-export const NORMALIZER_VERSION = 2;
+export const NORMALIZER_VERSION = 3;
 
 export const TABLE_CROP_DIR = 'source-tables-v1';
 export const FALLBACK_CROP_DIR = 'fallback-v2';
