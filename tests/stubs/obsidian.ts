@@ -30,6 +30,7 @@ export class Menu {}
 export class ItemView {
   containerEl = {}; contentEl = {}; headerEl = {}; titleContainerEl = {}; titleEl = {}; titleParentEl = {}; actionsEl = {};
   constructor(readonly leaf: unknown) {}
+  setState(): Promise<void> { return Promise.resolve(); }
 }
 export class MarkdownRenderer {}
 export class TFolder {}

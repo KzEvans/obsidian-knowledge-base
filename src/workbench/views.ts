@@ -1,5 +1,6 @@
 import { ItemView, Menu, setIcon } from 'obsidian';
 import type { ViewStateResult, WorkspaceLeaf } from 'obsidian';
+import type { HeaderLeaf } from '../core/obsidian-internal';
 import type { LibraryData } from './data';
 import { UNFILED, collectionTree, filterPapers, inCollection, sortPapers } from './model';
 import type { CollectionNode, Column, NoteState, Paper } from './model';
@@ -110,6 +111,8 @@ export class LibraryTableView extends ItemView {
     this.collection = typeof collection === 'string' ? collection : null;
     this.render();
     await super.setState(state, result);
+    // Obsidian refreshes the tab title but not the view header when only the state changes.
+    (this.leaf as unknown as Partial<HeaderLeaf>).updateHeader?.();
   }
 
   override async onOpen(): Promise<void> {

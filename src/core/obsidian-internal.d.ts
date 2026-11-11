@@ -38,3 +38,8 @@ export interface PdfJs {
   version?: string;
   getDocument(options: Record<string, unknown> & { data: Uint8Array }): { promise: Promise<PdfDocument> };
 }
+
+/** WorkspaceLeaf re-reads its view's display text into the tab and view header. */
+export interface HeaderLeaf {
+  updateHeader(): void;
+}
