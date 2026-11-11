@@ -93,9 +93,9 @@ export class LibraryTableView extends ItemView {
   private state: NoteState | 'all' = 'all';
   private sort: { column: Column; descending: boolean } = { column: 'year', descending: true };
   private unsubscribe: (() => void) | undefined;
-  private titleEl!: HTMLElement;
-  private stateBar!: HTMLElement;
-  private bodyEl!: HTMLElement;
+  private captionEl!: HTMLElement;
+  private stateButtonsEl!: HTMLElement;
+  private rowsEl!: HTMLElement;
 
   constructor(leaf: WorkspaceLeaf, private readonly workbench: Workbench) { super(leaf); }
 
@@ -117,10 +117,10 @@ export class LibraryTableView extends ItemView {
     root.empty();
     root.addClass('pw-lib');
     const bar = root.createDiv({ cls: 'pw-lib-bar' });
-    this.titleEl = bar.createDiv({ cls: 'pw-lib-title' });
+    this.captionEl = bar.createDiv({ cls: 'pw-lib-title' });
     const search = bar.createEl('input', { cls: 'pw-lib-search', attr: { type: 'search', placeholder: '搜索标题、作者、期刊、年份' } });
     search.addEventListener('input', () => { this.query = search.value; this.render(); });
-    this.stateBar = bar.createDiv({ cls: 'pw-lib-states' });
+    this.stateButtonsEl = bar.createDiv({ cls: 'pw-lib-states' });
     const table = root.createDiv({ cls: 'pw-lib-scroll' }).createEl('table', { cls: 'pw-lib-table' });
     const head = table.createEl('thead').createEl('tr');
     for (const column of COLUMNS) {
@@ -130,7 +130,7 @@ export class LibraryTableView extends ItemView {
         this.render();
       });
     }
-    this.bodyEl = table.createEl('tbody');
+    this.rowsEl = table.createEl('tbody');
     this.unsubscribe = this.workbench.data.subscribe(() => this.render());
     this.render();
   }
@@ -138,15 +138,15 @@ export class LibraryTableView extends ItemView {
   override async onClose(): Promise<void> { this.unsubscribe?.(); }
 
   private render(): void {
-    if (!this.bodyEl) return;
+    if (!this.rowsEl) return;
     const all = this.workbench.data.papers.filter(paper => inCollection(paper, this.collection));
     const papers = sortPapers(filterPapers(all, { collection: this.collection, query: this.query, state: this.state }), this.sort.column, this.sort.descending);
 
-    this.titleEl.setText(`${collectionName(this.collection)}（${papers.length}/${all.length}）`);
-    this.stateBar.empty();
+    this.captionEl.setText(`${collectionName(this.collection)}（${papers.length}/${all.length}）`);
+    this.stateButtonsEl.empty();
     for (const option of STATES) {
       const count = option.id === 'all' ? all.length : all.filter(paper => paper.state === option.id).length;
-      const button = this.stateBar.createEl('button', { text: `${option.label} ${count}` });
+      const button = this.stateButtonsEl.createEl('button', { text: `${option.label} ${count}` });
       button.toggleClass('is-active', this.state === option.id);
       button.addEventListener('click', () => { this.state = option.id; this.render(); });
     }
@@ -156,9 +156,9 @@ export class LibraryTableView extends ItemView {
       th.dataset.dir = active ? (this.sort.descending ? 'desc' : 'asc') : '';
     });
 
-    this.bodyEl.empty();
+    this.rowsEl.empty();
     for (const paper of papers) {
-      const row = this.bodyEl.createEl('tr');
+      const row = this.rowsEl.createEl('tr');
       row.createEl('td', { cls: 'pw-col-title', text: paper.title, attr: { title: paper.title } });
       row.createEl('td', { text: paper.authors.length > 1 ? `${paper.authors[0]} 等` : paper.authors[0] ?? '', attr: { title: paper.authors.join(', ') } });
       row.createEl('td', { text: paper.year });
@@ -173,6 +173,6 @@ export class LibraryTableView extends ItemView {
         menu.showAtMouseEvent(event);
       });
     }
-    if (!papers.length) this.bodyEl.createEl('tr').createEl('td', { cls: 'pw-lib-empty', text: '没有符合条件的文献', attr: { colspan: String(COLUMNS.length) } });
+    if (!papers.length) this.rowsEl.createEl('tr').createEl('td', { cls: 'pw-lib-empty', text: '没有符合条件的文献', attr: { colspan: String(COLUMNS.length) } });
   }
 }

@@ -24,6 +24,13 @@ export function setIcon(): void {}
 export function loadPdfJs(): Promise<never> { return Promise.reject(new Error('pdf.js is not available in unit tests')); }
 export function requestUrl(): Promise<never> { return Promise.reject(new Error('network is not available in unit tests')); }
 export class MarkdownView {}
+export class FileView {}
+export class Menu {}
+/** Obsidian's ItemView sets these internal header elements in its constructor; subclasses must not redeclare them. */
+export class ItemView {
+  containerEl = {}; contentEl = {}; headerEl = {}; titleContainerEl = {}; titleEl = {}; titleParentEl = {}; actionsEl = {};
+  constructor(readonly leaf: unknown) {}
+}
 export class MarkdownRenderer {}
 export class TFolder {}
 
