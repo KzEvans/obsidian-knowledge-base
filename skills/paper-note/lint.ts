@@ -39,10 +39,8 @@ export const MAX_SENTENCE_LENGTH = 100;
 export const MAX_BOLD_PER_SECTION = 2;
 /** Hedge words (list in references/banned-phrases.md) allowed in the whole body. */
 export const MAX_HEDGES = 12;
-/** Numbers per 100 characters in 论点与证据, not counting figure, table and equation labels. */
-export const MAX_EVIDENCE_NUMBERS_PER_100 = 2;
-/** Below this section length the density rule uses this length, so one number in a short section passes. */
-const MIN_DENSITY_BASE = 200;
+/** Numbers in one line (one claim) of 论点与证据: a result and its condition. Figure, table and equation labels do not count. */
+export const MAX_EVIDENCE_NUMBERS_PER_ITEM = 2;
 
 function listUnder(heading: string): string[] {
   const block = bannedList.split(/^## /m).find(part => part.startsWith(heading));
@@ -194,7 +192,6 @@ export function lintNote(markdown: string, options: LintOptions = {}): LintResul
     const where = (line?: Line) => ({ ...(line ? { line: line.number } : {}), ...(sectionName ? { section: sectionName } : {}) });
     let bold = 0;
     let sectionLength = 0;
-    let numbers = 0;
     for (const line of section.lines) {
       if (sectionName === undefined && /^#\s+/.test(line.text)) continue;
       if (/#page=/.test(line.text)) problems.push({ rule: 'page-link', message: '不要写页码链接（#page=）。', ...where(line) });
@@ -219,16 +216,15 @@ export function lintNote(markdown: string, options: LintOptions = {}): LintResul
         problems.push({ rule: 'long-sentence', message: `句子过长（${sentence.length} 字），拆成两句：「${sentence.text.slice(0, 30)}……」`, ...where(line) });
       }
       sectionLength += noteLength(text);
-      if (sectionName === EVIDENCE) numbers += text.replace(LABELLED_NUMBER, '').replace(CITATION, '').match(NUMBER)?.length ?? 0;
+      if (sectionName === EVIDENCE) {
+        const numbers = text.replace(LABELLED_NUMBER, '').replace(CITATION, '').match(NUMBER)?.length ?? 0;
+        if (numbers > MAX_EVIDENCE_NUMBERS_PER_ITEM) {
+          problems.push({ rule: 'evidence-numbers', message: `这一条有 ${numbers} 个数字，上限 ${MAX_EVIDENCE_NUMBERS_PER_ITEM}：一个结果、一个条件。`, ...where(line) });
+        }
+      }
     }
     if (bold > MAX_BOLD_PER_SECTION) {
       problems.push({ rule: 'bold', message: `本节加粗 ${bold} 处，上限 ${MAX_BOLD_PER_SECTION}。`, ...where() });
-    }
-    if (sectionName === EVIDENCE) {
-      const density = numbers / Math.max(sectionLength, MIN_DENSITY_BASE) * 100;
-      if (density > MAX_EVIDENCE_NUMBERS_PER_100) {
-        problems.push({ rule: 'evidence-numbers', message: `「论点与证据」每 100 字有 ${density.toFixed(1)} 个数字，上限 ${MAX_EVIDENCE_NUMBERS_PER_100}；只保留决定性的数字。`, section: EVIDENCE });
-      }
     }
     length += sectionLength;
   }

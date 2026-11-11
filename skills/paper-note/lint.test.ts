@@ -154,6 +154,16 @@ describe('numbers in 论点与证据', () => {
     const body = '- 网络更软 → 拉伸测试（图 2、图 3a，表 1，Fig. 4，Eq. 5）。\n'.repeat(4) + '- 驱动电压更低 → 应变只需 12 V/μm。\n';
     assert.ok(!rules(note({ 论点与证据: body + filler(200) })).includes('evidence-numbers'));
   });
+  test('a short ledger with one result and one condition per item passes', () => {
+    const body = '- 取向样品的面外热导率是随机样品的 3 倍。条件：填料用量 20%。证据：对照（图 2）。\n'.repeat(6);
+    assert.deepEqual(rules(note({ 论点与证据: body })), []);
+  });
+  test('an item with three numbers is reported with its line, however long the section', () => {
+    const markdown = note({ 论点与证据: filler(600) + '\n\n- 模量 12 kPa、强度 1.2 MPa、伸长 850%。证据：直接测量（图 3）。' });
+    const problem = lintNote(markdown).problems.find(found => found.rule === 'evidence-numbers');
+    assert.ok(problem);
+    assert.ok(markdown.split('\n')[(problem.line ?? 0) - 1]?.startsWith('- 模量 12 kPa'));
+  });
 });
 
 test('empty input returns the frozen shape and reports missing sections', () => {
