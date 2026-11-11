@@ -11,16 +11,17 @@ const boundary = (files, banned, message) => ({
 });
 
 export const boundaries = [
-  boundary(['src/core/**/*.ts'], ['library', 'agent', 'reader'], 'core 不能依赖任何模块。'),
-  boundary(['src/library/**/*.ts'], ['agent', 'reader'], 'library 只能依赖 core。'),
-  boundary(['src/agent/**/*.ts'], ['library', 'reader'], 'agent 只能依赖 core。'),
-  boundary(['src/reader/*.ts', 'src/reader/!(selection)/**/*.ts'], ['library', 'agent', 'selection'], 'reader 只能依赖 core，与 selection 通过事件和 DOM 约定配合。'),
+  boundary(['src/core/**/*.ts'], ['library', 'agent', 'reader', 'workbench'], 'core 不能依赖任何模块。'),
+  boundary(['src/library/**/*.ts'], ['agent', 'reader', 'workbench'], 'library 只能依赖 core。'),
+  boundary(['src/agent/**/*.ts'], ['library', 'reader', 'workbench'], 'agent 只能依赖 core。'),
+  boundary(['src/workbench/**/*.ts'], ['library', 'agent', 'reader'], 'workbench 只能依赖 core。'),
+  boundary(['src/reader/*.ts', 'src/reader/!(selection)/**/*.ts'], ['library', 'agent', 'selection', 'workbench'], 'reader 只能依赖 core，与 selection 通过事件和 DOM 约定配合。'),
   {
     files: ['src/reader/selection/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', {
         patterns: [
-          { group: ['library', 'agent'].flatMap(anyDepth), message: 'selection 只能依赖 core。' },
+          { group: ['library', 'agent', 'workbench'].flatMap(anyDepth), message: 'selection 只能依赖 core。' },
           { regex: '^\\.\\.(?:/|$)(?!\\.\\./core(?:/|$))', message: 'selection 只能引用 ../../core，不能引用 reader 的代码。' },
         ],
       }],

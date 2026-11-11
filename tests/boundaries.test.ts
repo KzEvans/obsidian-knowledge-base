@@ -31,6 +31,10 @@ const cases: Array<[file: string, code: string, allowed: boolean]> = [
   ['src/reader/selection/popup.ts', "import x from '../../library';", false],
   ['src/reader/selection/popup.ts', "import x from '../../core/qwen-mt';", true],
   ['src/reader/selection/popup.ts', "import x from './geometry';", true],
+  ['src/workbench/views.ts', "import x from '../library/zotero/notes';", false],
+  ['src/workbench/views.ts', "import x from '../reader';", false],
+  ['src/workbench/views.ts', "import x from '../core/log';", true],
+  ['src/library/index.ts', "import x from '../workbench';", false],
 ];
 
 test('module boundary rules allow only core as a shared dependency', async () => {

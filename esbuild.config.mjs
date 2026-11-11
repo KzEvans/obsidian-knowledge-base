@@ -20,5 +20,5 @@ await build({
 });
 
 // Each module owns its stylesheet, so parallel work never edits one shared file.
-const STYLES = ['src/core/styles.css', 'src/library/styles.css', 'src/agent/styles.css', 'src/reader/styles.css', 'src/reader/selection/styles.css'];
+const STYLES = ['src/core/styles.css', 'src/library/styles.css', 'src/agent/styles.css', 'src/reader/styles.css', 'src/reader/selection/styles.css', 'src/workbench/styles.css'];
 writeFileSync('styles.css', STYLES.map(file => `/* ${file} */\n${readFileSync(file, 'utf8').trim()}\n`).join('\n'));

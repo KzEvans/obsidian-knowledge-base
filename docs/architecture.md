@@ -261,6 +261,14 @@ selection 不引用 reader 的代码，只依赖：
 
 `language` 为 `zh` 时不触发划线翻译。两个工具栏按钮通过 core 的 `PdfToolbar` 登记，阅读模式序号 10、翻译序号 20，保证相邻。
 
+### 6.4 文献库工作台（`src/workbench/`）
+
+只依赖 core，不读写解析存储。数据来自 Zotero 清单 `sources/literature/manifests/zotero-doc.json`（只读，`active` 的 PDF 条目）和 `wiki/papers/` 下 `type: paper` 的笔记 frontmatter；笔记按 `zotero_attachment`、`source_pdf`、`source_sha256`、DOI 依次匹配论文。清单或笔记变化后 300 ms 重建。
+
+- 侧栏视图：Zotero collection 树和篇数，根层条目归入“未分类”。点击后在主区打开文献表。
+- 主区视图：所选 collection（含子 collection）的文献表，可按标题、作者、年份、期刊、IF、笔记状态排序，按笔记状态（无笔记 / 草稿 / 已审核）和关键词筛选。点击一行进入双栏阅读，右键可在 Zotero 中显示。
+- 双栏阅读：在主区打开有笔记的 PDF 时，左侧分栏打开笔记；打开论文笔记时，右侧分栏打开 PDF。已形成的一对分栏里再打开别的论文，两栏一起切换，不再继续分栏。两份文件已经都在屏幕上时不做任何事。
+
 ## 7. 设置页
 
 `main.ts` 按顺序渲染各模块的设置分组：

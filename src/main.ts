@@ -16,6 +16,7 @@ import * as library from './library';
 import * as agent from './agent';
 import * as reader from './reader';
 import * as selection from './reader/selection';
+import * as workbench from './workbench';
 
 /** data.json: one namespace per module (architecture §7). Secrets never live here. */
 interface PluginData {
@@ -71,6 +72,7 @@ export default class PaperWorkbenchPlugin extends Plugin {
     this.handles.push(agent.register(context('agent', this.data.agent)));
     this.handles.push(reader.register(context('reader', this.data.reader)));
     this.handles.push(selection.register(context('selection', this.data.selection)));
+    this.handles.push(workbench.register(context('workbench', undefined)));
     for (const handle of this.handles) if (handle.settingsSection) this.sections.push(handle.settingsSection);
 
     this.addSettingTab(new WorkbenchSettingTab(this.app, this, this.sections));

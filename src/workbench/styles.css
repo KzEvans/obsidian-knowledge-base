@@ -1,0 +1,34 @@
+.pw-lib-tree { padding: var(--size-4-2) var(--size-4-1); }
+.pw-lib-tree-row { padding-inline-start: calc(var(--size-4-2) + var(--pw-depth, 0) * 17px); gap: var(--size-4-1); align-items: center; }
+.pw-lib-tree-row.is-active { background-color: var(--nav-item-background-active); color: var(--nav-item-color-active); }
+.pw-lib-tree-icon { display: flex; color: var(--icon-color); }
+.pw-lib-tree-icon svg { width: var(--icon-s); height: var(--icon-s); }
+
+.pw-lib { display: flex; flex-direction: column; padding: 0; }
+.pw-lib-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--size-4-2); padding: var(--size-4-3) var(--size-4-4); border-bottom: 1px solid var(--background-modifier-border); }
+.pw-lib-title { font-weight: var(--font-semibold); font-size: var(--font-ui-medium); margin-inline-end: auto; }
+.pw-lib-search { width: 240px; }
+.pw-lib-states { display: flex; gap: var(--size-4-1); }
+.pw-lib-states button { font-size: var(--font-ui-smaller); }
+.pw-lib-states button.is-active { background-color: var(--interactive-accent); color: var(--text-on-accent); }
+
+.pw-lib-scroll { flex: 1; overflow: auto; }
+.pw-lib-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--font-ui-small); }
+.pw-lib-table th { position: sticky; top: 0; z-index: 1; background: var(--background-secondary); text-align: start; font-weight: var(--font-semibold); padding: var(--size-4-1) var(--size-4-2); border-bottom: 1px solid var(--background-modifier-border); cursor: pointer; user-select: none; white-space: nowrap; }
+.pw-lib-table th.is-sorted[data-dir="asc"]::after { content: " ▲"; font-size: 0.75em; }
+.pw-lib-table th.is-sorted[data-dir="desc"]::after { content: " ▼"; font-size: 0.75em; }
+.pw-lib-table td { padding: var(--size-4-1) var(--size-4-2); border-bottom: 1px solid var(--background-modifier-border-hover); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pw-lib-table tbody tr { cursor: pointer; }
+.pw-lib-table tbody tr:hover { background: var(--background-modifier-hover); }
+.pw-lib-table .pw-col-title { width: auto; }
+.pw-lib-table th.pw-col-author { width: 9em; }
+.pw-lib-table th.pw-col-year { width: 4.5em; }
+.pw-lib-table th.pw-col-journal { width: 12em; }
+.pw-lib-table th.pw-col-impactFactor { width: 4em; }
+.pw-lib-table th.pw-col-state { width: 5.5em; }
+.pw-lib-empty { text-align: center; color: var(--text-muted); padding: var(--size-4-8) !important; }
+
+.pw-lib-badge { display: inline-block; padding: 0 var(--size-4-2); border-radius: var(--radius-s); font-size: var(--font-ui-smaller); }
+.pw-lib-badge.is-none { color: var(--text-faint); }
+.pw-lib-badge.is-draft { background: rgba(var(--color-orange-rgb), 0.15); color: var(--color-orange); }
+.pw-lib-badge.is-reviewed { background: rgba(var(--color-green-rgb), 0.15); color: var(--color-green); }
