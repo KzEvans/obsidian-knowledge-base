@@ -16,11 +16,10 @@ test('views keep the header elements ItemView sets up', () => {
 });
 
 test('switching collection refreshes the view header title', async () => {
-  let updates = 0;
-  const view = new LibraryTableView({ updateHeader: () => { updates++; } } as never, {} as Workbench);
+  const view = new LibraryTableView({} as never, {} as Workbench);
   await view.setState({ collection: 'DEA' }, { history: false });
   assert.equal(view.getDisplayText(), 'DEA');
-  assert.equal(updates, 1);
+  assert.equal((view as unknown as { titleEl: { text: string } }).titleEl.text, 'DEA');
 });
 
 test('table state round-trips collection, search, note filter and sort', async () => {

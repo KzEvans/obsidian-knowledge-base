@@ -28,7 +28,8 @@ export class FileView {}
 export class Menu {}
 /** Obsidian's ItemView sets these internal header elements in its constructor; subclasses must not redeclare them. */
 export class ItemView {
-  containerEl = {}; contentEl = {}; headerEl = {}; titleContainerEl = {}; titleEl = {}; titleParentEl = {}; actionsEl = {};
+  containerEl = {}; contentEl = {}; headerEl = {}; titleContainerEl = {}; titleParentEl = {}; actionsEl = {};
+  titleEl = { text: '', setText(text: string) { this.text = text; } };
   constructor(readonly leaf: unknown) {}
   setState(): Promise<void> { return Promise.resolve(); }
 }

@@ -39,7 +39,7 @@ export interface PdfJs {
   getDocument(options: Record<string, unknown> & { data: Uint8Array }): { promise: Promise<PdfDocument> };
 }
 
-/** WorkspaceLeaf re-reads its view's display text into the tab and view header. */
-export interface HeaderLeaf {
-  updateHeader(): void;
+/** ItemView's view-header title element, created in its constructor. */
+export interface TitledView {
+  titleEl?: HTMLElement;
 }
