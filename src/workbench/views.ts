@@ -11,7 +11,8 @@ export const TABLE_VIEW = 'paper-workbench-library';
 export interface Workbench {
   data: LibraryData;
   openTable(collection: string | null): Promise<void>;
-  openPaper(paper: Paper): Promise<void>;
+  /** Replace the table in `leaf` with the paper's note | PDF pair; the PDF pane can return to the table. */
+  openPaper(paper: Paper, leaf: WorkspaceLeaf): Promise<void>;
 }
 
 const collectionName = (collection: string | null) => collection === null ? '全部文献' : collection === '' ? UNFILED : collection.split('/').pop()!;
@@ -95,6 +96,7 @@ export class LibraryTableView extends ItemView {
   private sort: { column: Column; descending: boolean } = { column: 'year', descending: true };
   private unsubscribe: (() => void) | undefined;
   private captionEl!: HTMLElement;
+  private queryInputEl: HTMLInputElement | undefined;
   private stateButtonsEl!: HTMLElement;
   private rowsEl!: HTMLElement;
 
@@ -104,11 +106,19 @@ export class LibraryTableView extends ItemView {
   getDisplayText(): string { return collectionName(this.collection); }
   override getIcon(): string { return 'library'; }
 
-  override getState(): Record<string, unknown> { return { collection: this.collection }; }
+  /** Collection, search, note filter and sort, so returning from a paper restores the same table. */
+  override getState(): Record<string, unknown> {
+    return { collection: this.collection, query: this.query, noteState: this.state, sort: this.sort };
+  }
 
   override async setState(state: unknown, result: ViewStateResult): Promise<void> {
-    const collection = (state as { collection?: unknown } | null)?.collection;
-    this.collection = typeof collection === 'string' ? collection : null;
+    const saved = (state ?? {}) as { collection?: unknown; query?: unknown; noteState?: unknown; sort?: { column?: unknown; descending?: unknown } };
+    this.collection = typeof saved.collection === 'string' ? saved.collection : null;
+    this.query = typeof saved.query === 'string' ? saved.query : '';
+    this.state = STATES.find(option => option.id === saved.noteState)?.id ?? 'all';
+    const column = COLUMNS.find(option => option.id === saved.sort?.column)?.id;
+    if (column) this.sort = { column, descending: saved.sort?.descending === true };
+    if (this.queryInputEl) this.queryInputEl.value = this.query;
     this.render();
     await super.setState(state, result);
     // Obsidian refreshes the tab title but not the view header when only the state changes.
@@ -121,7 +131,8 @@ export class LibraryTableView extends ItemView {
     root.addClass('pw-lib');
     const bar = root.createDiv({ cls: 'pw-lib-bar' });
     this.captionEl = bar.createDiv({ cls: 'pw-lib-title' });
-    const search = bar.createEl('input', { cls: 'pw-lib-search', attr: { type: 'search', placeholder: '搜索标题、作者、期刊、年份' } });
+    const search = this.queryInputEl = bar.createEl('input', { cls: 'pw-lib-search', attr: { type: 'search', placeholder: '搜索标题、作者、期刊、年份' } });
+    search.value = this.query;
     search.addEventListener('input', () => { this.query = search.value; this.render(); });
     this.stateButtonsEl = bar.createDiv({ cls: 'pw-lib-states' });
     const table = root.createDiv({ cls: 'pw-lib-scroll' }).createEl('table', { cls: 'pw-lib-table' });
@@ -168,7 +179,7 @@ export class LibraryTableView extends ItemView {
       row.createEl('td', { cls: 'pw-col-journal', text: paper.journal, attr: { title: paper.journal } });
       row.createEl('td', { text: paper.impactFactor === null ? '' : String(paper.impactFactor) });
       row.createEl('td').createSpan({ cls: `pw-lib-badge is-${paper.state}`, text: STATE_LABEL[paper.state] });
-      row.addEventListener('click', () => void this.workbench.openPaper(paper));
+      row.addEventListener('click', () => void this.workbench.openPaper(paper, this.leaf));
       row.addEventListener('contextmenu', event => {
         if (!paper.zoteroSelect) return;
         const menu = new Menu();

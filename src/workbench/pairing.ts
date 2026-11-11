@@ -2,7 +2,7 @@ import { FileView } from 'obsidian';
 import type { App, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
 
 /** A note leaf on the left and its PDF leaf on the right. */
-interface Pair { note: WorkspaceLeaf; pdf: WorkspaceLeaf }
+export interface Pair { note: WorkspaceLeaf; pdf: WorkspaceLeaf }
 
 /**
  * Paired reading: opening a paper's PDF opens its note to the left; opening a paper note opens its PDF to the right.
@@ -19,10 +19,10 @@ export class Pairing {
     plugin.registerEvent(this.app.workspace.on('layout-change', () => this.prune()));
   }
 
-  /** Where the library opens a paper: the PDF pane of the last pair, else a new tab. */
-  leafForOpening(): WorkspaceLeaf {
+  /** The pair a leaf belongs to, on either side. */
+  pairOf(leaf: WorkspaceLeaf): Pair | undefined {
     this.prune();
-    return this.pairs.at(-1)?.pdf ?? this.app.workspace.getLeaf('tab');
+    return this.pairs.find(p => p.note === leaf || p.pdf === leaf);
   }
 
   private async onOpen(file: TFile): Promise<void> {

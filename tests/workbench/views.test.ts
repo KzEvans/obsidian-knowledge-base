@@ -22,3 +22,12 @@ test('switching collection refreshes the view header title', async () => {
   assert.equal(view.getDisplayText(), 'DEA');
   assert.equal(updates, 1);
 });
+
+test('table state round-trips collection, search, note filter and sort', async () => {
+  const view = new LibraryTableView({} as never, {} as Workbench);
+  const saved = { collection: 'DEA', query: 'elastomer', noteState: 'draft', sort: { column: 'impactFactor', descending: true } };
+  await view.setState(saved, { history: false });
+  assert.deepEqual(view.getState(), saved);
+  await view.setState({ noteState: 'bogus', sort: { column: 'nope' } }, { history: false });
+  assert.deepEqual(view.getState(), { collection: null, query: '', noteState: 'all', sort: { column: 'impactFactor', descending: true } });
+});
