@@ -5,6 +5,8 @@ export interface ReaderSettings {
   fontSize: number;
   lineHeight: number;
   scrollDiagnostics: boolean;
+  /** Paragraph annotation cards under their paragraphs; off leaves only the margin mark. */
+  showAnnotations: boolean;
   /** Last source page per PDF sha256, so renaming or moving a PDF keeps it. */
   positions: Record<string, number>;
   /** Whether the old pdf-reading-mode data.json has been read once. */
@@ -27,6 +29,7 @@ export function readSettings(saved: unknown): ReaderSettings {
     fontSize: clampNumber(value.fontSize, FONT_SIZE.min, FONT_SIZE.max, FONT_SIZE.default),
     lineHeight: clampNumber(value.lineHeight, LINE_HEIGHT.min, LINE_HEIGHT.max, LINE_HEIGHT.default),
     scrollDiagnostics: value.scrollDiagnostics === true,
+    showAnnotations: value.showAnnotations !== false,
     positions,
     legacyImported: value.legacyImported === true,
   };

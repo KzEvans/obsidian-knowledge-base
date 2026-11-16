@@ -56,7 +56,7 @@ export class NoteController {
     if (manifest?.stage !== 'ready') { new Notice(`这篇论文还没有就绪（当前：${manifest?.stage ?? '未处理'}），就绪后才能生成笔记。`); return; }
     const attachment = manifest.sources.find(source => source.zoteroAttachmentKey)?.zoteroAttachmentKey ?? '';
     const existing = this.existingNote(sha, attachment);
-    if (existing && !await confirm(this.app, '重新生成笔记', `“${path.posix.basename(existing, '.md')}”已有笔记。重新生成会替换正文，保留“人工复核”“提问”、user-notes 和精读块。是否继续？`)) return;
+    if (existing && !await confirm(this.app, '重新生成笔记', `“${path.posix.basename(existing, '.md')}”已有笔记。重新生成会替换正文，保留“我的理解”“段落批注”“人工复核”“提问”、user-notes 和精读块。是否继续？`)) return;
     this.enqueue([{ sha, label: existing ? path.posix.basename(existing, '.md') : file.basename }]);
   }
 

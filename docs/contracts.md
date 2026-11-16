@@ -307,10 +307,20 @@ selection 取选区文字时，删除克隆内容中所有 `[aria-hidden="true"]
 - 位置：`wiki/papers/<collection-path>/<YYYY-MM-DD - 第一作者 - 标题>.md`。
 - frontmatter 字段见 `feature-inventory.md` 第 6 节。
 - 受保护区域（重新生成时原样保留）：
-  - 标题为 `人工复核`、`Human Review`、`提问` 的节，到下一个同级或更高级标题为止；
+  - 标题为 `我的理解`、`段落批注`、`人工复核`、`Human Review`、`提问` 的节，到下一个同级或更高级标题为止；
   - `<!-- user-notes:start -->…<!-- user-notes:end -->`；
   - `<!-- intensive-reading:<id>:start -->…<!-- intensive-reading:<id>:end -->`。
 - 模板与写作规则见 `skills/paper-note/SKILL.md`（阶段 2 产出）。
+- `## 我的理解` 是你自由书写的一节，生成笔记时保证存在（空节）。`## 段落批注` 由阅读模式维护，紧跟在「我的理解」之后，条目按论文顺序排列：
+
+  ```markdown
+  > [!quote] [[paper.pdf#page=3|p.3]] %%pw:7f3a9c12e0b4%%
+  > 段落英文原文的前 100 个字符…
+
+  你的批注（任意 Markdown，可多段）
+  ```
+
+  `pw:` 后是该块第一个翻译单元 `sourceHash` 的前 12 位。第一行到下一个 `> [!quote] … %%pw:…%%` 行或节尾为一条。你可以直接在笔记里改批注文字；改坏 `pw:` 行的条目会显示为“未定位的批注”，不会被删。
 
 ## 8. 密钥
 

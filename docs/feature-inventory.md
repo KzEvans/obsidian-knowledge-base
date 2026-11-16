@@ -158,6 +158,7 @@
 | 首次启用的存量补跑确认（篇数 + MinerU 页数） | library |
 | 文献库外 PDF 经确认后入流水线 | reader → library（经事件总线） |
 | 中英对照（双层 grid，切换不移位） | reader |
+| 阅读模式逐段批注，写入笔记「段落批注」；笔记新增「我的理解」节 | reader + agent |
 | 笔记生成：单篇 / 多篇手动发起，Codex / Claude 可切换 | agent |
 | `status: draft / reviewed` 切换按钮 | agent |
 | paper-note skill、lint 脚本、评测集 | skills/paper-note |

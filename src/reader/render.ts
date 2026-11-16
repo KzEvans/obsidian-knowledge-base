@@ -25,6 +25,8 @@ export interface ReaderRenderOptions {
   onSource: (page: number) => void;
   onCopy: (page: number) => void;
   onZoom: (url: string, caption: string) => void;
+  /** Adds a 批注 tool to blocks with a translation unit; `block` is the block's section. */
+  onAnnotate?: (block: HTMLElement) => void;
 }
 
 interface RenderContext {
@@ -684,6 +686,12 @@ function appendSourceTools(parent: HTMLElement, pages: number[], context: Render
     const title = `复制 PDF 第 ${page} 页的链接`;
     const copy = tools.createEl('button', { type: 'button', text: '复制页链', title, attr: { 'aria-label': title } });
     copy.addEventListener('click', () => context.options.onCopy(page));
+  }
+  const annotate = context.options.onAnnotate;
+  if (annotate && parent.querySelector('[data-segment]')) {
+    const title = '给这一段写批注';
+    tools.createEl('button', { type: 'button', text: '批注', title, attr: { 'aria-label': title } })
+      .addEventListener('click', () => annotate(parent));
   }
 }
 

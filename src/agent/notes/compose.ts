@@ -2,7 +2,7 @@ import { fillAbstract } from './fulltext';
 import { buildFrontmatter, readList, splitFrontmatter } from './frontmatter';
 import type { FieldValue } from './frontmatter';
 import type { PaperMetadata } from './metadata';
-import { preserveHumanContent, stripProtected } from './protect';
+import { ensureOwnSection, preserveHumanContent, stripProtected } from './protect';
 
 export const TAG_FIELDS = ['concepts', 'materials', 'methods', 'phenomena'] as const;
 
@@ -56,7 +56,7 @@ export function composeNote(input: ComposeInput): string {
   const note = `${buildFrontmatter(fields)}\n\n# ${input.displayTitle}\n\n${content}\n`;
   // Protected blocks are human territory: the agent's copies always go, the original's come back.
   const generated = stripProtected(note).trimEnd() + '\n';
-  return input.original ? preserveHumanContent(splitFrontmatter(input.original).body, generated) : generated;
+  return ensureOwnSection(input.original ? preserveHumanContent(splitFrontmatter(input.original).body, generated) : generated);
 }
 
 /** The agent's own H1, if it wrote one, is replaced by ours. */

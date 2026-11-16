@@ -19,8 +19,8 @@ sources/literature/pdf/<collection>/*.pdf  ──► vault 中可见，反链、
    │ 只读                      │ 只读
    ▼                          ▼
 reader（单栏、中英对照、划线翻译）   agent（手动生成笔记、笔记问答）
-                                   │ 写入（候选工作区 → 冲突检查 → 发布）
-                                   ▼
+   │ 只写笔记的「段落批注」一节          │ 写入（候选工作区 → 冲突检查 → 发布）
+   └──────────────────────────────►    ▼
                               wiki/papers/<collection>/*.md
 ```
 
@@ -212,7 +212,7 @@ interface AgentAdapter {
 3. 两个 CLI 都用只读模式读取工作区和 vault（用于"候选关联"一节的搜索），按 JSON schema 返回 `{ noteMarkdown: string }`；程序把候选写成临时 `note.md`，CLI 不获得任何文件写权限。
 4. 程序替换整个"摘要翻译"小节为完整 Qwen-MT 摘要译文；有段落缺译就保留占位标记并提示，不采用模型自写的摘要。再写 frontmatter、跑 lint。
 5. 发布前检查目标笔记：若生成期间被改过（mtime + 内容哈希与开始时的快照不同），不覆盖，保留候选稿并提示。新建时目标必须不存在，即使文件名与另一篇笔记碰撞也不覆盖。发布边界再次检查取消。
-6. 重新生成时保留 `## 人工复核`、`# 提问`、`user-notes` 标记块和已合并的精读块，规则与 Python 的 `protected_spans` 一致。
+6. 重新生成时保留 `## 我的理解`、`## 段落批注`、`## 人工复核`、`# 提问`、`user-notes` 标记块和已合并的精读块，规则与 Python 的 `protected_spans` 一致。没有 `## 我的理解` 的笔记补一个空节，放在 AI 正文之后、其他人工块之前；不再追加空的 `user-notes` 标记。
 
 ### 5.3 笔记问答
 
@@ -261,7 +261,17 @@ selection 不引用 reader 的代码，只依赖：
 
 `language` 为 `zh` 时不触发划线翻译。两个工具栏按钮通过 core 的 `PdfToolbar` 登记，阅读模式序号 10、翻译序号 20，保证相邻。
 
-### 6.4 文献库工作台（`src/workbench/`）
+### 6.4 段落批注（`src/reader/annotations/`）
+
+你在阅读模式里给段落写的批注，存进这篇论文的笔记（frontmatter `source_sha256` 与 PDF 相同的那篇），格式见 `contracts.md` §7。这是 reader 唯一写入 vault 的地方，只改笔记的「段落批注」一节，用 `vault.process` 原子读改写。
+
+- 有翻译单元的块（段落、标题、列表、题注）的悬停工具里有“批注”；没有笔记时提示先生成笔记，不新建笔记。
+- 批注卡片默认展开，显示在段落下方，带 `data-pw-ui`；有批注的段落左侧有一条细线。工具栏“批注”按钮切换显示，设置项 `showAnnotations` 记住选择。卡片在双层 `.pw-block` 之外，中英切换不影响它的高度。
+- 点击卡片进入编辑；⌘/Ctrl+Enter 或点到卡片外保存，Esc 取消，清空后保存即删除。关闭阅读模式时未保存的编辑会写回。
+- 定位先看锚点（段落 `sourceHash` 前 12 位），对不上时用引文匹配唯一的段落，下次保存时改成新锚点；仍找不到的列在正文末尾“未定位的批注”，笔记里原样保留。
+- 打开阅读模式时先放好卡片再恢复阅读位置；笔记变化（`metadataCache` 的 `changed`）后重读，正在编辑的卡片不动。
+
+### 6.5 文献库工作台（`src/workbench/`）
 
 只依赖 core，不读写解析存储。数据来自 Zotero 清单 `sources/literature/manifests/zotero-doc.json`（只读，`active` 的 PDF 条目）和 `wiki/papers/` 下 `type: paper` 的笔记 frontmatter；笔记按 `zotero_attachment`、`source_pdf`、`source_sha256`、DOI 依次匹配论文。清单或笔记变化后 300 ms 重建。
 
@@ -279,7 +289,7 @@ selection 不引用 reader 的代码，只依赖：
 | 服务与密钥（core） | MinerU Token、DashScope Key、Qwen-MT 地址、测试连接、术语表 |
 | 文献库（library） | Zotero API 地址、collection 名、流水线暂停开关、存量补跑入口、SI 和影响因子相关 |
 | 智能体（agent） | 默认适配器（Codex / Claude）、两个 CLI 路径、各自模型（可选）、代理地址、生成超时 |
-| 阅读（reader） | 字号、行距、滚动诊断 |
+| 阅读（reader） | 字号、行距、滚动诊断（批注显示开关在阅读模式工具栏） |
 | 划线翻译（selection） | 字符上限、超时 |
 
 所有设置存在同一个 `data.json`，按模块分命名空间。密钥只在 SecretStorage。

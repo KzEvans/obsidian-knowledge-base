@@ -6,7 +6,7 @@ import { Pairing } from './pairing';
 import { CollectionTreeView, LibraryTableView, TABLE_VIEW, TREE_VIEW } from './views';
 import type { Workbench } from './views';
 
-/** 文献库工作台：侧栏分类、主区文献表、笔记与原文双栏阅读 (docs/architecture.md §6.4) */
+/** 文献库工作台：侧栏分类、主区文献表、笔记与原文双栏阅读 (docs/architecture.md §6.5) */
 export function register(context: ModuleContext<unknown>): ModuleHandle {
   const { app, plugin } = context;
   const data = new LibraryData(app, context.log);

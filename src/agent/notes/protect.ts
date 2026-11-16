@@ -5,7 +5,9 @@ import { markdownHeadings } from './headings';
  * protected_spans / preserve_human_content in legacy run_pipeline.py.
  */
 
-const PROTECTED_HEADINGS = new Set(['人工复核', 'Human Review', '提问']);
+/** 我的理解 and 段落批注 are the reader's own sections (src/reader/annotations/note.ts). */
+const OWN_HEADING = '我的理解';
+const PROTECTED_HEADINGS = new Set(['人工复核', 'Human Review', '提问', OWN_HEADING, '段落批注']);
 const REVIEW_PREFIXES = ['## 人工复核', '## Human Review'];
 const CHECKBOX = /^\s*[-*+] \[[ xX]\] (.+)$/gm;
 
@@ -56,9 +58,15 @@ export function preserveHumanContent(original: string, candidate: string): strin
   const reviewIndex = blocks.findIndex(isReview);
   if (reviewIndex >= 0) { blocks[reviewIndex] += addendum; addendum = ''; }
   if (addendum) blocks.unshift('## 人工复核' + addendum);
-  let result = candidate.trimEnd() + '\n\n' + blocks.join('\n\n') + '\n';
-  if (!result.includes('<!-- user-notes:start -->')) result += '\n<!-- user-notes:start -->\n<!-- user-notes:end -->\n';
-  return result;
+  return candidate.trimEnd() + '\n\n' + blocks.join('\n\n') + '\n';
+}
+
+/** Every note has a `## 我的理解` for the reader's own writing: before the human blocks, or at the end. */
+export function ensureOwnSection(text: string): string {
+  if (markdownHeadings(text).some(heading => heading.level === 2 && heading.text === OWN_HEADING)) return text;
+  const first = protectedSpans(text)[0];
+  if (!first) return `${text.trimEnd()}\n\n## ${OWN_HEADING}\n`;
+  return `${text.slice(0, first[0]).trimEnd()}\n\n## ${OWN_HEADING}\n\n${text.slice(first[0])}`;
 }
 
 /** For a brand-new note: protected blocks are human territory, so drop any the agent wrote. */

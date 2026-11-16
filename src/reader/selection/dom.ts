@@ -33,10 +33,10 @@ export function readerSelectionText(range: Range): string {
   return Array.from(fragment.childNodes, node => node.textContent ?? '').join('');
 }
 
-/** True when the node sits in the Chinese layer or a hidden (aria-hidden) subtree below the reading-layer `root`. */
+/** True when the node sits in the Chinese layer, a hidden (aria-hidden) subtree or reader UI (data-pw-ui) below the reading-layer `root`. */
 export function isInExcludedLayer(node: Node, root: Element): boolean {
   const element = node.nodeType === 1 ? node as Element : node.parentElement;
-  const excluded = element?.closest('.pw-layer[lang="zh"], [aria-hidden="true"]');
+  const excluded = element?.closest('.pw-layer[lang="zh"], [aria-hidden="true"], [data-pw-ui]');
   return !!excluded && root.contains(excluded);
 }
 

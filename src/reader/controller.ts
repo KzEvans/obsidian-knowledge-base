@@ -1,7 +1,8 @@
-import { Notice } from 'obsidian';
-import type { FileView, TFile, View, WorkspaceLeaf } from 'obsidian';
+import { Notice, TFile } from 'obsidian';
+import type { FileView, View, WorkspaceLeaf } from 'obsidian';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { AnnotationLayer, segmentTexts } from './annotations/layer';
 import { sha256Bytes } from '../core/hash';
 import type { ModuleContext } from '../core/module';
 import { leafId } from '../core/pdf-toolbar';
@@ -43,6 +44,7 @@ interface LeafState {
   pageTracker?: ReturnType<typeof createSourcePageTracker>;
   stopScrollProfile?: () => void;
   stopImageDecoding?: () => void;
+  annotations?: AnnotationLayer;
 }
 
 /** Open-to-first-screen timings, recorded only with scroll diagnostics on. */
@@ -109,6 +111,12 @@ export class ReaderController {
     plugin.registerEvent(app.vault.on('modify', file => {
       if (file.path.toLowerCase().endsWith('.pdf')) this.shas.invalidate(file.path);
       for (const state of this.states.values()) if (state.file === file) this.reopen(state);
+    }));
+    // A paper note was written (by us, the editor or generation) or removed: refresh its annotations.
+    plugin.registerEvent(app.metadataCache.on('changed', file => { for (const state of this.states.values()) state.annotations?.noteChanged(file); }));
+    plugin.registerEvent(app.vault.on('delete', file => {
+      if (!(file instanceof TFile)) return;
+      for (const state of this.states.values()) state.annotations?.noteChanged(file);
     }));
     plugin.registerEvent(app.vault.on('rename', file => {
       for (const state of this.states.values()) if (state.file === file) state.filePath = file.path;
@@ -391,6 +399,17 @@ export class ReaderController {
     const languageToggle = toolbar.createEl('button', { cls: 'pw-reader-language' });
     state.languageButton = languageToggle;
     languageToggle.addEventListener('click', () => this.switchLanguage(state, state.language === 'zh' ? 'en' : 'zh'));
+    const annotationsToggle = toolbar.createEl('button', { text: '批注', cls: 'pw-reader-annotations-toggle' });
+    const showAnnotations = (show: boolean) => {
+      annotationsToggle.setAttribute('aria-pressed', String(show));
+      annotationsToggle.setAttribute('aria-label', show ? '隐藏段落批注' : '显示段落批注');
+      state.root?.toggleClass('pw-annotations-hidden', !show);
+    };
+    annotationsToggle.addEventListener('click', () => {
+      this.settings.showAnnotations = !this.settings.showAnnotations;
+      showAnnotations(this.settings.showAnnotations);
+      void this.context.saveSettings();
+    });
     const search = toolbar.createEl('input', { type: 'search', placeholder: '查找正文', attr: { 'aria-label': '查找阅读内容' } });
     state.search = search;
     state.statusLabel = toolbar.createSpan({ cls: 'pdf-reader-status' });
@@ -400,6 +419,7 @@ export class ReaderController {
     if (!this.translationsAvailable(state)) state.language = 'en';
     const root = shell.createDiv({ cls: 'pdf-reader-content', attr: { 'data-pdf-reader-active': 'false', 'data-lang': state.language, tabindex: '0', 'aria-label': 'PDF 单栏阅读内容' } });
     state.root = root;
+    showAnnotations(this.settings.showAnnotations);
     if (paper.zhScale !== undefined) setZhScale(root, paper.zhScale);
     root.addEventListener('keydown', event => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); event.stopPropagation(); search.focus(); }
@@ -440,6 +460,7 @@ export class ReaderController {
         onSource: page => this.showOriginal(state, page),
         onCopy: page => void this.copySource(state, page),
         onZoom: (url, caption) => new FigureModal(this.context.app, url, caption).open(),
+        onAnnotate: block => state.annotations?.edit(block),
       });
     } finally {
       if (state.mounting === generation) state.mounting = undefined;
@@ -451,6 +472,11 @@ export class ReaderController {
       if (!this.isCurrent(state, generation)) { shell.remove(); return; }
     }
     setLanguage(root, state.language);
+    // Cards change block heights, so they are in place before the reading position is restored.
+    const annotations = new AnnotationLayer({ app: this.context.app, root, pdf: state.file, sha, segments: segmentTexts(document.blocks), log: this.context.log });
+    state.annotations = annotations;
+    await annotations.load();
+    if (!this.isCurrent(state, generation)) { shell.remove(); return; }
     const rendered = performance.now();
     if (paper.zhScale === undefined && translations) {
       const scale = measureZhScale(root);
@@ -606,6 +632,7 @@ export class ReaderController {
     state.pageTracker?.dispose(); state.pageTracker = undefined;
     state.stopScrollProfile?.(); state.stopScrollProfile = undefined;
     state.stopImageDecoding?.(); state.stopImageDecoding = undefined;
+    state.annotations?.dispose(); state.annotations = undefined;
     state.document.defaultView?.clearTimeout(state.saveTimer);
     state.document.defaultView?.clearTimeout(state.translationTimer);
     state.translationTimer = undefined;
@@ -677,6 +704,9 @@ export function copyVisibleText(root: HTMLElement, event: ClipboardEvent): void 
   for (let index = 0; index < selection.rangeCount; index++) {
     const range = selection.getRangeAt(index);
     if (!root.contains(range.commonAncestorContainer)) return;
+    // Text inside an annotation is the reader's own; the browser copies it as it is.
+    const common = range.commonAncestorContainer;
+    if ((common.nodeType === 1 ? common as Element : common.parentElement)?.closest('.pw-annotation')) return;
     const wrapper = container.createDiv();
     wrapper.append(range.cloneContents());
   }

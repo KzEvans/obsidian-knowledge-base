@@ -1,6 +1,6 @@
 /**
  * Deterministic lint for generated notes (docs/contracts.md §9). Pure: no I/O.
- * Protected regions (人工复核 / Human Review / 提问 sections, user-notes and
+ * Protected regions (人工复核 / Human Review / 提问 / 我的理解 / 段落批注 sections, user-notes and
  * intensive-reading blocks) are written by the user and are not checked.
  */
 import bannedList from './references/banned-phrases.md';
@@ -28,7 +28,7 @@ export interface LintResult {
 export const SECTIONS = ['摘要翻译', '研究背景', '前人工作与不足', '作者的思考路径', '本文内容与创新点', '论点与证据', 'Takeaways', 'Follow-up ideas', '与现有知识的候选关联'] as const;
 const ABSTRACT = SECTIONS[0];
 const EVIDENCE = '论点与证据';
-const PROTECTED_SECTIONS = new Set(['人工复核', 'Human Review', '提问']);
+const PROTECTED_SECTIONS = new Set(['人工复核', 'Human Review', '提问', '我的理解', '段落批注']);
 
 /** Body length bounds (characters as counted by {@link noteLength}). */
 export const MIN_LENGTH = 1500;

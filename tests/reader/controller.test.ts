@@ -87,7 +87,8 @@ async function setup(options: Setup = {}) {
         iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => callback(leaf),
         getMostRecentLeaf: () => leaf,
       },
-      vault: { on: (name: string, callback: (file: typeof view.file) => void) => { vaultEvents.set(name, callback); return {}; }, adapter: { readBinary: async () => store.pdfBytes.slice().buffer } },
+      vault: { on: (name: string, callback: (file: typeof view.file) => void) => { vaultEvents.set(name, callback); return {}; }, adapter: { readBinary: async () => store.pdfBytes.slice().buffer }, getMarkdownFiles: () => [] },
+      metadataCache: { on: () => ({}), getFileCache: () => null },
       fileManager: { generateMarkdownLink: (_file: unknown, _source: string, subpath: string, alias: string) => `[[a.pdf${subpath}|${alias}]]` },
     } as unknown as App,
     plugin: {

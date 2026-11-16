@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { preserveHumanContent, protectedSpans } from '../../src/agent/notes/protect';
+import { ensureOwnSection, preserveHumanContent, protectedSpans } from '../../src/agent/notes/protect';
 
 // Ported from legacy tests/test_pipeline_safety.py.
 
@@ -34,10 +34,22 @@ test('Human Review heading, overlapping blocks merge, mismatched intensive ids a
   assert.ok(text.slice(spans[0]![0], spans[0]![1]).includes('user-notes:end'));
 });
 
-test('a brand-new note is returned unchanged; a note without blocks gets an empty user-notes block only when it had blocks', () => {
+test('a brand-new note is returned unchanged; no empty user-notes block is added any more', () => {
   assert.equal(preserveHumanContent('', '# New\n'), '# New\n');
   assert.equal(preserveHumanContent('# Old\nplain\n', '# New\n'), '# New\n');
   const withChat = preserveHumanContent('# Old\n# 提问\n## 1\nQ：a\n\nA：b\n', '# New\nbody\n');
-  assert.ok(withChat.endsWith('<!-- user-notes:start -->\n<!-- user-notes:end -->\n'));
-  assert.ok(withChat.indexOf('body') < withChat.indexOf('# 提问'));
+  assert.equal(withChat, '# New\nbody\n\n# 提问\n## 1\nQ：a\n\nA：b\n');
+});
+
+test('我的理解 and 段落批注 survive regeneration verbatim', () => {
+  const original = '# Paper\nOld\n\n## 我的理解\n\nmine\n\n## 段落批注\n\n> [!quote] [[p.pdf#page=2|p.2]] %%pw:bbbbbbbbbbbb%%\n> Quote\n\n### detail\nnote\n\n# 提问\n## 1\nQ：x\n';
+  const merged = preserveHumanContent(original, '# Paper\nNew\n\n## 我的理解\n\ninvented\n');
+  assert.equal(merged, '# Paper\nNew\n\n## 我的理解\n\nmine\n\n## 段落批注\n\n> [!quote] [[p.pdf#page=2|p.2]] %%pw:bbbbbbbbbbbb%%\n> Quote\n\n### detail\nnote\n\n# 提问\n## 1\nQ：x\n');
+});
+
+test('ensureOwnSection adds 我的理解 before the human blocks, or at the end, once', () => {
+  assert.equal(ensureOwnSection('# T\n\n## Takeaways\n\nx\n'), '# T\n\n## Takeaways\n\nx\n\n## 我的理解\n');
+  assert.equal(ensureOwnSection('# T\nx\n\n## 人工复核\n- [ ] a\n\n# 提问\n'), '# T\nx\n\n## 我的理解\n\n## 人工复核\n- [ ] a\n\n# 提问\n');
+  const done = '# T\n\n## 我的理解\n\nmine\n';
+  assert.equal(ensureOwnSection(done), done);
 });

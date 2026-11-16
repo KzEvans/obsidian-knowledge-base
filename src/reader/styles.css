@@ -618,3 +618,85 @@ span.pw-layer {
   flex-shrink: 0;
   padding: 2px;
 }
+
+/* Paragraph annotations (src/reader/annotations/): the reader's own words under a block. */
+.pdf-reader-toolbar .pw-reader-annotations-toggle[aria-pressed="true"] {
+  color: var(--interactive-accent);
+}
+
+.pdf-reader-block.has-annotation::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--interactive-accent);
+  opacity: 0.55;
+}
+
+.pw-annotation {
+  margin: 0.5em 0 0.2em;
+  padding: 8px 12px;
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: 0.82em;
+  line-height: 1.55;
+  cursor: text;
+  user-select: text;
+}
+
+.pw-annotation-body > :first-child { margin-top: 0; }
+.pw-annotation-body > :last-child { margin-bottom: 0; }
+
+.pw-annotation.is-editing {
+  cursor: auto;
+}
+
+.pw-annotation-input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 5.5em;
+  resize: vertical;
+  font: inherit;
+}
+
+.pw-annotation-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.pw-annotation-hint {
+  margin-right: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.pw-annotations-hidden .pw-annotation:not(.is-editing),
+.pw-annotations-hidden .pw-annotation-orphans {
+  display: none;
+}
+
+.pw-annotation-orphans {
+  margin-top: 2.5em;
+  padding-top: 1em;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.pw-annotation-orphans h3 {
+  margin: 0 0 0.3em;
+  font-size: 1em;
+}
+
+.pw-annotation-orphans .pw-annotation blockquote {
+  margin: 0 0 0.4em;
+  padding-left: 8px;
+  border-left: 2px solid var(--background-modifier-border);
+  color: var(--text-muted);
+}

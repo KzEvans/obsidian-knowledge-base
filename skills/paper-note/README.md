@@ -31,7 +31,7 @@
 | `long-sentence` | 单句字数（`[[链接]]` 算一个词） | `MAX_SENTENCE_LENGTH` = 100 |
 | `evidence-numbers` | 「论点与证据」每行（一条论点）的数字个数（图、表、式、参考文献编号不算） | `MAX_EVIDENCE_NUMBERS_PER_ITEM` = 2 |
 
-字数按中文字处理软件的习惯算：每个汉字、全角标点算 1，每个连续的英文单词或数字算 1。受保护区域（`人工复核`、`Human Review`、`提问` 节，`user-notes` 和 `intensive-reading` 块）由你维护，lint 不检查。
+字数按中文字处理软件的习惯算：每个汉字、全角标点算 1，每个连续的英文单词或数字算 1。受保护区域（`人工复核`、`Human Review`、`提问`、`我的理解`、`段落批注` 节，`user-notes` 和 `intensive-reading` 块）由你维护，lint 不检查。
 
 改禁用词：编辑 `references/banned-phrases.md` 的列表即可，`……` 表示同一句中间的任意文字。
 

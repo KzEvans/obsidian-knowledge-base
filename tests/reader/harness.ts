@@ -55,6 +55,10 @@ export class Modal {
   close() { this.onClose?.(); }
 }
 export class TFile {}
+export class Component { load() {} unload() {} addChild(child) { return child; } }
+export const Keymap = { isModEvent: () => false };
+export class Scope { constructor(parent) { this.parent = parent; this.keys = []; } register(modifiers, key, handler) { this.keys.push({ modifiers, key, handler }); } }
+export const MarkdownRenderer = { async render(app, markdown, element) { const p = element.ownerDocument.createElement('p'); p.textContent = markdown; element.append(p); } };
 export class Setting {
   constructor() {} setName() { return this; } setDesc() { return this; } addSlider() { return this; } addToggle() { return this; }
 }

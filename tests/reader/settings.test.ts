@@ -6,9 +6,9 @@ const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
 
 test('settings fall back to defaults and keep only sha-keyed positions', () => {
-  assert.deepEqual(readSettings(undefined), { fontSize: 18, lineHeight: 1.5, scrollDiagnostics: false, positions: {}, legacyImported: false });
-  const settings = readSettings({ fontSize: 40, lineHeight: 1, scrollDiagnostics: true, positions: { [SHA_A]: 3, 'paper.pdf': 4, [SHA_B]: -1 }, legacyImported: true });
-  assert.deepEqual(settings, { fontSize: 24, lineHeight: 1.3, scrollDiagnostics: true, positions: { [SHA_A]: 3 }, legacyImported: true });
+  assert.deepEqual(readSettings(undefined), { fontSize: 18, lineHeight: 1.5, scrollDiagnostics: false, showAnnotations: true, positions: {}, legacyImported: false });
+  const settings = readSettings({ fontSize: 40, lineHeight: 1, scrollDiagnostics: true, showAnnotations: false, positions: { [SHA_A]: 3, 'paper.pdf': 4, [SHA_B]: -1 }, legacyImported: true });
+  assert.deepEqual(settings, { fontSize: 24, lineHeight: 1.3, scrollDiagnostics: true, showAnnotations: false, positions: { [SHA_A]: 3 }, legacyImported: true });
 });
 
 test('the old plugin data imports typography and re-keys positions by sha through the path index', async () => {
