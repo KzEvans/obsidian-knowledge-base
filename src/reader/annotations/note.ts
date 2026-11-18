@@ -18,13 +18,18 @@ export const OWN_HEADING = '我的理解';
 export const ANNOTATION_HEADING = '段落批注';
 export const ANCHOR_LENGTH = 12;
 const QUOTE_LENGTH = 100;
+/** An entry's first line (contracts §7). */
 const ENTRY_START = /^> \[!quote\][^\n]*%%pw:([0-9a-f]{12})%%\s*$/;
+/** A first line whose marker was edited: still a closed `%%pw:…%%`, or the generated page link followed by what is left of one. */
+const DAMAGED_START = /^> \[!quote\](?:[^\n]*%%pw:([^%\n]*)%%\s*$| (?:\[\[[^\]\n]+\]\]|\[[^\]\n]*\]\([^)\n]*\))\s*%{1,2}pw:([^\n]*)$)/;
 
 export interface NoteAnnotation {
   id: string;
   /** The quoted paper text as written in the note, without a trailing ellipsis. */
   quote: string;
   body: string;
+  /** The `pw:` marker was edited into something that is not an anchor; the entry is kept as written and never placed. */
+  broken?: true;
 }
 
 export interface NewAnnotation {
@@ -45,7 +50,7 @@ export function anchorId(hash: string): string { return hash.slice(0, ANCHOR_LEN
 
 export function parseAnnotations(note: string): NoteAnnotation[] {
   const lines = note.split('\n');
-  return (section(lines)?.entries ?? []).map(({ id, quote, body }) => ({ id, quote, body }));
+  return (section(lines)?.entries ?? []).map(({ id, quote, body, broken }) => ({ id, quote, body, ...(broken ? { broken } : {}) }));
 }
 
 /**
@@ -59,7 +64,8 @@ export function writeAnnotation(note: string, annotation: NewAnnotation, order: 
   const body = annotation.body.trim();
   const lines = note.split('\n');
   let found = section(lines);
-  const existing = found?.entries.find(entry => entry.id === id) ?? (replaces ? found?.entries.find(entry => entry.id === replaces) : undefined);
+  const entries = found?.entries.filter(entry => !entry.broken) ?? [];
+  const existing = entries.find(entry => entry.id === id) ?? (replaces ? entries.find(entry => entry.id === replaces) : undefined);
   if (!body) {
     if (!found || !existing) return note;
     lines.splice(existing.start, existing.end - existing.start);
@@ -96,6 +102,8 @@ export function quoteText(text: string): string {
   const flat = text.replace(/\s+/g, ' ').replace(/%%/g, '%').trim();
   if (flat.length <= QUOTE_LENGTH) return flat;
   let cut = flat.slice(0, QUOTE_LENGTH);
+  // Nor inside a number: a quote ending in "1" would also be the start of "10".
+  if (/[\d.,]$/.test(cut) && /^[\d.,]*\d/.test(flat.slice(QUOTE_LENGTH)) && /\d/.test(cut.at(-1)! + flat[QUOTE_LENGTH]!)) cut = cut.replace(/[+\-−±]?[\d.,]*$/, '');
   // Never stop inside a formula or a tag: an unclosed `$` or `<sup` would swallow the rest of the callout.
   if ((cut.match(/(?<!\\)\$/g)?.length ?? 0) % 2) cut = cut.slice(0, cut.lastIndexOf('$'));
   if (cut.lastIndexOf('<') > cut.lastIndexOf('>')) cut = cut.slice(0, cut.lastIndexOf('<'));
@@ -105,7 +113,46 @@ export function quoteText(text: string): string {
 /** Whether `quote` (from the note) was taken from `text` (a paragraph of the current document). */
 export function quoteMatches(quote: string, text: string): boolean {
   const flat = text.replace(/\s+/g, ' ').replace(/%%/g, '%').trim();
-  return Boolean(quote) && (flat === quote || (quote.length >= 20 && flat.startsWith(quote)));
+  if (quote && (flat === quote || (quote.length >= 20 && flat.startsWith(quote) && !continuesNumber(quote, flat)))) return true;
+  // A normalizer may repair inline markup and OCR's o/0 confusion; the caller still requires a unique paragraph.
+  const prefix = looseKey(quote), whole = looseKey(flat);
+  const ocr = (value: string) => value.replace(/0/g, 'o');
+  return prefix.length >= 20 && ocr(whole).startsWith(ocr(prefix)) && !continuesNumber(prefix, whole);
+}
+
+/** `whole` goes on with more of the number `prefix` ends in: "factor of 1" is not "factor of 10". */
+function continuesNumber(prefix: string, whole: string): boolean {
+  return /\d$/.test(prefix) && /^(?:\d|[.,]\d)/.test(whole.slice(prefix.length));
+}
+
+const SUPERSCRIPTS: Record<string, string> = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁺': '+', '⁻': '-' };
+
+const TEX_SYMBOLS: Record<string, string> = { pm: '±', mp: '∓', lt: '<', gt: '>', le: '≤', leq: '≤', ge: '≥', geq: '≥', approx: '≈', sim: '≈' };
+const ENTITIES: Record<string, string> = { lt: '<', gt: '>', le: '≤', ge: '≥', asymp: '≈' };
+
+/**
+ * Letters and digits only, so spacing, markup and TeX commands do not count; but a number keeps
+ * its sign, comparison, decimal point and exponent: -40 is not +40, <0.5 is not >0.5, .5 is not 5,
+ * 1.0 is not 10 and 10^3 is not 103. Callers map OCR's 0/o themselves.
+ */
+function looseKey(value: string): string {
+  return value
+    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+/g, run => `^${[...run].map(char => SUPERSCRIPTS[char]).join('')}`)
+    .normalize('NFKC')
+    .replace(/&(lt|gt|le|ge|asymp);/gi, (entity, name: string) => ENTITIES[name.toLowerCase()] ?? entity)
+    .replace(/<sup\b[^<>]*>/gi, '^')
+    .replace(/<\/?(?:span|sup|sub|em|strong|b|i|u|s|small|br|code|a)\b[^<>]*>/gi, '')
+    .replace(/\\([A-Za-z]+)/g, (command, name: string) => TEX_SYMBOLS[name] ?? command)
+    .replace(/\\(?:[A-Za-z]+|[^A-Za-z])/g, '')
+    .replace(/[\u2010-\u2015\u2212\uFE63\uFF0D]/g, '-').replace(/[~∼]/g, '≈')
+    // A leading decimal point, ".5", is the number 0.5; told apart before spacing goes.
+    .replace(/(?<![\p{L}\p{N}.,])\.(?=\p{N})/gu, '0.')
+    .replace(/[^\p{L}\p{N}+\-±∓^.,<>≤≥≈]/gu, '')
+    .replace(/[.,](?!\p{N})|(?<!\p{N})[.,]/gu, '')
+    .replace(/[+\-±∓](?!\p{N})/gu, '')
+    .replace(/[<>≤≥≈](?![+\-±∓]?\p{N})/gu, '')
+    .replace(/\^(?![+\-±∓]?\p{N})/gu, '')
+    .toLowerCase();
 }
 
 /** `## 我的理解` then `## 段落批注`, after the AI body and before the first human block or `# 提问`. */
@@ -131,17 +178,24 @@ function section(lines: string[]): Section | undefined {
   if (index < 0) return undefined;
   const start = headings[index]!.line + 1;
   const end = headings.slice(index + 1).find(heading => heading.level <= 2)?.line ?? lines.length;
-  const starts: Array<{ line: number; id: string }> = [];
+  const starts: Array<{ line: number; id: string; broken?: true }> = [];
+  let fence: Fence | undefined;
   for (let line = start; line < end; line++) {
-    const match = ENTRY_START.exec(lines[line]!);
-    if (match) starts.push({ line, id: match[1]! });
+    const inside = fence;
+    fence = nextFence(fence, lines[line]!);
+    // A marker shown inside a code fence is an example in someone's body, not an entry.
+    if (inside || fence) continue;
+    const valid = ENTRY_START.exec(lines[line]!);
+    const damaged = valid ? undefined : DAMAGED_START.exec(lines[line]!);
+    if (valid) starts.push({ line, id: valid[1]! });
+    else if (damaged) starts.push({ line, id: (damaged[1] ?? damaged[2]!).replace(/%+\s*$/, '').trim(), broken: true });
   }
-  const entries = starts.map(({ line, id }, position) => {
+  const entries = starts.map(({ line, id, broken }, position): Entry => {
     const stop = starts[position + 1]?.line ?? end;
     let bodyStart = line + 1;
     while (bodyStart < stop && lines[bodyStart]!.startsWith('>')) bodyStart++;
     const quote = lines.slice(line + 1, bodyStart).map(text => text.replace(/^>\s?/, '')).join(' ').trim().replace(/…$/, '');
-    return { id, quote, body: lines.slice(bodyStart, stop).join('\n').trim(), start: line, end: stop };
+    return { id, quote, body: lines.slice(bodyStart, stop).join('\n').trim(), start: line, end: stop, ...(broken ? { broken } : {}) };
   });
   return { start, end, entries };
 }
@@ -160,16 +214,24 @@ function finish(lines: string[]): string {
 /** ATX headings outside fenced code (the agent keeps its own copy; modules do not share code). */
 function markdownHeadings(lines: string[]): Heading[] {
   const headings: Heading[] = [];
-  let fence: { marker: string; length: number } | undefined;
+  let fence: Fence | undefined;
   lines.forEach((line, number) => {
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (marker) {
-      if (!fence) fence = { marker: marker[1]![0]!, length: marker[1]!.length };
-      else if (marker[1]![0] === fence.marker && marker[1]!.length >= fence.length && !marker[2]!.trim()) fence = undefined;
-    } else if (!fence) {
+    const inside = fence;
+    fence = nextFence(fence, line);
+    if (!inside && !fence) {
       const heading = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*\r?$/.exec(line);
       if (heading) headings.push({ line: number, level: heading[1]!.length, text: heading[2]! });
     }
   });
   return headings;
+}
+
+interface Fence { marker: string; length: number }
+
+/** The open code fence after `line`, given the one before it. */
+function nextFence(fence: Fence | undefined, line: string): Fence | undefined {
+  const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if (!marker) return fence;
+  if (!fence) return { marker: marker[1]![0]!, length: marker[1]!.length };
+  return marker[1]![0] === fence.marker && marker[1]!.length >= fence.length && !marker[2]!.trim() ? undefined : fence;
 }

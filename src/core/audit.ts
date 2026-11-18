@@ -32,9 +32,16 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
       regionalTexts.push(...texts.filter(Boolean));
     }
     const sourceTexts = [native, ...regionalTexts];
+    // A missing ligature letter can otherwise break the anchors used for prose recovery.
+    const nativeLetters = native.toLowerCase().replace(/[^a-z]/g, '');
     for (const block of pageBlocks) {
       repairBlockLigatures(block, sourceTexts, regions.get(block) ?? []);
-      if (block.kind === 'paragraph') block.text = restoreMissingProse(block.text, regions.get(block) ?? []);
+      restoreLostLigatureF(block, nativeLetters);
+      if (block.kind === 'paragraph') {
+        block.text = restoreVerifiedInlineProse(block.text, regions.get(block) ?? []);
+        block.text = restoreMissingProse(block.text, regions.get(block) ?? [], pageBlocks.filter(other => other !== block));
+        block.text = restoreVerifiedTypography(block.text, regions.get(block) ?? []);
+      }
     }
 
     for (const block of pageBlocks) {
@@ -59,12 +66,6 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
     for (const block of pageBlocks) {
       if (document.blocks.includes(block)) restoreBlockSubscripts(block,regions.get(block) ?? []);
     }
-    // pdf.js may split a ligature glyph into its own item ("o ﬀ ers"), so compare letters only.
-    const nativeLetters = native.toLowerCase().replace(/[^a-z]/g, '');
-    for (const block of pageBlocks) {
-      if (document.blocks.includes(block)) restoreLostLigatureF(block, nativeLetters);
-    }
-
     const blocks = document.blocks.filter(block => block.sources.some(source => source.page === page));
     if (!blocks.length) document.warnings.push(`第 ${page} 页没有可用重排内容，请查看原页。`);
     const sourceText = sourceTexts.join(' ').replace(/<[^>]*>/g, ' ').normalize('NFKC');
@@ -297,9 +298,71 @@ interface LetterMap {
   spans: {start:number;end:number}[];
 }
 
+/** Recover ordinary temperature ranges and reference numbers from their unique native context. */
+function restoreVerifiedInlineProse(cloud: string, regions: string[]): string {
+  const formulas = [...cloud.matchAll(/(?<!\\)\$\$?[\s\S]*?(?<!\\)\$\$?/g)];
+  const native = regions.filter(Boolean).map(text => ({ text, ...mapLetters(text, true) }));
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  for (const [index, formula] of formulas.entries()) {
+    const previous = formulas[index - 1], next = formulas[index + 1];
+    const before = cloud.slice(previous ? previous.index + previous[0].length : 0, formula.index);
+    const after = cloud.slice(formula.index + formula[0].length, next?.index);
+    const leftMap = mapLetters(before, true), rightMap = mapLetters(after, true);
+    const left = leftMap.letters.slice(-32), right = rightMap.letters.slice(0, 32);
+    if (left.length < 8 || right.length < 8 || left.length + right.length < 24) continue;
+    const prefix = stripMarkup(before.slice(leftMap.spans.at(-1)!.end)).trim();
+    const suffix = stripMarkup(after.slice(0, rightMap.spans[0]!.start)).trim();
+    const reference = /(?:Figure|Fig\.?|Table|Eq\.?|Equation|Scheme)\s*$/i.test(before);
+    const candidates = new Set<string>();
+    for (const source of native) {
+      const at = source.letters.indexOf(left);
+      if (at < 0 || source.letters.indexOf(left, at + 1) >= 0) continue;
+      const end = source.letters.indexOf(right, at + left.length);
+      if (end < 0 || source.letters.indexOf(right) !== end || source.letters.indexOf(right, end + 1) >= 0) continue;
+      let text = source.text.slice(source.spans[at + left.length - 1]!.end, source.spans[end]!.start).trim();
+      if (prefix) {
+        if (!text.startsWith(prefix)) continue;
+        text = text.slice(prefix.length).trim();
+      }
+      if (suffix) {
+        if (!text.endsWith(suffix)) continue;
+        text = text.slice(0, -suffix.length).trim();
+      }
+      const plain = stripMarkup(text);
+      const temperature = /^[+−-]?\d+(?:\.\d+)?(?:\s+to\s+[+−-]?\d+(?:\.\d+)?)?\s*°\s*[CFK]$/.test(plain);
+      const number = reference && /^\d+(?:\.\d+)?[a-z]?[.)]?$/i.test(text);
+      if (temperature || number) candidates.add(text);
+    }
+    if (candidates.size === 1) edits.push({ start: formula.index, end: formula.index + formula[0].length, text: [...candidates][0]! });
+  }
+  let result = cloud;
+  for (const edit of edits.reverse()) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  return result;
+}
+
 /** Recover omitted prose only between unique, adjacent cloud anchors in the same PDF region.
- * Existing words and TeX are never replaced; native punctuation and citations travel with the gap. */
-function restoreMissingProse(cloud: string, regions: string[]): string {
+ * Existing words and TeX are never replaced; native punctuation and citations travel with the gap.
+ * A region box can reach into a neighbouring block; text another block on the page already has is its own. */
+function restoreMissingProse(cloud: string, regions: string[], neighbours: ReaderBlock[]): string {
+  let owned: string[] | undefined;
+  /** Where prose another block already holds begins in `text`: 0 when all of it is theirs, text.length when none is.
+   * Spilled text starts at a neighbour's opening letters; a short common phrase elsewhere proves nothing. */
+  const ownedFrom = (text: string): number => {
+    const { letters, spans } = mapLetters(text);
+    owned ??= neighbours.map(block => mapLetters(block.text).letters).filter(other => other.length >= 8);
+    let at = letters.length;
+    for (const other of owned) {
+      if (letters.length >= 24 && other.includes(letters)) return 0;
+      const head = other.slice(0, 24);
+      const found = letters.indexOf(head);
+      if (found >= 0) at = Math.min(at, found);
+      // The region may end partway into the neighbour's first line.
+      for (let length = Math.min(head.length - 1, letters.length); length >= 8; length--) {
+        if (letters.endsWith(head.slice(0, length))) { at = Math.min(at, letters.length - length); break; }
+      }
+    }
+    return at >= letters.length ? text.length : at === 0 ? 0 : spans[at]!.start;
+  };
   const mapped = mapLetters(cloud);
   const native = regions.filter(Boolean).map(text => ({ text, ...mapLetters(text) }));
   const edits: Array<{ start: number; end: number; text: string }> = [];
@@ -324,28 +387,59 @@ function restoreMissingProse(cloud: string, regions: string[]): string {
       const rightAt = source.letters.indexOf(right, afterLeft);
       if (rightAt < 0 || source.letters.indexOf(right) !== rightAt || source.letters.indexOf(right, rightAt + 1) >= 0) continue;
       const missing = rightAt - afterLeft;
-      if (missing < 8 || missing > 500) continue;
+      if (missing < 2 || missing > 500) continue;
       const text = source.text.slice(source.spans[afterLeft - 1]!.end, source.spans[rightAt]!.start);
-      if ((stripMarkup(text).match(/[A-Za-z]{2,}/g)?.length ?? 0) < 2) continue;
+      const plain = stripMarkup(text);
+      const symbol = visibleGap.match(/^\s*([\p{Script=Greek}])\s*[:;,.]?\s*$/u)?.[1];
+      const shortLabel = symbol && new RegExp(`^\\s*${symbol}[A-Za-z]{1,8}\\s*[:;,.]?\\s*$`, 'u').test(plain);
+      if ((missing < 8 || (plain.match(/[A-Za-z]{2,}/g)?.length ?? 0) < 2) && !shortLabel) continue;
       // Existing citation or measurement digits must survive in order, even when the cloud lost other numbers.
-      const numbers: string[] = stripMarkup(text).match(/\d+/g) ?? [];
-      let position = 0;
-      const preserved = (visibleGap.match(/\d+/g) ?? []).every(number => {
-        const at = numbers.indexOf(number, position);
-        position = at + 1;
-        return at >= 0;
-      });
-      if (preserved) candidates.add(text);
+      if (preservesNumbers(visibleGap, text) && ownedFrom(text) === text.length) candidates.add(text);
     }
     if (candidates.size === 1) edits.push({ start, end, text: [...candidates][0]! });
   }
+  // OCR can leave just a broken ligature and citation where a paragraph's last clause belonged.
+  const tailWidth = 48;
+  for (let split = Math.max(tailWidth, mapped.letters.length - 3); split <= mapped.letters.length; split++) {
+    const start = mapped.spans[split - 1]!.end;
+    const tail = cloud.slice(start);
+    const residual = tail.replace(/<(?:sup|sub)\b[^>]*>(?:fi|fl|ff|ffi|ffl|f)<\/(?:sup|sub)>/gi, '');
+    if (/[$\\A-Za-z]/.test(residual.replace(/<\/?(?:sup|sub)\b[^>]*>/gi, ''))) continue;
+    if (formulas.some(formula => start < formula.index + formula[0].length)) continue;
+    const anchor = mapped.letters.slice(split - tailWidth, split);
+    if (mapped.letters.indexOf(anchor) !== split - tailWidth || mapped.letters.indexOf(anchor, split - tailWidth + 1) >= 0) continue;
+    const candidates = new Set<string>();
+    for (const source of native) {
+      const at = source.letters.indexOf(anchor);
+      if (at < 0 || source.letters.indexOf(anchor, at + 1) >= 0) continue;
+      const after = at + tailWidth;
+      let text = source.text.slice(source.spans[after - 1]!.end);
+      // A box reaching into the next blocks ends the missing tail where their prose begins.
+      text = text.slice(0, ownedFrom(text)).trimEnd();
+      const missing = mapLetters(text).letters.length;
+      if (missing < 8 || missing > 500) continue;
+      if ((stripMarkup(text).match(/[A-Za-z]{2,}/g)?.length ?? 0) < 2 || !preservesNumbers(tail, text)) continue;
+      candidates.add(text);
+    }
+    if (candidates.size === 1) edits.push({ start, end: cloud.length, text: [...candidates][0]! });
+  }
   let result = cloud;
-  for (const edit of edits.reverse()) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  for (const edit of edits.sort((a, b) => b.start - a.start)) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
   return result;
 }
 
+function preservesNumbers(original: string, candidate: string): boolean {
+  const numbers: string[] = stripMarkup(candidate).match(/\d+/g) ?? [];
+  let position = 0;
+  return (stripMarkup(original).match(/\d+/g) ?? []).every(number => {
+    const at = numbers.indexOf(number, position);
+    position = at + 1;
+    return at >= 0;
+  });
+}
+
 /** Locate visible letters while retaining offsets into the original inline markup. */
-function mapLetters(value: string): LetterMap {
+function mapLetters(value: string, includeNumbers = false): LetterMap {
   const spans: LetterMap['spans'] = [];
   let letters = '';
   const tokens = /<[^>]*>|&(?:amp|lt|gt|quot|apos|nbsp);|&#(?:\d+|x[\da-f]+);|\\(?:mathrm|mathbf|mathsf|operatorname|mathit|text|left|right)\b|./gisu;
@@ -353,12 +447,74 @@ function mapLetters(value: string): LetterMap {
     const original = token[0];
     if (/^(?:<|&|\\)/.test(original)) continue;
     for (const letter of original.normalize('NFKC')) {
-      if (!/[A-Za-z]/.test(letter)) continue;
+      if (!(includeNumbers ? /[A-Za-z0-9]/ : /[A-Za-z]/).test(letter)) continue;
       letters += letter.toLowerCase();
       spans.push({start:token.index,end:token.index+original.length});
     }
   }
   return {letters,spans};
+}
+
+/** Only baseline prose and word boundaries proven by a unique regional match are changed. */
+function restoreVerifiedTypography(cloud: string, regions: string[]): string {
+  let mapped = mapLetters(cloud, true);
+  const native = regions.filter(Boolean).map(text => ({
+    text, ...mapLetters(text, true),
+    scripts: [...text.matchAll(/<(?:sup|sub)\b[^>]*>[\s\S]*?<\/(?:sup|sub)>/gi)],
+  }));
+  const evidence = (first: number, last: number) => {
+    const left = Math.max(0, Math.min(first - 24, mapped.letters.length - 48));
+    const right = Math.min(mapped.letters.length, Math.max(last + 25, left + 48));
+    const needle = mapped.letters.slice(left, right);
+    if (needle.length < 48) return [];
+    return native.flatMap(source => {
+      const at = source.letters.indexOf(needle);
+      if (at < 0 || source.letters.indexOf(needle, at + 1) >= 0) return [];
+      return [{ source, first: source.spans[at + first - left]!, last: source.spans[at + last - left]!,
+        contextStart: source.spans[at]!.start, contextEnd: source.spans[at + needle.length - 1]!.end }];
+    });
+  };
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  const formulas = [...cloud.matchAll(/(?<!\\)\$\$?[\s\S]*?(?<!\\)\$\$?/g)];
+  for (const run of cloud.matchAll(/(?:<sup\b[^>]*>[^<>]*<\/sup>[\s∼~]*)+/gi)) {
+    if ((stripMarkup(run[0]).match(/[A-Za-z]{2,}/g)?.length ?? 0) < 2) continue;
+    const start = run.index, end = start + run[0].length;
+    if (formulas.some(formula => start < formula.index + formula[0].length && end > formula.index)) continue;
+    const first = mapped.spans.findIndex(span => span.start >= start);
+    const last = mapped.spans.findLastIndex(span => span.end <= end);
+    if (first < 0 || last < first) continue;
+    const matches = evidence(first, last);
+    if (!matches.length || matches.some(match => match.source.scripts.some(script =>
+      match.first.start < script.index + script[0].length && match.last.end > script.index))) continue;
+    edits.push({ start, end, text: run[0].replace(/<\/?sup\b[^>]*>/gi, '') });
+  }
+  let result = cloud;
+  for (const edit of edits.reverse()) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+
+  mapped = mapLetters(result, true);
+  edits.length = 0;
+  const protectedMath = [...result.matchAll(/(?<!\\)\$\$?[\s\S]*?(?<!\\)\$\$?/g)];
+  for (let index = 1; index < mapped.letters.length; index++) {
+    if (!/^[a-z]{2}$/.test(mapped.letters.slice(index - 1, index + 1))) continue;
+    const start = mapped.spans[index - 1]!.end, end = mapped.spans[index]!.start;
+    const gap = result.slice(start, end);
+    if (!/^\s*$/.test(gap) || protectedMath.some(math => start < math.index + math[0].length && end > math.index)) continue;
+    const candidates = new Set(evidence(index - 1, index).flatMap(match => {
+      const nativeGap = match.source.text.slice(match.first.end, match.last.start);
+      if (!nativeGap && gap) {
+        // A native font run with no spaces cannot prove the boundaries of its individual words.
+        const wordStart = match.source.text.slice(0, match.first.end).search(/[A-Za-z]+$/);
+        const wordEnd = match.last.start + (match.source.text.slice(match.last.start).match(/^[A-Za-z]+/)?.[0].length ?? 0);
+        if (wordStart < match.contextStart || wordEnd > match.contextEnd) return [];
+      }
+      return /^\s*$/.test(nativeGap) ? [nativeGap ? ' ' : ''] : [];
+    }));
+    if (candidates.size !== 1) continue;
+    const text = [...candidates][0]!;
+    if (Boolean(gap) !== Boolean(text)) edits.push({ start, end, text });
+  }
+  for (const edit of edits.reverse()) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  return result;
 }
 
 interface LigatureMap extends LetterMap {

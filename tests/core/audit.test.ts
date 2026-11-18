@@ -37,6 +37,71 @@ const pdfFromItems = (pages: ReturnType<typeof nativeItem>[][]) => ({
   }),
 });
 
+test('native baseline text removes a falsely elevated prose run but retains scientific scripts and TeX', async () => {
+  const lead = 'The scattering measurements confirm the structure of the particles in both';
+  const tail = ' narrowly distributed throughout the material in repeated experiments.';
+  const cloud = lead + ' <sup>ordered</sup> <sup>domains</sup> <sup>with</sup> <sup>sizes</sup> ∼<sup>8</sup> <sup>nm,</sup>' + tail;
+  const formula = ' The model remains $R = R_0^2$.';
+  const doc = normalizeContentList([{type:'text',text:cloud + formula,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(lead + ' ordered domains with sizes ∼8 nm,' + tail)]]),doc);
+  assert.equal(doc.blocks[0]?.text,lead + ' ordered domains with sizes ∼8 nm,' + tail + formula);
+});
+
+test('native word boundaries repair both joined words and spaces inside words without changing formulas', async () => {
+  const original = 'The experimentalresponse confirms that the polymer net work relaxes under repeated loading, consistent with the measured response. The model is $a b = c$.';
+  const expected = 'The experimental response confirms that the polymer network relaxes under repeated loading, consistent with the measured response. The model is $a b = c$.';
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  const pdf = pdfFromItems([[nativeItem(expected.replace(' $a b = c$', ' ab = c'))]]);
+  await auditNativeText(pdf,doc);
+  assert.equal(doc.blocks[0]?.text,expected);
+  await auditNativeText(pdf,doc);
+  assert.equal(doc.blocks[0]?.text,expected);
+});
+
+test('typography repair requires unique regional evidence and keeps genuine scripts', async () => {
+  const cloud = 'The experimentalresponse confirms that the polymer <sup>ordered domains</sup> relax under repeated loading, consistent with the measured response.';
+  const native = cloud.replace('experimentalresponse','experimental response').replace(/<\/?sup>/g,'');
+  for (const items of [[nativeItem(native + ' ' + native)], [nativeItem('An unrelated paragraph offers no geometric evidence for changing the supplied prose, equations, citations or word boundaries.')]]) {
+    const doc = normalizeContentList([{type:'text',text:cloud,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+    await auditNativeText(pdfFromItems([items]),doc);
+    assert.equal(doc.blocks[0]?.text,cloud);
+  }
+  const lead = 'The measured response confirms a consistent elastic modulus in units of m';
+  const tail = ' throughout the repeated loading experiments and the subsequent recovery.';
+  const doc = normalizeContentList([{type:'text',text:lead + '<sup>3</sup>' + tail,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[
+    nativeItem(lead,10,100),
+    {str:'3',width:4,height:6,transform:[6,0,0,6,110,84]},
+    nativeItem(tail,114,80),
+  ]]),doc);
+  assert.equal(doc.blocks[0]?.text,lead + '<sup>3</sup>' + tail);
+});
+
+test('native prose restores a temperature range and a figure number misread as decorated math', async () => {
+  const lead = 'The change from ';
+  const middle = ' for the polymer requires a small fraction of impurity in the connected network; see the sketch in Figure ';
+  const tail = ' (which also shows the structure of the connected chains and the surrounding material). The rate is $\\dot{x}$.';
+  const cloud = lead + '$- 4 0 \\mathrm{t}\\mathbf{0} - 3 0 ^{\\circ}\\mathrm{C}$' + middle + '$\\dot{5}$' + tail;
+  const expected = lead + '-40 to -30 °C' + middle + '5' + tail;
+  const doc = normalizeContentList([{type:'text',text:cloud,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  const native = expected.replace('$\\dot{x}$','ẋ');
+  await auditNativeText(pdfFromItems([[nativeItem(native)]]),doc);
+  assert.equal(doc.blocks[0]?.text,expected);
+  const unchanged = normalizeContentList([{type:'text',text:cloud,page_idx:0,bbox:[0,500,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(native)]]),unchanged);
+  assert.equal(unchanged.blocks[0]?.text,cloud);
+});
+
+test('a uniquely anchored native temperature corrects letters mistaken for measurement digits', async () => {
+  const lead = 'The reference material has a measured transition temperature of ';
+  const tail = ' before the polymer becomes mechanically unstable under the applied loading.';
+  const cloud = lead + '$\\mathfrak{a}\\mathfrak{b}^{\\circ}\\mathrm{C}$' + tail;
+  const expected = lead + '85 °C' + tail;
+  const doc = normalizeContentList([{type:'text',text:cloud,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(expected)]]),doc);
+  assert.equal(doc.blocks[0]?.text,expected);
+});
+
 test('a missing prose span inside a paragraph is restored from its unique source region with citations and surrounding math intact', async () => {
   const left = 'Earlier measurements of the polymer dispersion revealed broader distributions, causing';
   const right = ' reduce branching, the subsequent reaction temperature was lowered for the remaining blocks.';
@@ -54,6 +119,55 @@ test('a missing prose span inside a paragraph is restored from its unique source
   const repaired = JSON.stringify(doc);
   await auditNativeText(pdfFromItems([items]),doc);
   assert.equal(JSON.stringify(doc),repaired);
+});
+
+test('lost ligature letters are repaired before they serve as anchors for missing prose', async () => {
+  const left = 'The physical network is stabilized by several reversible interactions, including ionic bonding';
+  const right = ' as well as an effective connection between the long polymer chains in the material.';
+  const original = left + ',<sup>2,3</sup>' + right.replace('effective','efective');
+  const native = left + ',<sup>2,3</sup> and additional local interactions,<sup>4,5</sup>' + right;
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(native.replace(/<[^>]*>/g,''))]]),doc);
+  assert.match(doc.blocks[0]!.text,/and additional local interactions/);
+  assert.match(doc.blocks[0]!.text,/an effective connection/);
+});
+
+test('unique regional anchors recover a short missing symbol label outside a formula', async () => {
+  const lead = 'At a given temperature the experiment remains in a time window much smaller than ';
+  const tail = ': the network therefore appears permanently connected during the measurement.';
+  const original = lead + 'τ ' + tail;
+  const expected = lead + 'τPS' + tail;
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(expected)]]),doc);
+  assert.equal(doc.blocks[0]?.text,expected);
+});
+
+test('a fraction fragment displaced into the preceding line cannot become extra prose', async () => {
+  const left = 'The network modulus is a measurable material property which';
+  const right = ' ideally can be calculated from the original expression and the measured specimen dimensions.';
+  const original = left + right + ' The expression is $E=3kT/n$.';
+  const native = left + ' 3rkT' + right + ' The expression is E=3rkT/n.';
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  await auditNativeText(pdfFromItems([[nativeItem(native)]]),doc);
+  assert.equal(doc.blocks[0]?.text,original);
+});
+
+test('a truncated paragraph ending recovers native prose and citations after a stray ligature marker', async () => {
+  const lead = 'The viscous response depends on the applied deformation rate and is usually induced by';
+  const tail = ' nonaffine motion within the connected polymer network.';
+  const items = [nativeItem(lead + tail,10,140), {str:'46,47',width:12,height:6,transform:[6,0,0,6,150,84]}];
+  const original = lead + ' <sub>fi</sub> 46,47';
+  const doc = normalizeContentList([{type:'text',text:original,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+  const pdf = pdfFromItems([items]);
+  await auditNativeText(pdf,doc);
+  assert.equal(doc.blocks[0]?.text,lead + tail + '<sup>46,47</sup>');
+  await auditNativeText(pdf,doc);
+  assert.equal(doc.blocks[0]?.text,lead + tail + '<sup>46,47</sup>');
+  for (const ending of [' $f_i$ 46,47', ' existing scientific wording 46,47', ' <sub>fi</sub> 46,48']) {
+    const unchanged = normalizeContentList([{type:'text',text:lead + ending,page_idx:0,bbox:[0,0,1000,1000]}],'hash','test',1);
+    await auditNativeText(pdf,unchanged);
+    assert.equal(unchanged.blocks[0]?.text,lead + ending);
+  }
 });
 
 test('source gap repair leaves formulas, existing prose and differing citation numbers untouched', async () => {
@@ -494,4 +608,50 @@ test('ligature words are restored when pdf.js splits the ligature glyph into its
   const pieces = ['Self-organization therefore o','ﬀ','ers an e','ﬃ','cient pathway, and the sti','ﬀ','ness of the sti','ﬀ',' network.'];
   await auditNativeText(pdfFromItems([pieces.map(piece=>nativeItem(piece))]),doc);
   assert.equal(doc.blocks[0]?.text,'Self-organization therefore offers an efficient pathway, and the stiffness of the stiff network.');
+});
+
+test('a paragraph whose box reaches into the next one does not take that paragraph as its missing tail', async () => {
+  const first = 'Independent measurements on the calibration sample remained stable throughout all experimental observations.';
+  const second = 'Separate control experiments followed a different procedure and used a different sample.';
+  const build = () => normalizeContentList([
+    {type:'text',text:first,page_idx:0,bbox:[0,80,1000,420]},
+    {type:'text',text:second,page_idx:0,bbox:[0,285,1000,420]},
+  ],'hash','test',1);
+  const items = [first, second].map((str, index) => ({str,width:170,height:8,transform:[8,0,0,8,10,[82,64][index]!]}));
+  const pdf = {numPages:1,getPage:async()=>({getTextContent:async()=>({items}),getViewport:()=>({width:200,height:100,scale:1,convertToViewportPoint:(x:number,y:number)=>[x,100-y]})})};
+  const doc = build();
+  await auditNativeText(pdf,doc);
+  assert.deepEqual(doc.blocks.map(block => block.text), [first, second]);
+  await auditNativeText(pdf,doc);
+  assert.deepEqual(doc.blocks.map(block => block.text), [first, second], 'a second audit changes nothing');
+});
+
+test('a paragraph box that covers the next two paragraphs takes neither of them as its tail', async () => {
+  const texts = [
+    'Independent measurements on the calibration sample remained stable throughout all experimental observations.',
+    'Separate control experiments followed a different procedure and used a different sample.',
+    'A third observation used an alternate instrument to confirm the result.',
+  ];
+  const boxes = [[0,70,1000,690],[0,285,1000,420],[0,490,1000,690]];
+  const doc = normalizeContentList(texts.map((text, index) => ({type:'text',text,page_idx:0,bbox:boxes[index]!})),'hash','test',1);
+  const items = texts.map((str, index) => ({str,width:165,height:8,transform:[8,0,0,8,10,[82,64,40][index]!]}));
+  const pdf = {numPages:1,getPage:async()=>({getTextContent:async()=>({items}),getViewport:()=>({width:200,height:100,scale:1,convertToViewportPoint:(x:number,y:number)=>[x,100-y]})})};
+  await auditNativeText(pdf,doc);
+  assert.deepEqual(doc.blocks.map(block => block.text), texts);
+  await auditNativeText(pdf,doc);
+  assert.deepEqual(doc.blocks.map(block => block.text), texts);
+});
+
+test('a truly missing tail is restored up to where the next paragraph begins', async () => {
+  const whole = 'Independent measurements on the calibration sample remained stable throughout all experimental observations and the drift stayed below the detection limit.';
+  const cut = 'Independent measurements on the calibration sample remained stable throughout all experimental observations';
+  const next = 'Separate control experiments followed a different procedure and used a different sample.';
+  const doc = normalizeContentList([
+    {type:'text',text:cut,page_idx:0,bbox:[0,80,1000,420]},
+    {type:'text',text:next,page_idx:0,bbox:[0,285,1000,420]},
+  ],'hash','test',1);
+  const items = [whole, next].map((str, index) => ({str,width:170,height:8,transform:[8,0,0,8,10,[82,64][index]!]}));
+  const pdf = {numPages:1,getPage:async()=>({getTextContent:async()=>({items}),getViewport:()=>({width:200,height:100,scale:1,convertToViewportPoint:(x:number,y:number)=>[x,100-y]})})};
+  await auditNativeText(pdf,doc);
+  assert.deepEqual(doc.blocks.map(block => block.text), [whole, next]);
 });

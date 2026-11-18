@@ -73,6 +73,14 @@ test('quotes are one short line and match the paragraph they came from', () => {
   assert.ok(!quoteMatches('Short', 'Short one.'), 'short prefixes are too ambiguous');
 });
 
+test('quotes survive source-proven OCR and inline-format corrections without changing their stored text', () => {
+  const old = 'The change from $- 4 0 \\mathrm{t}\\mathbf{0} - 3 0 ^{\\circ}\\mathrm{C}$';
+  const corrected = 'The change from -40 to -30 °C for the material requires additional structural analysis.';
+  assert.ok(quoteMatches(old, corrected));
+  assert.ok(!quoteMatches(old, corrected.replace('-30', '-35')), 'different measurements stay different');
+  assert.ok(!quoteMatches('$\\mathbf{x}$', 'x is the measured response.'), 'markup cannot make a short quote safe');
+});
+
 test('a quote never stops inside a formula or an HTML tag', () => {
   const math = `${'a'.repeat(80)} the system, $T ^ { * } \\sim 30$ well below`;
   assert.equal(quoteText(math), `${'a'.repeat(80)} the system,…`);
@@ -81,4 +89,81 @@ test('a quote never stops inside a formula or an HTML tag', () => {
   const tag = `${'a'.repeat(95)} m<sup>3</sup> more`;
   assert.equal(quoteText(tag), `${'a'.repeat(95)} m…`);
   assert.ok(quoteMatches(quoteText(math).replace(/…$/, ''), math));
+});
+
+test('an entry whose pw: marker was damaged stays its own entry; editing or deleting its neighbour keeps it', () => {
+  let note = writeAnnotation(GENERATED, entry(H1, 'one'), order);
+  note = writeAnnotation(note, entry(H2, 'two\n\nsecond paragraph of two'), order);
+  const damaged = note.replace(`%%pw:${H2.slice(0, 12)}%%`, '%%pw:typo-bbbbbbbbbbbb%%');
+  const broken = '> [!quote] [[p.pdf#page=3|p.3]] %%pw:typo-bbbbbbbbbbbb%%\n> Paragraph b text.\n\ntwo\n\nsecond paragraph of two\n';
+  assert.deepEqual(parseAnnotations(damaged), [
+    { id: H1.slice(0, 12), quote: 'Paragraph a text.', body: 'one' },
+    { id: 'typo-bbbbbbbbbbbb', quote: 'Paragraph b text.', body: 'two\n\nsecond paragraph of two', broken: true },
+  ]);
+  const edited = writeAnnotation(damaged, entry(H1, 'one, revised'), order);
+  assert.ok(edited.endsWith(`one, revised\n\n${broken}`), edited);
+  const removed = writeAnnotation(damaged, entry(H1, ''), order);
+  assert.ok(removed.endsWith(`## 段落批注\n\n${broken}`), removed);
+  // A damaged entry is never taken for the paragraph its marker resembles.
+  const again = writeAnnotation(damaged, entry(H2, 'new two'), order);
+  assert.ok(again.includes(broken) && again.includes(`%%pw:${H2.slice(0, 12)}%%\n> Paragraph b text.\n\nnew two`));
+});
+
+test('a marker in a code fence or an ordinary quote callout in a body is part of that body', () => {
+  const body = `example:\n\n\`\`\`markdown\n> [!quote] x %%pw:${H2.slice(0, 12)}%%\n> sample\n\`\`\`\n\n> [!quote] Someone else\n> a quote I like`;
+  let note = writeAnnotation(GENERATED, entry(H1, body), order);
+  assert.deepEqual(parseAnnotations(note).map(item => [item.id, item.body]), [[H1.slice(0, 12), body]]);
+  note = writeAnnotation(note, entry(H2, 'two'), order);
+  assert.deepEqual(parseAnnotations(note).map(item => [item.id, item.body]), [[H1.slice(0, 12), body], [H2.slice(0, 12), 'two']]);
+  note = writeAnnotation(note, entry(H2, ''), order);
+  assert.deepEqual(parseAnnotations(note).map(item => [item.id, item.body]), [[H1.slice(0, 12), body]]);
+});
+
+test('the loose quote key keeps signs, decimal points and magnitudes of numbers', () => {
+  const say = (value: string) => `${value} in the calibrated chamber.`;
+  assert.ok(!quoteMatches('The calibrated operating temperature was -40 °C', say('The calibrated operating temperature was +40 °C')));
+  assert.ok(!quoteMatches('The calibrated operating temperature was -40 °C', say('The calibrated operating temperature was 40 °C')));
+  assert.ok(!quoteMatches('The measured loading was 1.0 percent', say('The measured loading was 10 percent')));
+  assert.ok(!quoteMatches('The measured modulus was 10^{3} Pa at rest', say('The measured modulus was 103 Pa at rest')));
+  assert.ok(!quoteMatches('The measured modulus was 10^{-3} Pa at rest', say('The measured modulus was 10^{3} Pa at rest')));
+  assert.ok(!quoteMatches('The uncertainty was \\pm 5 percent overall', say('The uncertainty was 5 percent overall')));
+  // The same values in different typography still match.
+  assert.ok(quoteMatches('The calibrated operating temperature was −40 °C', say('The calibrated operating temperature was -40 ℃')));
+  assert.ok(quoteMatches('The measured modulus was 10<sup>−3</sup> Pa at rest', say('The measured modulus was $10^{-3}$ Pa at rest')));
+  assert.ok(quoteMatches('The measured modulus was 10³ Pa at rest', say('The measured modulus was 10^{3} Pa at rest')));
+  assert.ok(quoteMatches('The measured loading was 1 . 0 percent', say('The measured loading was $1.0$ percent')));
+  assert.ok(quoteMatches('A well-known <em>effect</em>, see Fig. 2.', 'A well known effect, see Fig. 2. More text follows here.'));
+  assert.ok(quoteMatches('The range was 10–20 K for every sample', say('The range was 10-20 K for every sample')));
+});
+
+test('a generated page link with a truncated pw: marker still starts its own, untouched entry', () => {
+  let note = writeAnnotation(GENERATED, entry(H1, 'one'), order);
+  note = writeAnnotation(note, entry(H2, 'two, written by hand'), order);
+  const marker = `%%pw:${H2.slice(0, 12)}%%`;
+  for (const damage of [marker.slice(0, -1), marker.slice(0, -2), `%pw:${H2.slice(0, 12)}%%`]) {
+    const damaged = note.replace(marker, damage);
+    const broken = damaged.slice(damaged.indexOf('> [!quote] [[p.pdf#page=3|p.3]] ' + damage));
+    assert.deepEqual(parseAnnotations(damaged).map(item => [item.body, item.broken]), [['one', undefined], ['two, written by hand', true]], damage);
+    assert.ok(writeAnnotation(damaged, entry(H1, ''), order).endsWith(`## 段落批注\n\n${broken}`), damage);
+    assert.ok(writeAnnotation(damaged, entry(H1, 'one, revised'), order).endsWith(`one, revised\n\n${broken}`), damage);
+  }
+  // Without the page link, a quote callout that merely mentions pw: is ordinary body text.
+  const prose = writeAnnotation(GENERATED, entry(H1, '> [!quote] Notes on %%pw: markers\n> as I understand them'), order);
+  assert.deepEqual(parseAnnotations(prose).map(item => item.body), ['> [!quote] Notes on %%pw: markers\n> as I understand them']);
+});
+
+test('the quote key tells apart leading decimals, comparisons and a number cut at the end of a quote', () => {
+  assert.ok(!quoteMatches('The sample was heated to .5 percent', 'The sample was heated to 5 percent of its limit.'));
+  assert.ok(quoteMatches('The sample was heated to .5 percent', 'The sample was heated to 0.5 percent of its limit.'));
+  assert.ok(!quoteMatches('The measured signal was <0.5 percent', 'The measured signal was >0.5 percent in every run.'));
+  assert.ok(!quoteMatches('The measured signal was <0.5 percent', 'The measured signal was 0.5 percent in every run.'));
+  assert.ok(quoteMatches('The measured signal was &lt;0.5 percent', 'The measured signal was $<0.5$ percent in every run.'));
+  assert.ok(!quoteMatches('The noise dropped by a factor of 1', 'The noise dropped by a factor of 10 after correction.'), 'fast prefix');
+  assert.ok(!quoteMatches('The noise dropped by a <em>factor</em> of 1', 'The noise dropped by a factor of 10 after correction.'), 'loose prefix');
+  assert.ok(!quoteMatches('The noise dropped by a factor of 1', 'The noise dropped by a factor of 1.5 after correction.'));
+  assert.ok(quoteMatches('The noise dropped by a factor of 1', 'The noise dropped by a factor of 1 after correction.'));
+  assert.ok(quoteMatches('The noise dropped by a factor of 10 after', 'The noise dropped by a factor of 10 after correction.'));
+  // quoteText never cuts a number in two.
+  const cut = quoteText(`${'a'.repeat(97)} 12345 more`);
+  assert.equal(cut, `${'a'.repeat(97)}…`);
 });

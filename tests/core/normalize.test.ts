@@ -310,6 +310,22 @@ test("only an explicit provider aside with a download imprint is metadata", () =
   assert.equal(doc.blocks[6]?.kind, "paragraph");
 });
 
+test("a download URL split by OCR stays folded and cannot absorb the next page's prose", () => {
+  const imprint = "Downloaded from publisher.example/article-pdf/12/34 5/paper.pdf by guest on 17 November 2026";
+  const continuation = "the following experiment retains its own text and source region.";
+  const doc = normalize([
+    { type: "text", text: "The previous page describes", page_idx: 1 },
+    { type: "aside_text", text: imprint, page_idx: 1, bbox: [950, 200, 975, 800] },
+    { type: "text", text: continuation, page_idx: 2, bbox: [80, 60, 480, 200] },
+  ]);
+  const aside = doc.blocks.find(block => block.text === imprint);
+  assert.equal(aside?.kind, "metadata");
+  assert.equal(aside.hiddenByDefault, true);
+  const prose = doc.blocks.find(block => block.kind === "paragraph");
+  assert.equal(prose?.text, "The previous page describes " + continuation);
+  assert.equal(prose.sources.length, 2);
+});
+
 test("in-image OCR before and after a figure becomes alt text without extra source regions", () => {
   const doc = normalize([
     { type: "text", text: "Body before the figure.", page_idx: 3, bbox: [100, 50, 900, 80] },

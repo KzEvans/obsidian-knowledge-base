@@ -81,7 +81,7 @@ export function normalizeContentList(
         (sources[0]?.page === 1 && firstPageTitleIndex > index && classificationText.length < 120) ||
         // Publisher margin imprint: a URL or path, then "by <user|guest|institution> ... on <date>",
         // optionally after Wiley's "<ISSN>, <year>, <issue>," prefix.
-        ((type === "aside_text" || type === "page_aside_text") && /(?:^|[,.;]\s*)Downloaded from\s+\S*[./]\S*\s+by\s+.+\bon\b/i.test(classificationText))
+        ((type === "aside_text" || type === "page_aside_text") && /(?:^|[,.;]\s*)Downloaded from\s+\S*[./][\s\S]*?\s+by\s+.+\bon\b/i.test(classificationText))
       ) {
         kind = "metadata";
       } else if (
