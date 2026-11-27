@@ -125,3 +125,31 @@ test('the pre-check lets through text that mentions only a scheme or a table', (
   for (const text of ['described in Scheme 1.', 'listed in Table 2', '如表 3 所示', '见方案 1', 'Figure 4', '图 5']) assert.ok(mayReference(text), text);
   assert.equal(mayReference('Plain body text.'), false);
 });
+
+test('shared caption parsing keeps SI exclusion, normalized keys, post-equation captions and body counterexamples', () => {
+  const eq = block('equation', 5, { text: '$$k_1$$' });
+  const postCaption = block('paragraph', 5, { text: '<b>F I G U RE 02</b> (a) Reaction profile' });
+  const bodyFig = block('paragraph', 6, { text: 'Figure 5 shows the comparison.' });
+  const bodyScheme = block('paragraph', 6, { text: 'Scheme 1 illustrates the pathway.' });
+  const siCaption = block('paragraph', 7, { text: 'S CH E M E S003 (a) Supporting route' });
+  const blocks = [
+    block('figure', 5, { asset: 'f2.png' }), eq, postCaption,
+    bodyFig, block('figure', 6, { asset: 'unlabeled.png' }),
+    bodyScheme,
+    siCaption, block('figure', 7, { asset: 's3.png' }),
+    block('table', 8, { asset: 't2.png', captions: ['note', 'T AB L E 02. Summary'] }),
+    block('table', 8, { asset: 'ts1.png', captions: ['Table S01. Supplementary'] }),
+  ];
+  const groups = figureGroups(blocks);
+  assert.deepEqual(groups.map(group => [group.number, group.images.map(image => image.asset), group.caption?.id, group.inside.map(item => item.id)]), [
+    ['2', ['f2.png'], postCaption.id, [eq.id]],
+    ['3', ['unlabeled.png'], undefined, []],
+    [undefined, ['s3.png'], siCaption.id, []],
+  ]);
+  const index = buildFigureIndex({ blocks });
+  assert.deepEqual([...index].sort(), [
+    ['2', ['f2.png']],
+    ['3', ['unlabeled.png']],
+    ['table 2', ['t2.png']],
+  ]);
+});
