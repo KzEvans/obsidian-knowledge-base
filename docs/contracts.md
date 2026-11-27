@@ -186,7 +186,7 @@ interface StoreWriter extends StoreReader {
 ### 5.3 规范化（`derive.ts`、`crop-canvas.ts`、`pdf.ts`）
 
 ```ts
-const NORMALIZER_VERSION: number;   // 当前为 3；改规则时加一
+const NORMALIZER_VERSION: number;   // 当前为 7，改规则时递增
 function derive(input: {
   sha: string;
   raw: { names: string[]; read(name: string): Promise<Uint8Array> };

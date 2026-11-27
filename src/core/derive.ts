@@ -11,7 +11,7 @@ import type { ReaderBlock, Segment, StoredAsset, StoredBlock, StoredDocument } f
  * Bump whenever normalize, audit, crop or segment rules change. Stored documents
  * with an older version are rebuilt offline from raw/ — never re-uploaded.
  */
-export const NORMALIZER_VERSION = 6;
+export const NORMALIZER_VERSION = 7;
 
 export const TABLE_CROP_DIR = 'source-tables-v1';
 export const FALLBACK_CROP_DIR = 'fallback-v2';
@@ -59,9 +59,10 @@ export async function derive(input: DeriveInput): Promise<DeriveOutput> {
   const items: unknown = JSON.parse(new TextDecoder().decode(await input.raw.read(listName)));
   const layoutName = input.raw.names.find(name => name === 'layout.json' || name.endsWith('/layout.json'));
   const layout: unknown = layoutName ? JSON.parse(new TextDecoder().decode(await input.raw.read(layoutName))) : undefined;
-  const reader = normalizeContentList(items, input.sha, `normalizer-v${NORMALIZER_VERSION}`, input.pdf.numPages, {
-    mergedIntoPrevious: Array.isArray(items) ? mergedIntoPrevious(layout, items) : undefined,
-  });
+  const reader = normalizeContentList(items, input.sha, `normalizer-v${NORMALIZER_VERSION}`, input.pdf.numPages);
+  const mergedBlockIds = Array.isArray(items)
+    ? new Set([...mergedIntoPrevious(layout, items)].map(index => `block-${index + 1}`))
+    : undefined;
 
   const contentBase = listName.includes('/') ? listName.slice(0, listName.lastIndexOf('/')) : '.';
   const assets: Record<string, StoredAsset> = {};
@@ -77,7 +78,7 @@ export async function derive(input: DeriveInput): Promise<DeriveOutput> {
     assets[resolved] ??= { path: `raw/${resolved}`, ...dimensionsFromHeader(await input.raw.read(resolved)) };
   }
 
-  await auditNativeText(input.pdf, reader);
+  await auditNativeText(input.pdf, reader, mergedBlockIds);
 
   const derived: Record<string, Uint8Array> = {};
   const plan = planCrops(reader.blocks);

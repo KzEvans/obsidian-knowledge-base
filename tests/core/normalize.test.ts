@@ -1,8 +1,21 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { ligatureSuperscriptCandidate, normalizeContentList } from "../../src/core/normalize";
+import { ligatureSuperscriptCandidate, normalizeContentList, parseCaptionLabel } from "../../src/core/normalize";
 
 const normalize = (items: unknown, pageCount = 9) => normalizeContentList(items, "pdf-hash", "mineru-v4-vlm", pageCount);
+
+test("caption labels share the reader vocabulary and retain the original number", () => {
+  assert.deepEqual(parseCaptionLabel("<b>F I G U RE S 003</b> | Panels"), { kind: "figure", number: "S003", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("S CH E M E 1 (a) Flow"), { kind: "scheme", number: "1", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("T AB L E 02. Results"), { kind: "table", number: "02", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("图 3：数据"), { kind: "figure", number: "3", captionLike: false });
+  assert.deepEqual(parseCaptionLabel("方案 2（a）"), { kind: "scheme", number: "2", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("表 6"), { kind: "table", number: "6", captionLike: false });
+  assert.deepEqual(parseCaptionLabel("Fig. 5 shows the trend."), { kind: "figure", number: "5", captionLike: false });
+  assert.deepEqual(parseCaptionLabel("Scheme 1 illustrates the setup."), { kind: "scheme", number: "1", captionLike: false });
+  assert.equal(parseCaptionLabel("Refer to Figure 3."), undefined);
+  assert.equal(parseCaptionLabel("Figure 3.2"), undefined);
+});
 
 test("provider reading order survives interleaved two-column coordinates", () => {
   const doc = normalize([
@@ -441,11 +454,12 @@ test("code with an explicit table caption is a table while ordinary algorithm/co
   assert.deepEqual(doc.blocks[0]?.captions, [caption]);
   assert.equal(doc.blocks[0]?.html, body);
   assert.deepEqual(doc.blocks[0]?.sources, [{ page: 3, bbox: [0.096, 0.843, 0.48, 0.931] }]);
-  assert.equal(doc.blocks[1]?.text, body);
-  assert.equal(doc.blocks[1]?.html, undefined);
+  assert.equal(doc.blocks[1]?.html, body);
+  assert.equal(doc.blocks[1]?.text, "time number\n0 100\n20 140");
   assert.equal(doc.blocks[1]?.captions, undefined);
   assert.deepEqual(doc.blocks[2]?.captions, ["表 2：网络参数"]);
   assert.equal(doc.blocks[3]?.text, "return network;");
+  assert.equal(doc.blocks[3]?.html, undefined);
 });
 
 test("page-1 ACS control labels fold even when the provider lists them after the abstract", () => {
@@ -502,18 +516,17 @@ test("tiny page-1 icons fold even before the title (ACS SI badge)", () => {
   assert.deepEqual(doc.blocks.map(block => block.kind), ["metadata", "heading", "figure"]);
 });
 
-test("blocks MinerU merged into the previous paragraph add their region instead of new text", () => {
-  const doc = normalizeContentList([
-    { type: "text", text: "With different polymer chains connected together, block copolymers offer opportunities.", page_idx: 0, bbox: [68, 847, 485, 934] },
+test("empty provider continuations retain their own block IDs and boxes until audit", () => {
+  const doc = normalize([
+    { type: "text", text: "The specimen contains a porous network.", page_idx: 0, bbox: [68, 847, 485, 934] },
     { type: "text", text: "", page_idx: 0, bbox: [507, 813, 924, 934] },
-    { type: "header", text: "FANG ET AL.", page_idx: 1, bbox: [73, 28, 139, 39] },
     { type: "text", text: "", page_idx: 1, bbox: [70, 60, 487, 90] },
-    { type: "text", text: "Compared with diblock copolymers, few multiblocks exist.", page_idx: 1, bbox: [72, 93, 490, 341] },
-  ], "pdf-hash", "mineru-v4-vlm", 9, { mergedIntoPrevious: new Set([1, 3]) });
-  const paragraphs = doc.blocks.filter(block => block.kind === "paragraph");
-  assert.equal(paragraphs.length, 2);
-  assert.deepEqual(paragraphs[0]?.sources.map(source => source.page), [1, 1, 2]);
-  assert.ok(!doc.warnings.some(warning => warning.includes("没有可显示内容")));
+  ]);
+  assert.deepEqual(doc.blocks.map(({ id, sources }) => [id, sources]), [
+    ["block-1", [{ page: 1, bbox: [0.068, 0.847, 0.485, 0.934] }]],
+    ["block-2", [{ page: 1, bbox: [0.507, 0.813, 0.924, 0.934] }]],
+    ["block-3", [{ page: 2, bbox: [0.07, 0.06, 0.487, 0.09] }]],
+  ]);
 });
 
 test("publisher notices, ORCID lines, online dates and update badges fold; science that mentions them stays", () => {
@@ -543,4 +556,100 @@ test("publisher notices, ORCID lines, online dates and update badges fold; scien
 test("a Wiley imprint whose issue number is followed by a period still folds", () => {
   const doc = normalize([{ type: "aside_text", text: "15475905, 2020, 1. Downloaded from https://aiche.onlinelibrary.wiley.com/doi/10.1002/aic.16781 by Zhejiang University, Wiley Online Library on [10/10/2026].", page_idx: 2 }]);
   assert.equal(doc.blocks[0]?.kind, "metadata");
+});
+
+test("a standalone letter-spaced scheme caption is skipped between halves of cross-page prose", () => {
+  const caption = "S CH E M E 1 (a) Experimental setup";
+  const doc = normalize([
+    { type: "text", text: "The samples were conditioned", page_idx: 3, bbox: [510, 800, 940, 920] },
+    { type: "page_footer", text: "Page four", page_idx: 3 },
+    { type: "text", text: caption, page_idx: 4, bbox: [70, 60, 280, 200] },
+    { type: "image", img_path: "images/a.jpg", page_idx: 4, bbox: [295, 76, 922, 728] },
+    { type: "text", text: "under vacuum for thirty minutes.", page_idx: 4, bbox: [68, 740, 530, 840] },
+  ]);
+  assert.deepEqual(doc.blocks.map(({ id }) => id), ["block-1", "block-2", "block-3", "block-4"]);
+  assert.equal(doc.blocks[0]?.text, "The samples were conditioned under vacuum for thirty minutes.");
+  assert.deepEqual(doc.blocks[0]?.sources, [
+    { page: 4, bbox: [0.51, 0.8, 0.94, 0.92] },
+    { page: 5, bbox: [0.068, 0.74, 0.53, 0.84] },
+  ]);
+  assert.equal(doc.blocks[2]?.text, caption);
+  assert.deepEqual(doc.blocks[2]?.sources, [{ page: 5, bbox: [0.07, 0.06, 0.28, 0.2] }]);
+});
+
+test("a figure caption after an intervening panel equation keeps lowercase prose separate", () => {
+  const caption = "F I G U R E 3 | The reference panel";
+  const doc = normalize([
+    { type: "image", img_path: "images/b.jpg", page_idx: 1, bbox: [100, 100, 650, 640] },
+    { type: "equation", text: "$$x_0$$", page_idx: 1, bbox: [230, 645, 340, 660] },
+    { type: "text", text: caption, page_idx: 1, bbox: [100, 675, 600, 710] },
+    { type: "text", text: "under these conditions the sample was uniform.", page_idx: 1, bbox: [100, 730, 600, 790] },
+  ]);
+  assert.deepEqual(doc.blocks.map(({ text }) => text), ["", "$$x_0$$", caption, "under these conditions the sample was uniform."]);
+});
+
+test("sentences that begin with a figure reference can continue across the nearby figure", () => {
+  for (const lead of ["Figure 5 shows the signal", "Scheme 1 illustrates the setup"]) {
+    const doc = normalize([
+      { type: "text", text: lead, page_idx: 1 },
+      { type: "image", img_path: "images/c.jpg", page_idx: 1 },
+      { type: "text", text: "before the switch is opened.", page_idx: 1 },
+    ]);
+    assert.equal(doc.blocks[0]?.text, lead + " before the switch is opened.");
+    assert.deepEqual(doc.blocks.map(({ id }) => id), ["block-1", "block-2"]);
+  }
+});
+
+test("an adjacent display equation number never consumes the next paragraph anchor", () => {
+  const doc = normalize([
+    { type: "equation", text: "$$x = y$$", page_idx: 4 },
+    { type: "text", text: "(21)", page_idx: 4 },
+    { type: "text", text: "where the reference experiment uses (21) to estimate the mean.", page_idx: 4, bbox: [510, 500, 920, 585] },
+  ]);
+  assert.deepEqual(doc.blocks.map(({ id, text }) => [id, text]), [
+    ["block-1", "$$x = y$$"], ["block-2", "(21)"],
+    ["block-3", "where the reference experiment uses (21) to estimate the mean."],
+  ]);
+  assert.deepEqual(doc.blocks[2]?.sources, [{ page: 5, bbox: [0.51, 0.5, 0.92, 0.585] }]);
+});
+
+test("an HTML explanation box keeps inline markup, math and paragraph boundaries in its text fallback", () => {
+  const body = '<div class="box">The <em>control</em> was tested.<p>Use $x^2$ at 2 W m<sup>−3</sup>.</p></div>';
+  const doc = normalize([{ type: "code", sub_type: "algorithm", code_body: body, page_idx: 1 }]);
+  assert.equal(doc.blocks[0]?.kind, "paragraph");
+  assert.equal(doc.blocks[0]?.html, body);
+  assert.equal(doc.blocks[0]?.text, 'The <em>control</em> was tested.\nUse $x^2$ at 2 W m<sup>−3</sup>.');
+});
+
+test("page-one sidebar addresses, publisher notices and paired ORCID headings fold", () => {
+  const doc = normalize([
+    { type: "text", text: "A synthetic article", text_level: 1, page_idx: 0 },
+    { type: "text", text: "Abstract", text_level: 1, page_idx: 0 },
+    { type: "page_footnote", text: "1Department of Example Science, Sample University, West Town, EX", page_idx: 0, bbox: [67, 682, 206, 763] },
+    { type: "page_footnote", text: "2Avenue of Examples, West Town, EX, Exampleland", page_idx: 0, bbox: [67, 765, 194, 801] },
+    { type: "page_footnote", text: "3Thermal response was measured, Sample A, Control, Cycle 5.", page_idx: 0, bbox: [67, 804, 206, 840] },
+    { type: "page_footnote", text: "4Avenue of Examples, West Town, EX, Exampleland", page_idx: 0, bbox: [550, 842, 700, 880] },
+    { type: "page_footnote", text: "<sup>a</sup> Sample University, Example Street, 12345 Exampletown, Exampleland", page_idx: 0, bbox: [510, 900, 900, 945] },
+    { type: "page_footnote", text: "<sup>†</sup> Present address: Example Institute, Example Town, EX", page_idx: 0, bbox: [510, 949, 900, 970] },
+    { type: "table", table_caption: ["Table 1. Study results."], table_footnote: ["Control recorded after one cycle."], page_idx: 1 },
+    { type: "text", text: "Acknowledgments", text_level: 2, page_idx: 1 },
+    { type: "text", text: "We thank the research laboratory for its assistance.", page_idx: 1 },
+    { type: "text", text: "Publisher’s Note", text_level: 2, page_idx: 1 },
+    { type: "text", text: "Example Press remains neutral on the jurisdictional claims in this edition.", page_idx: 1 },
+    { type: "text", text: "Publisher's Note Example Press remains neutral on disputed claims in published maps and institutional affiliations.", page_idx: 1 },
+    { type: "text", text: "References", text_level: 1, page_idx: 2 },
+    { type: "text", text: "ORCID", text_level: 2, page_idx: 2 },
+    { type: "text", text: "Example Author https://orcid.org/0000-0000-0000-000X", page_idx: 2 },
+    { type: "text", text: "[1] Example citation.", page_idx: 2 },
+    { type: "text", text: "ORCID", text_level: 2, page_idx: 3 },
+  ]);
+  const blocks = new Map(doc.blocks.map(block => [block.id, block]));
+  const metadata = [3, 4, 7, 8, 12, 13, 14, 16, 17].map(number => `block-${number}`);
+  assert.deepEqual(doc.blocks.filter(block => block.kind === "metadata" && block.hiddenByDefault).map(({ id }) => id), metadata);
+  for (const [number, kind] of [[5, "footnote"], [6, "footnote"], [9, "table"], [10, "heading"], [11, "paragraph"], [18, "references"], [19, "heading"]]) {
+    const block = blocks.get(`block-${number}`);
+    assert.equal(block?.kind, kind, `block-${number}`);
+    if (kind !== "references") assert.equal(block?.hiddenByDefault, undefined);
+  }
+  assert.deepEqual(blocks.get("block-9")?.footnotes, ["Control recorded after one cycle."]);
 });

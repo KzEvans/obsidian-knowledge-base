@@ -7,7 +7,7 @@ export type Language = 'en' | 'zh';
 /** A stored block, or a plain ReaderBlock without translation units. */
 export type RenderBlock = ReaderBlock & { segments?: readonly Segment[]; panels?: readonly Panel[] };
 /** One image of a figure MinerU split into several blocks; `width` is its share (0–1] of the figure's width. */
-interface Panel { asset: string; width: number }
+interface Panel { asset: string; width: number; labels?: readonly ReaderBlock[] }
 
 export interface ReaderRenderOptions {
   fontSize: number;
@@ -65,7 +65,7 @@ export async function renderReader(root: HTMLElement, blocks: readonly RenderBlo
   const article = root.createEl('article', { cls: 'pdf-reader-article', attr: { 'aria-label': 'PDF 阅读模式正文' } });
 
   const batch = batcher();
-  const ordered = sectionEndAncillary(mergeSplitFigures(blocks));
+  const ordered = sectionEndAncillary(mergeSplitFigures(blocks, options));
   for (let index = 0; index < ordered.length;) {
     const block = ordered[index];
     if (!block) break;
@@ -228,8 +228,9 @@ export function setZhScale(root: HTMLElement, scale: number): void {
   root.style.setProperty('--pw-zh-scale', String(scale));
 }
 
-function requiresMath(block: ReaderBlock): boolean {
+function requiresMath(block: RenderBlock): boolean {
   if (block.kind === 'equation') return true;
+  if (block.panels?.some(panel => panel.labels?.length)) return true;
   return [block.text, block.html ?? '', ...(block.captions ?? []), ...(block.footnotes ?? [])]
     .some(text => mathPattern().test(text) || /data-(?:math|latex)\s*=|math-(?:inline|display)/i.test(text));
 }
@@ -251,7 +252,7 @@ export function scrollToSourcePage(root: HTMLElement, page: number): void {
   root.scrollTop = Math.max(0, top);
 }
 
-const BREAK_AFTER = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'SECTION', 'FIGCAPTION', 'SUMMARY', 'TR']);
+const BREAK_AFTER = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'SECTION', 'FIGCAPTION', 'SUMMARY', 'TR', 'BR']);
 
 /**
  * Text a reader sees: no page markers, no source-tool buttons and no hidden
@@ -429,13 +430,7 @@ function renderBlock(parent: HTMLElement, block: RenderBlock, context: RenderCon
     appendImageOrText(figure, block, context);
     appendCaptions(figure, block, context);
   } else if (block.kind === 'equation') {
-    const equation = wrapper.createDiv({ cls: 'pdf-reader-equation-body' });
-    const rendered = appendMath(equation, stripMathDelimiters(block.text), true, context);
-    const original = !rendered && block.asset ? resolveAsset(block.asset, context.options) : undefined;
-    if (original) {
-      equation.empty();
-      appendImage(equation, original, block.text || '原文公式', context, undefined, block.asset);
-    }
+    appendEquationBody(wrapper, block, context, true);
     appendCaptions(wrapper, block, context);
   } else if (block.kind === 'list') {
     appendLayers(wrapper, 'div', segmentFor(block, 'text', 0), block.text, true, context, layer => {
@@ -501,6 +496,26 @@ function appendList(parent: HTMLElement, text: string, context: RenderContext): 
   for (const line of lines) appendTextWithMath(list.createEl('li'), line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, ''), context);
 }
 
+function appendEquationBody(
+  parent: HTMLElement,
+  block: ReaderBlock,
+  context: RenderContext,
+  display: boolean,
+  extraClass?: string,
+  labelBlockId?: string,
+): void {
+  const equation = parent.createDiv({
+    cls: extraClass ? `${extraClass} pdf-reader-equation-body` : 'pdf-reader-equation-body',
+    ...(labelBlockId ? { attr: { 'data-panel-label-id': labelBlockId } } : {}),
+  });
+  const rendered = appendMath(equation, stripMathDelimiters(block.text), display, context);
+  const original = !rendered && block.asset ? resolveAsset(block.asset, context.options) : undefined;
+  if (original) {
+    equation.empty();
+    appendImage(equation, original, block.text || '原文公式', context, undefined, block.asset);
+  }
+}
+
 function appendImageOrText(parent: HTMLElement, block: RenderBlock, context: RenderContext): void {
   if (block.panels?.length) {
     const caption = displayCaptions(block).join('\n');
@@ -511,6 +526,9 @@ function appendImageOrText(parent: HTMLElement, block: RenderBlock, context: Ren
       const cell = panels.createDiv({ cls: 'pdf-reader-figure-panel' });
       cell.style.flexBasis = `${(panel.width * 100).toFixed(2)}%`;
       appendImage(cell, url, caption, context, caption, panel.asset);
+      for (const label of panel.labels ?? []) {
+        appendEquationBody(cell, label, context, false, 'pdf-reader-figure-panel-label', label.id);
+      }
     }
     if (panels.childElementCount) return;
     panels.remove();
@@ -585,20 +603,77 @@ function displayCaptions(block: ReaderBlock): string[] {
   return [];
 }
 
+/** Normalized-page slack used only for outside-crop panel label adjacency. */
+const PANEL_LABEL_SLACK = 0.01;
+type BBox = [number, number, number, number];
+
+function isContainedIn(inner: BBox, outer: BBox): boolean {
+  return inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
+}
+
+function isBelowPanel(label: BBox, panel: BBox): boolean {
+  return label[0] >= panel[0] - PANEL_LABEL_SLACK
+    && label[2] <= panel[2] + PANEL_LABEL_SLACK
+    && label[3] > panel[3]
+    && label[1] >= panel[3] - PANEL_LABEL_SLACK
+    && label[1] <= panel[3] + PANEL_LABEL_SLACK;
+}
+
+function hasRenderableAsset(block: ReaderBlock, options: ReaderRenderOptions): boolean {
+  return Boolean(block.asset && resolveAsset(block.asset, options));
+}
+
 /**
  * One figure split into several image blocks renders as one figure: its images laid out
  * by their page boxes, panel-letter captions dropped, a caption paragraph moved into the
  * figure, and text drawn inside the figure taken out of the body (figure-refs.ts).
  */
-function mergeSplitFigures(blocks: readonly RenderBlock[]): readonly RenderBlock[] {
+function mergeSplitFigures(blocks: readonly RenderBlock[], options: ReaderRenderOptions): readonly RenderBlock[] {
   const replaced = new Map<RenderBlock, RenderBlock | null>();
   for (const group of figureGroups(blocks)) {
     const pictured = group.images.filter(image => image.asset);
     const panelCaptions = group.images.some(image => image.captions?.some(isPanelCaption));
-    if (pictured.length < 2 && !group.caption && !group.inside.length && !panelCaptions) continue;
-    const merged = mergedFigure(group);
+    const suppressed: RenderBlock[] = [];
+    const panelLabels = new Map<RenderBlock, ReaderBlock[]>();
+
+    for (const item of group.inside) {
+      if (item.kind !== 'equation') {
+        suppressed.push(item);
+        continue;
+      }
+      const boxed = item.sources.filter(source => source.bbox);
+      if (!boxed.length) {
+        // Legacy fixtures without bbox retain figure-group suppression.
+        suppressed.push(item);
+        continue;
+      }
+      if (boxed.length !== 1) continue;
+      const source = boxed[0]!;
+      const labelBox = source.bbox!;
+      const samePagePanels = group.images
+        .map(image => ({ image, source: image.sources.find(each => each.bbox) }))
+        .filter((entry): entry is { image: RenderBlock; source: { page: number; bbox: BBox } } =>
+          Boolean(entry.source?.bbox && entry.source.page === source.page));
+      // Strict containment inside a renderable panel crop deduplicates an already-drawn label.
+      if (samePagePanels.some(entry => hasRenderableAsset(entry.image, options) && isContainedIn(labelBox, entry.source.bbox))) {
+        suppressed.push(item);
+        continue;
+      }
+      // Attach an outside-crop label only when it sits uniquely below one renderable panel.
+      const below = samePagePanels.filter(entry => isBelowPanel(labelBox, entry.source.bbox));
+      if (below.length === 1 && hasRenderableAsset(below[0]!.image, options)) {
+        const owner = below[0]!.image;
+        const list = panelLabels.get(owner) ?? [];
+        list.push(item);
+        panelLabels.set(owner, list);
+        suppressed.push(item);
+      }
+    }
+
+    if (pictured.length < 2 && !group.caption && !suppressed.length && !panelLabels.size && !panelCaptions) continue;
+    const merged = mergedFigure(group, panelLabels);
     for (const image of group.images) replaced.set(image, null);
-    for (const block of [...group.inside, ...(group.caption ? [group.caption] : [])]) replaced.set(block, null);
+    for (const block of [...suppressed, ...(group.caption ? [group.caption] : [])]) replaced.set(block, null);
     replaced.set(group.images[0]!, merged);
   }
   if (!replaced.size) return blocks;
@@ -608,7 +683,7 @@ function mergeSplitFigures(blocks: readonly RenderBlock[]): readonly RenderBlock
   });
 }
 
-function mergedFigure(group: FigureGroup<RenderBlock>): RenderBlock {
+function mergedFigure(group: FigureGroup<RenderBlock>, panelLabels: ReadonlyMap<RenderBlock, readonly ReaderBlock[]>): RenderBlock {
   const { images, caption } = group;
   const captions: string[] = [];
   const footnotes: string[] = [];
@@ -637,12 +712,14 @@ function mergedFigure(group: FigureGroup<RenderBlock>): RenderBlock {
   const panels = images.flatMap(image => {
     const box = image.sources.find(source => source.bbox)?.bbox;
     const width = box && span > 0 ? Math.min(1, Math.max(0.15, (box[2] - box[0]) / span)) : 1;
-    return image.asset ? [{ asset: image.asset, width }] : [];
+    const labels = panelLabels.get(image);
+    return image.asset ? [{ asset: image.asset, width, ...(labels?.length ? { labels } : {}) }] : [];
   });
+  const attached = Array.from(panelLabels.values()).flat();
   // The captioned image keeps its id, so links and search hits to it still land on the figure.
   const anchor = images.find(image => image.captions?.some(text => !isPanelCaption(text))) ?? images[0]!;
   return {
-    id: anchor.id, kind: 'figure', text: '', sources: [...images, ...(caption ? [caption] : [])].flatMap(block => block.sources),
+    id: anchor.id, kind: 'figure', text: '', sources: [...images, ...attached, ...(caption ? [caption] : [])].flatMap(block => block.sources),
     captions, footnotes, segments, panels, ...(anchor.asset ? { asset: anchor.asset } : {}),
   };
 }
@@ -745,7 +822,18 @@ function appendSafeNode(parent: HTMLElement, node: Node, context: RenderContext,
     if (/^https?:\/\//i.test(href)) output = parent.createEl('a', { attr: { href, target: '_blank', rel: 'noopener noreferrer' } });
   }
   for (const child of Array.from(element.childNodes)) appendSafeNode(output ?? parent, child, context, table);
-  if (!table && (tag === 'P' || tag === 'DIV') && element.nextSibling) parent.createEl('br');
+  if (!table && (tag === 'P' || tag === 'DIV') && hasContentSiblingAfter(element)) parent.createEl('br');
+}
+
+function hasContentSiblingAfter(node: Node): boolean {
+  for (let sibling = node.nextSibling; sibling; sibling = sibling.nextSibling) {
+    if (sibling.nodeType === 3) {
+      if (sibling.textContent?.trim()) return true;
+      continue;
+    }
+    if (sibling.nodeType === 1 && !OMIT_TAGS.has((sibling as Element).tagName.toUpperCase())) return true;
+  }
+  return false;
 }
 
 function appendTextWithMath(parent: HTMLElement, text: string, context: RenderContext, inlineMarkup = true): void {

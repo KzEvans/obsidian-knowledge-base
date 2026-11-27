@@ -2,8 +2,8 @@
  * MinerU joins a paragraph that continues in the next column or on the next page
  * into the earlier block and marks the later block `lines_deleted` in layout.json.
  * The content list keeps that later block with empty text. These are the indices of
- * such blocks, so normalization can attach their source regions to the paragraph
- * that already holds the text instead of treating them as missing text.
+ * such blocks. The native-text audit uses their regions to verify which earlier
+ * paragraph already holds the text.
  */
 
 type Box = [number, number, number, number];

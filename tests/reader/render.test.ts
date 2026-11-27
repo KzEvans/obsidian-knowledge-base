@@ -511,7 +511,7 @@ test("search text covers reader content but not page markers or source-tool butt
   assert.ok(blockSearchText(figure!).includes("Relaxation modulus"));
 });
 
-test("a figure MinerU split into image blocks renders as one figure with its caption paragraph and without in-figure text", async () => {
+test("a figure MinerU split into image blocks keeps a spanning ambiguous equation as its own block", async () => {
   const at = (page: number, bbox: [number, number, number, number]) => ({ sources: [{ page, bbox }] });
   const { root } = await render([
     block("intro", "paragraph", "Before the figure."),
@@ -530,7 +530,287 @@ test("a figure MinerU split into image blocks renders as one figure with its cap
   assert.equal(figures[0]!.querySelector("figcaption")?.textContent, "F I G U R E 2 The evolution of particles");
   assert.ok(figures[0]!.querySelector('figcaption [data-segment="h-caption"]'), "the caption paragraph keeps its translation unit");
   assert.ok(!root.textContent?.includes("(a)"));
-  assert.equal(root.querySelector(".pdf-reader-equation"), null);
+  assert.equal(root.querySelectorAll(".pdf-reader-equation").length, 1);
+  assert.equal(root.querySelector('[data-reader-block-id="formula"] .test-math')?.getAttribute("data-source"), "PS_{300}");
   const order = Array.from(root.querySelectorAll<HTMLElement>("[data-reader-block-id]")).map(element => element.dataset.readerBlockId);
-  assert.deepEqual(order, ["intro", "panel-a", "after"]);
+  assert.deepEqual(order, ["intro", "panel-a", "formula", "after"]);
+});
+
+const SYNTHETIC_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC";
+
+test("AC-02: outside-crop panel label renders once inside its unique panel; inside-crop label is deduplicated", async () => {
+  const at = (page: number, bbox: [number, number, number, number]) => ({ sources: [{ page, bbox }] });
+  const { root } = await render([
+    block("p-a", "figure", "", { asset: "p-a.jpg", ...at(7, [0.1, 0.25, 0.45, 0.42]) }),
+    block("p-b", "figure", "", { asset: "p-b.jpg", ...at(7, [0.55, 0.25, 0.85, 0.42]) }),
+    block("p-c", "figure", "", { asset: "p-c.jpg", ...at(7, [0.1, 0.46, 0.45, 0.613]) }),
+    block("p-d", "figure", "", { asset: "p-d.jpg", ...at(7, [0.618, 0.462, 0.816, 0.613]) }),
+    block("outside-label", "equation", "$$S_{104}$$", at(7, [0.665, 0.615, 0.768, 0.631])),
+    { ...block("cap-out", "paragraph", "F I G U R E 4 Complete caption for panels.", at(7, [0.1, 0.64, 0.85, 0.7])), segments: [{ field: "text", index: 0, sourceHash: "h-cap-out" }] },
+    block("sep", "paragraph", "Separator paragraph between figures.", { sources: [{ page: 8 }] }),
+    block("in-a", "figure", "", { asset: "in-a.png", ...at(8, [0.1, 0.2, 0.45, 0.4]) }),
+    block("in-b", "figure", "", { asset: "in-b.png", ...at(8, [0.55, 0.2, 0.85, 0.4]) }),
+    block("inside-label", "equation", "$$S_{in}$$", at(8, [0.62, 0.34, 0.78, 0.39])),
+    block("cap-in", "paragraph", "Figure 5. Synthetic in-crop label counterexample.", at(8, [0.1, 0.42, 0.85, 0.48])),
+  ], undefined, {
+    assetUrl: reference => reference.startsWith("in-") ? SYNTHETIC_PNG : `app://local/${reference}`,
+  });
+
+  const figures = Array.from(root.querySelectorAll<HTMLElement>("figure.pdf-reader-figure-group"));
+  assert.equal(figures.length, 2);
+
+  // Group 1: outside label appears once inside panel p-d, nowhere else, with full caption and translation segment.
+  const outPanels = Array.from(figures[0]!.querySelectorAll<HTMLElement>(".pdf-reader-figure-panel"));
+  assert.equal(outPanels.length, 4);
+  assert.equal(outPanels[3]!.querySelector("img")?.getAttribute("src"), "app://local/p-d.jpg");
+  assert.equal(outPanels[3]!.querySelectorAll(".test-math").length, 1);
+  assert.equal(outPanels[3]!.querySelector<HTMLElement>(".test-math")?.dataset.source, "S_{104}");
+  for (let i = 0; i < 3; i++) assert.equal(outPanels[i]!.querySelector(".test-math"), null);
+  assert.equal(root.querySelectorAll('[data-source="S_{104}"]').length, 1);
+  assert.equal(root.querySelector('[data-reader-block-id="outside-label"]'), null);
+  assert.equal(figures[0]!.querySelector("figcaption")?.textContent, "F I G U R E 4 Complete caption for panels.");
+  assert.ok(figures[0]!.querySelector('figcaption [data-segment="h-cap-out"]'));
+
+  // Group 2: in-crop label already inside synthetic PNG crop is suppressed so it is not duplicated.
+  const inPanels = Array.from(figures[1]!.querySelectorAll<HTMLElement>(".pdf-reader-figure-panel"));
+  assert.equal(inPanels.length, 2);
+  assert.equal(inPanels[1]!.querySelector("img")?.getAttribute("src"), SYNTHETIC_PNG);
+  assert.equal(figures[1]!.querySelector(".test-math"), null);
+  assert.equal(root.querySelector('[data-reader-block-id="inside-label"]'), null);
+  assert.equal(figures[1]!.querySelector("figcaption")?.textContent, "Figure 5. Synthetic in-crop label counterexample.");
+});
+
+test("AC-02: panel label falls back to backup crop image, missing-bbox equations stay suppressed, unavailable panel image keeps equation block", async () => {
+  const at = (page: number, bbox: [number, number, number, number]) => ({ sources: [{ page, bbox }] });
+  const { root } = await render([
+    block("fb-a", "figure", "", { asset: "fb-a.jpg", ...at(7, [0.1, 0.1, 0.45, 0.3]) }),
+    block("fb-b", "figure", "", { asset: "fb-b.jpg", ...at(7, [0.55, 0.1, 0.85, 0.3]) }),
+    block("fb-label", "equation", "$$bad_tex$$", { asset: "fallback/fb-label.png", ...at(7, [0.6, 0.302, 0.8, 0.32]) }),
+    block("fb-cap", "paragraph", "Figure 1. Fallback label figure.", at(7, [0.1, 0.35, 0.85, 0.4])),
+    block("legacy-img", "figure", "", { asset: "legacy.jpg", sources: [{ page: 8 }] }),
+    block("legacy-eq", "equation", "$$PS_{legacy}$$", { sources: [{ page: 8 }] }),
+    block("legacy-cap", "paragraph", "Figure 2. Legacy no-bbox equation.", { sources: [{ page: 8 }] }),
+    block("unavail-a", "figure", "", { asset: "ok.jpg", ...at(9, [0.1, 0.1, 0.45, 0.3]) }),
+    block("unavail-b", "figure", "", { asset: "missing.jpg", ...at(9, [0.55, 0.1, 0.85, 0.3]) }),
+    block("unavail-eq", "equation", "$$S_{keep}$$", at(9, [0.6, 0.302, 0.8, 0.32])),
+    block("unavail-cap", "paragraph", "Figure 3. Missing panel asset keeps label.", at(9, [0.1, 0.35, 0.85, 0.4])),
+  ], "bad_tex", {
+    assetUrl: reference => reference === "missing.jpg" ? "" : `app://local/${reference}`,
+  });
+
+  const figures = Array.from(root.querySelectorAll<HTMLElement>("figure.pdf-reader-figure-group"));
+  assert.equal(figures.length, 3);
+  const fbPanels = Array.from(figures[0]!.querySelectorAll<HTMLElement>(".pdf-reader-figure-panel"));
+  assert.equal(fbPanels[1]!.querySelector(".pdf-reader-equation-body img")?.getAttribute("src"), "app://local/fallback/fb-label.png");
+  assert.equal(root.querySelector('[data-reader-block-id="legacy-eq"]'), null);
+  assert.equal(root.querySelector('[data-reader-block-id="unavail-eq"] .test-math')?.getAttribute("data-source"), "S_{keep}");
+});
+
+test("AC-06: callout HTML renders safely with emphasis and TeX, no trailing br, and clean separation in readableText/search/copy", async () => {
+  const { blockSearchText, needsCleanCopy, readableText } = await renderer;
+  const callout: RenderBlock = {
+    ...block("callout-22", "paragraph", "Lead note with $x^2$\nSecond line", {
+      html: "<div>Lead <em>note</em> with $x^2$</div><div>Second line</div>   ",
+      sources: [{ page: 2, bbox: [0.07, 0.08, 0.57, 0.52] }],
+    }),
+    segments: [{ field: "text", index: 0, sourceHash: "h-callout" }],
+  };
+  const malformedCallout: RenderBlock = block("callout-bad", "paragraph", "Fallback $bad_eq$", {
+    html: "<p>Fallback $bad_eq$</p><p>Next line</p>\n",
+    sources: [{ page: 2 }],
+  });
+  const { root } = await render([callout, malformedCallout], "bad_eq", {
+    translation: hash => hash === "h-callout" ? "导语与公式 $x^2$\n第二行" : undefined,
+  });
+
+  const section = root.querySelector<HTMLElement>('[data-reader-block-id="callout-22"]')!;
+  const enLayer = section.querySelector<HTMLElement>('.pw-block[data-segment="h-callout"] > .pw-layer[lang="en"]')!;
+  const zhLayer = section.querySelector<HTMLElement>('.pw-block[data-segment="h-callout"] > .pw-layer[lang="zh"]')!;
+  assert.equal(zhLayer.getAttribute("aria-hidden"), "true");
+  assert.equal(enLayer.querySelector("em")?.textContent, "note");
+  assert.equal(enLayer.querySelector<HTMLElement>(".test-math")?.dataset.source, "x^2");
+  const readable = readableText(section);
+  assert.equal(readable, "Lead note with x^2\nSecond line");
+  assert.equal(blockSearchText(section), "Lead note with x^2\nSecond line");
+  assert.ok(!readable.includes("x^2Second") && !readable.includes("<div"));
+  assert.equal(enLayer.querySelectorAll("br").length, 1, "only one separator br between containers; trailing whitespace must not add a trailing br");
+  const trailingNodes = Array.from(enLayer.childNodes).filter(node => node.nodeType !== 3 || Boolean(node.textContent?.trim()));
+  assert.equal(trailingNodes.at(-1)?.textContent, "Second line");
+  assert.ok(!enLayer.textContent?.includes("<div") && !enLayer.textContent?.includes("</div>"));
+
+  // Clean copy path drops hidden Chinese layer, page markers and tool buttons while keeping block separation.
+  const copyFragment = createFragment();
+  const wrapper = copyFragment.createDiv();
+  wrapper.append(section.cloneNode(true));
+  assert.equal(needsCleanCopy(copyFragment), true);
+  assert.equal(readableText(wrapper), "Lead note with x^2\nSecond line");
+
+  // Malformed formula inside callout HTML keeps readable fallback and marks the block.
+  const badSection = root.querySelector<HTMLElement>('[data-reader-block-id="callout-bad"]')!;
+  assert.ok(badSection.classList.contains("has-math-fallback"));
+  assert.equal(badSection.querySelector(".pdf-reader-math-fallback")?.textContent, "bad_eq");
+  assert.equal(readableText(badSection), "Fallback bad_eq\nNext line");
+});
+
+test("AC-03: English compound unit spacing and exponent remain intact across text, HTML and readableText", async () => {
+  const { readableText } = await renderer;
+  const blocks: RenderBlock[] = [
+    block("u-plain", "paragraph", "Power density reaches 2 W m⁻³ under load.", { sources: [{ page: 2 }] }),
+    block("u-html", "paragraph", "Power density reaches 2 W m<sup>-3</sup> and $2\\text{ W m}^{-3}$.", {
+      html: "<div>Power density reaches 2 W m<sup>-3</sup> and $2\\text{ W m}^{-3}$.</div>",
+      sources: [{ page: 2 }],
+    }),
+  ];
+  const { root } = await render(blocks);
+  const plainText = readableText(root.querySelector('[data-reader-block-id="u-plain"]')!);
+  const htmlSection = root.querySelector<HTMLElement>('[data-reader-block-id="u-html"]')!;
+  const htmlText = readableText(htmlSection);
+  assert.ok(plainText.includes("2 W m⁻³"));
+  assert.ok(!plainText.includes("Wm⁻³"));
+  assert.ok(htmlText.includes("2 W m-3"));
+  assert.ok(!htmlText.includes("Wm-3"));
+  assert.equal(htmlSection.querySelector("sup")?.textContent, "-3");
+  assert.equal(htmlSection.querySelector<HTMLElement>(".test-math")?.dataset.source, "2\\text{ W m}^{-3}");
+});
+
+test("AC-01 & AC-04 & AC-05: source buttons fire exact pages matching clicked block source boxes and preserve anchors", async () => {
+  const { readableText } = await renderer;
+  const clicked: Array<{ blockId: string; page: number; boxes: Array<[number, number, number, number] | undefined> }> = [];
+  let activeBlock: ReaderBlock | undefined;
+  const blocks: RenderBlock[] = [
+    // AC-01: cross-page body paragraph + separate callout box
+    block("block-12", "paragraph", "Body paragraph starts on page one and continues smoothly on page two.", {
+      sources: [
+        { page: 1, bbox: [0.586, 0.882, 0.932, 0.94] },
+        { page: 2, bbox: [0.233, 0.534, 0.576, 0.563] },
+      ],
+    }),
+    block("block-22", "paragraph", "Callout box summary", {
+      html: "<div>Callout box summary</div>",
+      sources: [{ page: 2, bbox: [0.07, 0.075, 0.571, 0.52] }],
+    }),
+    // AC-04: cross-float body continuation + Scheme caption above figure
+    block("block-70", "paragraph", "Sentence starts before float and finishes after scheme figure.", {
+      sources: [
+        { page: 4, bbox: [0.55, 0.85, 0.92, 0.92] },
+        { page: 5, bbox: [0.08, 0.65, 0.45, 0.72] },
+      ],
+    }),
+    block("block-75", "paragraph", "S CH E M E 1 (a) Conceptual pathway.", {
+      sources: [{ page: 5, bbox: [0.08, 0.1, 0.45, 0.16] }],
+    }),
+    block("block-76", "figure", "", {
+      asset: "scheme-1.jpg",
+      sources: [{ page: 5, bbox: [0.08, 0.18, 0.45, 0.6] }],
+    }),
+    block("block-111", "paragraph", "The energy relation is written as follows:", {
+      sources: [{ page: 5, bbox: [0.08, 0.34, 0.91, 0.38] }],
+    }),
+    // AC-05: display equation, adjacent number, and independent following paragraph anchor
+    block("block-112", "equation", "$$E = mc^2$$", {
+      sources: [{ page: 5, bbox: [0.15, 0.4, 0.75, 0.45] }],
+    }),
+    block("block-113", "paragraph", "(21)", {
+      sources: [{ page: 5, bbox: [0.85, 0.44, 0.91, 0.46] }],
+    }),
+    block("block-114", "paragraph", "where $m$ is the rest mass.", {
+      sources: [{ page: 5, bbox: [0.08, 0.48, 0.91, 0.56] }],
+    }),
+  ];
+  const byId = new Map(blocks.map(item => [item.id, item]));
+  const { root } = await render(blocks, undefined, {
+    assetUrl: reference => `app://local/${reference}`,
+    onSource: page => {
+      assert.ok(activeBlock);
+      clicked.push({
+        blockId: activeBlock.id,
+        page,
+        boxes: activeBlock.sources.filter(source => source.page === page).map(source => source.bbox),
+      });
+    },
+  });
+
+  const clickSourceButtons = (blockId: string) => {
+    const section = root.querySelector<HTMLElement>(`[data-reader-block-id="${blockId}"]`)!;
+    assert.ok(section, `missing block ${blockId}`);
+    activeBlock = byId.get(blockId);
+    const buttons = Array.from(section.querySelectorAll<HTMLButtonElement>(".pdf-reader-block-tools button"))
+      .filter(button => button.textContent?.startsWith("原文 p."));
+    for (const button of buttons) button.dispatchEvent(new root.ownerDocument.defaultView!.Event("click"));
+  };
+
+  clickSourceButtons("block-12");
+  clickSourceButtons("block-22");
+  clickSourceButtons("block-70");
+  clickSourceButtons("block-114");
+
+  assert.deepEqual(clicked, [
+    { blockId: "block-12", page: 1, boxes: [[0.586, 0.882, 0.932, 0.94]] },
+    { blockId: "block-12", page: 2, boxes: [[0.233, 0.534, 0.576, 0.563]] },
+    { blockId: "block-22", page: 2, boxes: [[0.07, 0.075, 0.571, 0.52]] },
+    { blockId: "block-70", page: 4, boxes: [[0.55, 0.85, 0.92, 0.92]] },
+    { blockId: "block-70", page: 5, boxes: [[0.08, 0.65, 0.45, 0.72]] },
+    { blockId: "block-114", page: 5, boxes: [[0.08, 0.48, 0.91, 0.56]] },
+  ]);
+
+  // AC-04: caption stays pure in figcaption; continuation occurs once in body.
+  const figure = root.querySelector<HTMLElement>('[data-reader-block-id="block-76"]')!;
+  assert.equal(figure.querySelector("figcaption")?.textContent, "S CH E M E 1 (a) Conceptual pathway.");
+  assert.equal(readableText(root).split("finishes after scheme figure.").length - 1, 1);
+
+  // AC-05: equation and (21) stay adjacent, (21) occurs once, and block-114 keeps its own anchor.
+  const eqSection = root.querySelector<HTMLElement>('[data-reader-block-id="block-112"]')!;
+  const numSection = root.querySelector<HTMLElement>('[data-reader-block-id="block-113"]')!;
+  const nextSection = root.querySelector<HTMLElement>('[data-reader-block-id="block-114"]')!;
+  assert.equal(eqSection.nextElementSibling, numSection);
+  assert.equal(numSection.nextElementSibling, nextSection);
+  assert.equal(readableText(root).split("(21)").length - 1, 1);
+  assert.ok(readableText(nextSection).includes("where m is the rest mass."));
+});
+
+test("AC-07: publication metadata stays folded by default and after reopen while research notes and acknowledgements remain visible", async () => {
+  const pagesClicked: number[] = [];
+  const blocks: RenderBlock[] = [
+    block("intro-h", "heading", "Introduction", { level: 2, sources: [{ page: 1 }] }),
+    block("affil-14", "metadata", "1 Department of Materials, City 10000.", { hiddenByDefault: true, sources: [{ page: 1 }] }),
+    block("table-note", "footnote", "a Values measured at 298 K.", { sources: [{ page: 6 }] }),
+    block("orcid-h", "metadata", "ORCID", { hiddenByDefault: true, sources: [{ page: 11 }] }),
+    block("orcid-v", "metadata", "Author A: 0000-0001-0000-0000", { hiddenByDefault: true, sources: [{ page: 11 }] }),
+    block("ack-h", "heading", "Acknowledgements", { level: 2, sources: [{ page: 15 }] }),
+    block("ack-body", "paragraph", "We thank the microscopy facility for assistance.", { sources: [{ page: 15 }] }),
+    block("pub-note", "metadata", "Publisher's note: jurisdiction claims remain neutral.", { hiddenByDefault: true, sources: [{ page: 15 }] }),
+  ];
+  const { root } = await render(blocks, undefined, { onSource: page => pagesClicked.push(page) });
+
+  const checkDefaultState = () => {
+    const folds = Array.from(root.querySelectorAll<HTMLDetailsElement>('details.pdf-reader-fold[data-fold-kind="metadata"]'));
+    assert.ok(folds.length >= 1);
+    for (const fold of folds) {
+      assert.equal(fold.hasAttribute("open"), false);
+      assert.ok(!fold.open);
+      assert.equal(fold.querySelector("summary")?.textContent, "文献信息");
+    }
+    for (const id of ["affil-14", "orcid-h", "orcid-v", "pub-note"]) {
+      assert.equal(root.querySelector(`[data-reader-block-id="${id}"]`)?.closest("details")?.getAttribute("data-fold-kind"), "metadata", id);
+    }
+    for (const id of ["table-note", "ack-h", "ack-body"]) {
+      const node = root.querySelector(`[data-reader-block-id="${id}"]`);
+      assert.ok(node, id);
+      assert.equal(node.closest("details"), null, `${id} must stay visible outside folds`);
+    }
+    return folds;
+  };
+
+  const folds = checkDefaultState();
+  // Expand folds and verify content & source callback are accessible.
+  for (const fold of folds) { fold.setAttribute("open", ""); fold.open = true; }
+  const pubButton = root.querySelector<HTMLButtonElement>('[data-reader-block-id="pub-note"] .pdf-reader-block-tools button')!;
+  pubButton.dispatchEvent(new root.ownerDocument.defaultView!.Event("click"));
+  assert.deepEqual(pagesClicked, [15]);
+
+  // Reopen reading mode: publication metadata returns to closed default state.
+  await (await renderer).renderReader(root, blocks, {
+    fontSize: 18, lineHeight: 1.5, assetUrl: () => "", onSource: page => pagesClicked.push(page), onCopy: () => {}, onZoom: () => {},
+  });
+  checkDefaultState();
 });
