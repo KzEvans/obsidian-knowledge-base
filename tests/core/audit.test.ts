@@ -730,3 +730,55 @@ test('a long marked continuation with a unique near-length pair of anchors adds 
   ]);
   assert.deepEqual(doc.warnings,[]);
 });
+
+const continuationLead = 'The detector confirmed the response before the chamber reached equilibrium.';
+const markedNextPage = (text: string, next = '') => normalizeContentList([
+  {type:'text',text:'A separate observation. ' + text,page_idx:0,bbox:[0,0,470,350]},
+  {type:'text',text:'',page_idx:1,bbox:[500,0,1000,350]},
+  ...(next ? [{type:'text',text:next,page_idx:1,bbox:[500,370,1000,700]}] : []),
+],'hash','test',2);
+const auditMarkedNextPage = (doc: ReturnType<typeof markedNextPage>, native: string) =>
+  auditNativeText(pdfFromItems([[],[nativeItem(native,110,80)]]),doc,new Set(['block-2']));
+
+test('a short marked continuation can prove its source despite a different native formula representation', async () => {
+  const cloud = continuationLead + ' The value is $\\alpha$ at rest.';
+  const doc = markedNextPage(cloud);
+  await auditMarkedNextPage(doc,continuationLead + ' The value is α at rest.');
+  assert.deepEqual(doc.blocks.map(({id,text,sources})=>({id,text,sources})),[
+    {id:'block-1',text:'A separate observation. ' + cloud,sources:[
+      {page:1,bbox:[0,0,0.47,0.35]},{page:2,bbox:[0.5,0,1,0.35]},
+    ]},
+  ]);
+  assert.deepEqual(doc.warnings,[]);
+});
+
+test('a marked region with omitted middle native text keeps its source when the retained ends prove ownership', async () => {
+  const head = continuationLead + ' The same response appeared in two independent trials with a second instrument.';
+  const missing = ' The technician changed the calibration sequence and repeated the acquisition before proceeding to the next measurement.';
+  const tail = ' Both detectors returned to their initial baseline once the chamber cooled.';
+  const doc = markedNextPage(head + tail);
+  await auditMarkedNextPage(doc,head + missing + tail);
+  assert.deepEqual(doc.blocks.map(({id,text,sources})=>({id,text,sources})),[
+    {id:'block-1',text:'A separate observation. ' + head + tail,sources:[
+      {page:1,bbox:[0,0,0.47,0.35]},{page:2,bbox:[0.5,0,1,0.35]},
+    ]},
+  ]);
+  assert.deepEqual(doc.warnings,[]);
+});
+
+test('a shared opening alone and tolerant matches in two paragraphs do not prove a marked continuation', async () => {
+  const native = continuationLead + ' The value is α at rest.';
+  const cloud = continuationLead + ' The value is $\\alpha$ at rest.';
+  for (const [text,next] of [
+    [continuationLead + ' A completely independent detector then recorded many unstable readings.', ''],
+    [cloud, 'An alternate result. ' + cloud],
+    [cloud + ' ' + cloud, ''],
+  ] as const) {
+    const doc = markedNextPage(text,next);
+    await auditMarkedNextPage(doc,native);
+    assert.deepEqual(doc.blocks.map(({id,sources})=>[id,sources.map(source=>source.page)]),[
+      ['block-1',[1]], ...(next ? [['block-3',[2]]] : []),
+    ]);
+    assert.deepEqual(doc.warnings,['内容块 2（第 2 页）续段来源待核对。']);
+  }
+});

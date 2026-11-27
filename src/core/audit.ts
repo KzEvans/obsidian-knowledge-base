@@ -309,7 +309,7 @@ function findDuplicateOwner(
   const pageText = compactText(sourceTexts[0] ?? '');
   const nativeIndex = pageText.indexOf(fragment);
   if (nativeIndex >= 0 && pageText.indexOf(fragment, nativeIndex + 1) >= 0) return undefined;
-  const nativeLetters = marked && fragment.length >= 80 ? mapLigatureLetters(regional).letters : '';
+  const nativeLetters = marked ? mapLigatureLetters(regional).letters : '';
   const markedMatches = (text: string) => countContinuationMatches(text, regional, fragment, nativeLetters);
   // PDF item order need not match the geometric region's reading order.
   // Another disjoint original region containing the passage proves a repeat.
@@ -630,12 +630,74 @@ function countContinuationMatches(cloud: string, regional: string, fragment: str
 
   // Long continuations can contain OCR differences between independently verified ends.
   const width = 48;
-  if (nativeLetters.length < width * 2) return 0;
   const letters = mapLigatureLetters(cloud).letters;
-  const head = nativeLetters.slice(0, width), tail = nativeLetters.slice(-width);
-  const start = letters.indexOf(head), end = letters.indexOf(tail);
-  if (start < 0 || end < start + width || letters.indexOf(head, start + 1) >= 0 || letters.indexOf(tail, end + 1) >= 0) return 0;
-  return Math.abs(end + width - start - nativeLetters.length) <= Math.ceil(nativeLetters.length * 0.02) ? 1 : 0;
+  if (nativeLetters.length >= width * 2) {
+    const head = nativeLetters.slice(0, width), tail = nativeLetters.slice(-width);
+    const start = letters.indexOf(head), end = letters.indexOf(tail);
+    if (start >= 0 && end >= start + width && letters.indexOf(head, start + 1) < 0 && letters.indexOf(tail, end + 1) < 0 &&
+      Math.abs(end + width - start - nativeLetters.length) <= Math.ceil(nativeLetters.length * 0.02)) return 1;
+  }
+  return countAnchoredContinuationMatches(letters, nativeLetters);
+}
+
+const CONTINUATION_ANCHOR = 35;
+
+function countAnchoredContinuationMatches(cloud: string, native: string): number {
+  if (native.length < CONTINUATION_ANCHOR * 2) return 0;
+  const head = native.slice(0, CONTINUATION_ANCHOR);
+  const regionalTail = native.slice(CONTINUATION_ANCHOR);
+  const budget = Math.ceil(native.length * 0.1);
+  let count = 0;
+  for (let start = cloud.indexOf(head); start >= 0; start = cloud.indexOf(head, start + 1)) {
+    const candidateTail = cloud.slice(start + CONTINUATION_ANCHOR);
+    if (matchesContinuationWithEdits(regionalTail, candidateTail, budget) || hasVerifiedOmission(regionalTail, candidateTail)) {
+      count++;
+      if (count > 1) break;
+    }
+  }
+  return count;
+}
+
+/** Match the regional text to a prefix after the exact anchor, allowing PDF and TeX spelling differences. */
+function matchesContinuationWithEdits(regional: string, candidate: string, budget: number): boolean {
+  const minimumLength = regional.length - budget;
+  const maximumLength = Math.min(candidate.length, regional.length + budget);
+  if (maximumLength < minimumLength) return false;
+
+  let previous = new Uint32Array(maximumLength + 1);
+  let current = new Uint32Array(maximumLength + 1);
+  for (let column = 0; column <= Math.min(budget + 1, maximumLength); column++) previous[column] = column;
+  for (let row = 1; row <= regional.length; row++) {
+    const first = Math.max(1, row - budget);
+    const last = Math.min(maximumLength, row + budget);
+    // Exclude stale cells just outside the edit band.
+    current[first - 1] = first === 1 ? row : budget + 1;
+    if (last < maximumLength) current[last + 1] = budget + 1;
+    for (let column = first; column <= last; column++) {
+      const substitution = previous[column - 1]! + Number(regional[row - 1] !== candidate[column - 1]);
+      current[column] = Math.min(substitution, previous[column]! + 1, current[column - 1]! + 1);
+    }
+    [previous, current] = [current, previous];
+  }
+  return previous.subarray(minimumLength).some(edits => edits <= budget);
+}
+
+/** A missing interior can prove provenance when both ends and the remaining letters agree in order. */
+function hasVerifiedOmission(regional: string, candidate: string): boolean {
+  const endAnchor = regional.slice(-CONTINUATION_ANCHOR);
+  const end = candidate.indexOf(endAnchor);
+  if (end < 0 || candidate.indexOf(endAnchor, end + 1) >= 0) return false;
+  const retained = end + CONTINUATION_ANCHOR * 2;
+  const regionalLength = regional.length + CONTINUATION_ANCHOR;
+  if (retained * 2 < regionalLength || retained >= regionalLength) return false;
+  let cursor = 0;
+  const limit = regional.length - CONTINUATION_ANCHOR;
+  for (const letter of candidate.slice(0, end)) {
+    cursor = regional.indexOf(letter, cursor);
+    if (cursor < 0 || cursor >= limit) return false;
+    cursor++;
+  }
+  return true;
 }
 
 /** Count cloud positions holding the native letters minus a few isolated single letters, never added or changed ones. */
