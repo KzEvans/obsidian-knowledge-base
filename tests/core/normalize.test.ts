@@ -1,8 +1,21 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { ligatureSuperscriptCandidate, normalizeContentList } from "../../src/core/normalize";
+import { ligatureSuperscriptCandidate, normalizeContentList, parseCaptionLabel } from "../../src/core/normalize";
 
 const normalize = (items: unknown, pageCount = 9) => normalizeContentList(items, "pdf-hash", "mineru-v4-vlm", pageCount);
+
+test("caption labels share the reader vocabulary and retain the original number", () => {
+  assert.deepEqual(parseCaptionLabel("<b>F I G U RE S 003</b> | Panels"), { kind: "figure", number: "S003", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("S CH E M E 1 (a) Flow"), { kind: "scheme", number: "1", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("T AB L E 02. Results"), { kind: "table", number: "02", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("图 3：数据"), { kind: "figure", number: "3", captionLike: false });
+  assert.deepEqual(parseCaptionLabel("方案 2（a）"), { kind: "scheme", number: "2", captionLike: true });
+  assert.deepEqual(parseCaptionLabel("表 6"), { kind: "table", number: "6", captionLike: false });
+  assert.deepEqual(parseCaptionLabel("Fig. 5 shows the trend."), { kind: "figure", number: "5", captionLike: false });
+  assert.deepEqual(parseCaptionLabel("Scheme 1 illustrates the setup."), { kind: "scheme", number: "1", captionLike: false });
+  assert.equal(parseCaptionLabel("Refer to Figure 3."), undefined);
+  assert.equal(parseCaptionLabel("Figure 3.2"), undefined);
+});
 
 test("provider reading order survives interleaved two-column coordinates", () => {
   const doc = normalize([

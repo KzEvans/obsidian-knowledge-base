@@ -7,6 +7,26 @@ const FIRST_PAGE_CONTROL = /^(?:Read Online|ACCESS|Metrics & More|Article Recomm
 const BODY_TITLE =/^(?:\d+[.)]?\s+)?(?:abstract|summary|introduction|keywords?|highlights)\b/i;
 const SECTION_AFTER_REFERENCES = /^(?:\d+[.)]?\s+)?(?:acknowledg(?:e)?ments?|appendix(?:\s+[A-Z0-9])?|appendices|supplement(?:al|ary)\s+(?:information|materials?)|supporting information|author contributions?|credit authorship contribution statement|declaration of\s+.{1,70}|conflicts? of interest|data availability(?: statement)?|funding|致谢|附录)\s*[:：]?$/i;
 
+const CAPTION_LABEL = /^\s*(?:f\s*i\s*g(?:\s*u\s*r\s*e)?\s*\.?|图|(s\s*c\s*h\s*e\s*m\s*e|方案)|(t\s*a\s*b\s*l\s*e|表))\s*(s?)\s*(\d+)(?![\d.]*\d)/i;
+const CAPTION_AFTER = /^\s*[.:|(（A-Z]/;
+
+export function parseCaptionLabel(text: string): {
+  kind: "figure" | "scheme" | "table";
+  number: string;
+  captionLike: boolean;
+} | undefined {
+  const plain = text.replace(/<[^>]*>/g, "");
+  const match = CAPTION_LABEL.exec(plain);
+  const digits = match?.[4];
+  if (!match || !digits) return undefined;
+
+  return {
+    kind: match[1] ? "scheme" : match[2] ? "table" : "figure",
+    number: (match[3] ?? "") + digits,
+    captionLike: CAPTION_AFTER.test(plain.slice(match[0].length)),
+  };
+}
+
 export interface NormalizeOptions {
   /** Content-list indices MinerU merged into the previous paragraph (layout-merge.ts). */
   mergedIntoPrevious?: ReadonlySet<number>;
