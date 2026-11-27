@@ -1,12 +1,9 @@
+import { parseCaptionLabel } from '../core/normalize';
 import type { ReaderBlock, StoredDocument } from '../core/types';
 
 /** Key ("4" for Figure 4, "scheme 1", "table 2") → asset references of its image blocks, in reading order. */
 export type FigureIndex = Map<string, string[]>;
 
-/** "Figure 3", "Fig. 3", "图 3", "Scheme 1", "方案 1", "Table 2", "表 2", and Wiley's letter-spaced "F I G U RE 3", "S CH E M E 1", "T AB L E 2". */
-const LABEL = /^\s*(?:f\s*i\s*g(?:\s*u\s*r\s*e)?\s*\.?|图|(s\s*c\s*h\s*e\s*m\s*e|方案)|(t\s*a\s*b\s*l\s*e|表))\s*(s?)\s*(\d+)(?![\d.]*\d)/i;
-/** What follows the number of a caption set above its image: "(a) …", "Conceptual …", ". …". */
-const CAPTION_AFTER = /^\s*[.:|(（A-Z]/;
 /** A caption that is only a panel letter: "(a)", "b)", "c". */
 const PANEL = /^\s*\(?([a-z])\)?\s*$/i;
 const LAYOUT_NOISE = new Set<ReaderBlock['kind']>(['header', 'footer', 'metadata']);
@@ -33,11 +30,16 @@ export interface FigureGroup<B extends ReaderBlock = ReaderBlock> {
 
 function labelIn(texts: readonly string[]): Label | undefined {
   for (const text of texts) {
-    const plain = text.replace(/<[^>]*>/g, '');
-    const match = LABEL.exec(plain);
-    if (!match) continue;
-    const kind = kindOf(match[1], match[2]);
-    return { kind, si: Boolean(match[3]), number: keyOf(kind, Number(match[4])), captionLike: CAPTION_AFTER.test(plain.slice(match[0].length)) };
+    const parsed = parseCaptionLabel(text);
+    if (!parsed) continue;
+    const si = /^s/i.test(parsed.number);
+    const digits = si ? parsed.number.slice(1) : parsed.number;
+    return {
+      kind: parsed.kind,
+      si,
+      number: keyOf(parsed.kind, Number(digits)),
+      captionLike: parsed.captionLike,
+    };
   }
   return undefined;
 }
