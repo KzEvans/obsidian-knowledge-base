@@ -195,3 +195,46 @@ test('render or encode failure releases every canvas and the page', async () => 
     assert.ok(h.canvases.every(canvas => canvas.width === 0 && canvas.height === 0));
   }
 });
+
+test('derive verifies marked continuation boxes from V1 layout and keeps an HTML explanation independent', async () => {
+  const start = 'The filter was calibrated.';
+  const column = 'The control agreed.';
+  const continuation = 'The detector confirmed the trend.';
+  const paragraph = [start, column, continuation].join(' ');
+  const lead = 'In a separate experiment the response remained stable when the system dissipated';
+  const tail = ' of power over the course of the long measurement.';
+  const boxText = lead + ' 2 W m $^{-3}$' + tail;
+  const html = '<div class="explanation">' + boxText + '</div>';
+  const list = [
+    { type: 'text', text: paragraph, page_idx: 0, bbox: [0, 0, 470, 350] },
+    { type: 'text', text: '', page_idx: 0, bbox: [500, 0, 1000, 350] },
+    { type: 'code', code_body: html, page_idx: 1, bbox: [0, 0, 470, 350] },
+    { type: 'text', text: '', page_idx: 1, bbox: [500, 0, 1000, 350] },
+  ];
+  const layout = { pdf_info: [0, 1].map(page_idx => ({
+    page_idx, page_size: [200, 100],
+    para_blocks: [{ type: 'text', lines_deleted: true, bbox: [100, 0, 200, 35] }],
+  })) };
+  const { files } = raw({
+    'auto/x_content_list.json': encoder.encode(JSON.stringify(list)),
+    'auto/layout.json': encoder.encode(JSON.stringify(layout)),
+  });
+  const item = (str: string, x: number, width: number) => ({ str, width, height: 10, transform: [10, 0, 0, 10, x, 80] });
+  const pages = [
+    [item(start, 10, 80), item(column, 110, 80)],
+    [item(lead + ' 2 Wm−3' + tail, 10, 80), item(continuation, 110, 80)],
+  ];
+  const pdf = { numPages: 2, getPage: async (page: number) => ({
+    getTextContent: async () => ({ items: pages[page - 1] }),
+    getViewport: () => ({ width: 200, height: 100, scale: 1, convertToViewportPoint: (x: number, y: number) => [x, 100 - y] }),
+  }) };
+  const { document } = await derive({ sha: SHA, raw: files, pdf, cropper: recordingCropper().cropper });
+  assert.deepEqual(document.blocks.map(({ id, text, sources }) => ({ id, text, sources })), [
+    { id: 'block-1', text: paragraph, sources: [
+      { page: 1, bbox: [0, 0, 0.47, 0.35] }, { page: 1, bbox: [0.5, 0, 1, 0.35] }, { page: 2, bbox: [0.5, 0, 1, 0.35] },
+    ] },
+    { id: 'block-3', text: boxText, sources: [{ page: 2, bbox: [0, 0, 0.47, 0.35] }] },
+  ]);
+  assert.equal(document.blocks[1]?.html, html);
+  assert.deepEqual(document.warnings, []);
+});

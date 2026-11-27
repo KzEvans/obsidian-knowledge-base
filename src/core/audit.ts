@@ -1,4 +1,5 @@
 import { extractNativeRegion } from './native-text';
+import { parseCaptionLabel } from './normalize';
 import type { PdfPage, PdfTextItem } from './obsidian-internal';
 import type { ReaderBlock, ReaderDocument, SourceRef } from './types';
 
@@ -11,8 +12,15 @@ export interface AuditPdf {
 const isTextItem = (item: unknown): item is PdfTextItem =>
   typeof item === 'object' && item !== null && typeof (item as { str?: unknown }).str === 'string';
 
-export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): Promise<void> {
+export async function auditNativeText(
+  pdf: AuditPdf,
+  document: ReaderDocument,
+  mergedBlockIds?: ReadonlySet<ReaderBlock['id']>,
+): Promise<void> {
   const originallyEmpty = new Set(document.blocks.filter(block => block.kind === 'paragraph' && !block.text.trim()).map(block => block.id));
+  const pendingContinuations = new Set(document.blocks.filter(block =>
+    originallyEmpty.has(block.id) && !block.html && mergedBlockIds?.has(block.id),
+  ));
   const pageWordEvidence = new Map<number, {words:Set<string>;compact:string[]}>();
   for (let page = 1; page <= pdf.numPages; page++) {
     const pdfPage = await pdf.getPage(page);
@@ -20,21 +28,28 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
     const viewport = pdfPage.getViewport({ scale: 1 });
     const textItems = (content.items ?? []).filter(isTextItem);
     const native = textItems.map(item => item.str).join(' ').normalize('NFKC');
-    if (native.replace(/\s/g, '').length < 80) continue;
-
+    const canAuditPage = native.replace(/\s/g, '').length >= 80;
     const pageBlocks = document.blocks.filter(block => block.sources.some(source => source.page === page));
+    if (!canAuditPage && !pageBlocks.some(block => pendingContinuations.has(block))) continue;
+
     const regions = new Map<ReaderBlock, string[]>();
+    const textBySource = new Map<SourceRef, string>();
     const regionalTexts: string[] = [];
     for (const block of pageBlocks) {
-      const texts = block.sources.filter(source => source.page === page && source.bbox).map(source =>
-        extractNativeRegion(textItems, viewport, source.bbox!));
+      const texts: string[] = [];
+      for (const source of block.sources) {
+        if (source.page !== page || !source.bbox) continue;
+        const text = extractNativeRegion(textItems, viewport, source.bbox);
+        textBySource.set(source, text);
+        texts.push(text);
+      }
       regions.set(block, texts);
       regionalTexts.push(...texts.filter(Boolean));
     }
     const sourceTexts = [native, ...regionalTexts];
     // A missing ligature letter can otherwise break the anchors used for prose recovery.
     const nativeLetters = native.toLowerCase().replace(/[^a-z]/g, '');
-    for (const block of pageBlocks) {
+    for (const block of canAuditPage ? pageBlocks : []) {
       repairBlockLigatures(block, sourceTexts, regions.get(block) ?? []);
       restoreLostLigatureF(block, nativeLetters);
       if (block.kind === 'paragraph') {
@@ -47,9 +62,18 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
     for (const block of pageBlocks) {
       if (!document.blocks.includes(block)) continue;
       const regional = regions.get(block)?.[0];
-      if (regional && ['paragraph', 'heading'].includes(block.kind)) {
+      if (pendingContinuations.has(block)) {
+        const duplicate = regional && findDuplicateOwner(document.blocks, block, regional, sourceTexts, textBySource, page, true);
+        if (duplicate) {
+          mergeSources(duplicate.owner, block.sources);
+          removeContinuation(document, block);
+          pendingContinuations.delete(block);
+        }
+        continue;
+      }
+      if (canAuditPage && regional && ['paragraph', 'heading'].includes(block.kind)) {
         if (originallyEmpty.has(block.id)) {
-          const duplicate = findDuplicateOwner(document.blocks, block, regional, sourceTexts, regions, page);
+          const duplicate = findDuplicateOwner(document.blocks, block, regional, sourceTexts, textBySource, page);
           if (duplicate) {
             if (duplicate.correctedText !== undefined) duplicate.owner.text = duplicate.correctedText;
             mergeSources(duplicate.owner, block.sources);
@@ -63,6 +87,7 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
         }
       }
     }
+    if (!canAuditPage) continue;
     for (const block of pageBlocks) {
       if (document.blocks.includes(block)) restoreBlockSubscripts(block,regions.get(block) ?? []);
     }
@@ -73,6 +98,10 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
       words:new Set((sourceText.match(/[A-Za-z]{4,}/g) ?? []).map((word: string) => word.toLowerCase())),
       compact:sourceTexts.map(compactText),
     });
+  }
+  for (const block of pendingContinuations) {
+    removeContinuation(document, block);
+    document.warnings.push(`内容块 ${block.id.replace('block-', '')}（第 ${block.sources[0]?.page ?? '?'} 页）续段来源待核对。`);
   }
   // Later pages can prove that an earlier cloud paragraph spans both pages.
   // Score only after that provenance has been merged, avoiding false alarms.
@@ -90,6 +119,11 @@ export async function auditNativeText(pdf: AuditPdf, document: ReaderDocument): 
     if (words.length > 30 && verified.length / words.length < 0.7) document.warnings.push(`第 ${page} 页文本与原文差异较多，请核对原页。`);
   }
   document.warnings = [...new Set(document.warnings)];
+}
+
+function removeContinuation(document: ReaderDocument, block: ReaderBlock): void {
+  document.blocks.splice(document.blocks.indexOf(block), 1);
+  clearEmptyWarning(document, block);
 }
 
 function clearEmptyWarning(document: ReaderDocument, block: ReaderBlock): void {
@@ -250,7 +284,13 @@ interface DuplicateOwner {
   correctedText?: string;
 }
 
-function findDuplicateOwner(blocks: ReaderBlock[], empty: ReaderBlock, regional: string, sourceTexts: string[], regions: Map<ReaderBlock,string[]>, page: number): DuplicateOwner | undefined {
+function findDuplicateOwner(
+  blocks: ReaderBlock[], empty: ReaderBlock, regional: string, sourceTexts: string[],
+  textBySource: ReadonlyMap<SourceRef, string>, page: number, marked = false,
+): DuplicateOwner | undefined {
+  const fragment = compactText(regional);
+  const box = empty.sources.find(source => source.page === page && source.bbox)?.bbox;
+  if (!box || !fragment || (!marked && fragment.length < 80)) return undefined;
   const index = blocks.indexOf(empty);
   const candidates: ReaderBlock[] = [];
   // Count prose blocks, so headers, publisher controls, and floating figures do
@@ -260,24 +300,36 @@ function findDuplicateOwner(blocks: ReaderBlock[], empty: ReaderBlock, regional:
     for (let cursor = index + direction; cursor >= 0 && cursor < blocks.length && prose < 4; cursor += direction) {
       const candidate = blocks[cursor]!;
       if (candidate.kind !== 'paragraph' || !candidate.text.trim()) continue;
+      if (marked && (candidate.hiddenByDefault || candidate.html || parseCaptionLabel(candidate.text)?.captionLike)) continue;
       prose++;
       if (connectedSources(empty.sources, candidate.sources)) candidates.push(candidate);
     }
   }
-  const fragment = compactText(regional);
-  if (fragment.length < 80) return undefined;
   // A repeated source passage can be genuine prose in both layout regions.
   const pageText = compactText(sourceTexts[0] ?? '');
   const nativeIndex = pageText.indexOf(fragment);
-  if (nativeIndex >= 0 && pageText.indexOf(fragment,nativeIndex+1) >= 0) return undefined;
+  if (nativeIndex >= 0 && pageText.indexOf(fragment, nativeIndex + 1) >= 0) return undefined;
+  const nativeLetters = marked && fragment.length >= 80 ? mapLigatureLetters(regional).letters : '';
+  const markedMatches = (text: string) => countContinuationMatches(text, regional, fragment, nativeLetters);
   // PDF item order need not match the geometric region's reading order.
   // Another disjoint original region containing the passage proves a repeat.
-  const emptySource = empty.sources.find(source => source.page === page && source.bbox)!;
-  if (candidates.some(owner => owner.sources.filter(source => source.page === page && source.bbox).some((source,index) => {
-    const a=emptySource.bbox!,b=source.bbox!;
-    const disjoint=a[2]<=b[0] || b[2]<=a[0] || a[3]<=b[1] || b[3]<=a[1];
-    return disjoint && compactText(regions.get(owner)?.[index] ?? '').includes(fragment);
+  if (candidates.some(owner => owner.sources.some(source => {
+    const b = source.bbox;
+    if (source.page !== page || !b) return false;
+    const disjoint = box[2] <= b[0] || b[2] <= box[0] || box[3] <= b[1] || b[3] <= box[1];
+    const text = textBySource.get(source) ?? '';
+    return disjoint && (marked ? markedMatches(text) > 0 : compactText(text).includes(fragment));
   }))) return undefined;
+  if (marked) {
+    let owner: ReaderBlock | undefined;
+    for (const candidate of candidates) {
+      const count = markedMatches(candidate.text);
+      if (!count) continue;
+      if (owner || count > 1) return undefined;
+      owner = candidate;
+    }
+    return owner && blocks.indexOf(owner) < index ? { owner } : undefined;
+  }
   for (const candidate of candidates) repairBlockLigatures(candidate, sourceTexts, []);
   const matches = candidates.flatMap(owner => findNativeSpans(owner.text, regional).map(span => ({owner,span})));
   if (!matches.length) {
@@ -511,10 +563,22 @@ function restoreVerifiedTypography(cloud: string, regions: string[]): string {
     }));
     if (candidates.size !== 1) continue;
     const text = [...candidates][0]!;
+    if (gap && !text && isCompoundUnitGap(result, start, end)) continue;
     if (Boolean(gap) !== Boolean(text)) edits.push({ start, end, text });
   }
   for (const edit of edits.reverse()) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
   return result;
+}
+
+const UNIT_SYMBOL = /^(?:da|[qryzafpnumµμcdhkMGTPEZYRQ])?(?:m|s|g|A|K|mol|cd|Hz|N|Pa|J|W|C|V|F|Ω|S|Wb|T|H|L|l|eV|bar|min)$/u;
+const UNIT_POWER = /^\s*(?:[⁺⁻]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+|<sup\b[^>]*>\s*[+\-−]?\s*\d+\s*<\/sup>|\$?\^\s*(?:{\s*[+\-−]?\s*\d+\s*}|[+\-−]?\d+))/i;
+
+function isCompoundUnitGap(text: string, start: number, end: number): boolean {
+  const before = text.slice(0, start);
+  const left = /[\p{L}]+$/u.exec(before)?.[0];
+  const right = /^[\p{L}]+/u.exec(text.slice(end))?.[0];
+  if (!left || !right || !UNIT_SYMBOL.test(left) || !UNIT_SYMBOL.test(right)) return false;
+  return /\d$/.test(before.slice(0, -left.length).trimEnd()) || UNIT_POWER.test(text.slice(end + right.length));
 }
 
 interface LigatureMap extends LetterMap {
@@ -553,6 +617,25 @@ function findNativeSpans(cloud: string, regional: string): NativeSpan[] {
     if (spans.length > 1) break;
   }
   return spans;
+}
+
+function countContinuationMatches(cloud: string, regional: string, fragment: string, nativeLetters: string): number {
+  const compact = compactText(cloud);
+  const first = compact.indexOf(fragment);
+  const exact = first < 0 ? 0 : compact.indexOf(fragment, first + 1) < 0 ? 1 : 2;
+  if (!nativeLetters || exact === 2) return exact;
+
+  const spans = findNativeSpans(cloud, regional);
+  if (exact || spans.length) return Math.max(exact, spans.length);
+
+  // Long continuations can contain OCR differences between independently verified ends.
+  const width = 48;
+  if (nativeLetters.length < width * 2) return 0;
+  const letters = mapLigatureLetters(cloud).letters;
+  const head = nativeLetters.slice(0, width), tail = nativeLetters.slice(-width);
+  const start = letters.indexOf(head), end = letters.indexOf(tail);
+  if (start < 0 || end < start + width || letters.indexOf(head, start + 1) >= 0 || letters.indexOf(tail, end + 1) >= 0) return 0;
+  return Math.abs(end + width - start - nativeLetters.length) <= Math.ceil(nativeLetters.length * 0.02) ? 1 : 0;
 }
 
 /** Count cloud positions holding the native letters minus a few isolated single letters, never added or changed ones. */

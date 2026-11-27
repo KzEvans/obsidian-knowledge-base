@@ -94,12 +94,10 @@ export function register(ctx: ModuleContext): ModuleHandle
 
 输入 `raw/` 和原 PDF，输出 `document.json` 和 `derived/`：
 
-1. `normalizeContentList`。在 0.1.9 规则基础上：
-   - 读 `raw/layout.json` 中 MinerU 的跨栏/跨页合并标记（`lines_deleted`）：被并入上一段的空块只把区域并给那一段，不再用原生文字层补文字（旧做法会让段落重复出现）。
-   - 一段在句子中间停下、越过图、表、脚注或页眉页脚后以小写字母接续，就把两半合成一段，图表因此排在整段之后；公式之后的 “where …” 不合并。
-   - 折叠首页一级标题之前的短文字（栏目名、期刊 logo 的 OCR）、首页小图标、带 ISSN/年/期前缀的 Wiley 下载声明，以及文末出版商声明（SI 获取说明、转载许可、开放获取许可、ORCID、引用格式、在线发表日期、Check for updates）。
-2. 解析资源引用；缺失的记一条警告。
-3. `auditNativeText`：用 Obsidian 自带的 pdf.js（`loadPdfJs()`）读原生文字层校对。正文缺口只在同一原文区域的前后锚点唯一匹配时补回；保留其余正文和 TeX，不用模型补写缺失内容。
+1. `normalizeContentList` 按 V1 下标保留块 ID。句中越过浮动图表、独立图题、脚注或页眉页脚后出现的小写续句接回正文。独立图题和紧随显示公式的独立编号保留各自边界。解释框保留块级 HTML 及含分段的正文，分别用于安全渲染和翻译。
+   - 首页出版控件、作者侧栏地址、出版方声明及成对的 ORCID 标题与条目默认折叠，可展开回查。首页短栏目标记、期刊小图标、Wiley 下载声明和既有文末出版信息也沿用折叠分类。
+2. 解析资源引用，缺失时记录警告。
+3. `auditNativeText` 用 Obsidian 自带的 pdf.js 读取原页文字层。MinerU 标记为 `lines_deleted` 的空块经原页区域文字确认后，只把来源框并给唯一的在前正文。归属待核对时移除空块并记录对应页和块的警告。普通正文缺口须在同一原文区域的前后锚点唯一匹配才补回，保留其余正文和 TeX。原生排版校对保留复合单位间隔。
 4. 为表格、无资源的图片和公式从原 PDF 裁图，写 `derived/source-tables-v1/`、`derived/fallback-v2/`。这一步原来在阅读模式里做。
 5. 读所有图片的文件头尺寸，写进 `document.json`。
 6. 标出摘要块（`role: "abstract"`），供"摘要翻译"一节直接取用。

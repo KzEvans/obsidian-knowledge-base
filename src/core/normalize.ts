@@ -27,18 +27,12 @@ export function parseCaptionLabel(text: string): {
   };
 }
 
-export interface NormalizeOptions {
-  /** Content-list indices MinerU merged into the previous paragraph (layout-merge.ts). */
-  mergedIntoPrevious?: ReadonlySet<number>;
-}
-
 /** Normalize MinerU's cloud Content List V1, without reordering provider blocks. */
 export function normalizeContentList(
   items: unknown,
   sourceHash: string,
   parserSignature: string,
   pageCount: number,
-  options: NormalizeOptions = {},
 ): ReaderDocument {
   if (!Array.isArray(items) || items.some(Array.isArray)) {
     throw new Error("MinerU 未返回兼容的扁平 Content List；请保留结果包并检查解析格式。");
@@ -55,6 +49,7 @@ export function normalizeContentList(
   let inReferences = false;
   let seenFirstPageTitle = false;
   let seenBody = false;
+  let previousAddress: SourceRef | undefined;
   // Short text above the paper title on page 1 is a journal name, section label or logo OCR.
   const firstPageTitleIndex = items.findIndex(raw => isRecord(raw) && raw.page_idx === 0 &&
     (raw.text_level === 1 || raw.type === "doc_title"));
@@ -63,18 +58,10 @@ export function normalizeContentList(
     const item = isRecord(raw) ? raw : { text: raw };
     const type = typeof item.type === "string" ? item.type.toLowerCase() : "text";
     const sources = readSources(item, document, index);
-    if (options.mergedIntoPrevious?.has(index)) {
-      // The text already sits in the earlier paragraph; keep only this region as its source.
-      const owner = document.blocks.findLast(block => (block.kind === "paragraph" || block.kind === "list") && block.text);
-      if (owner) {
-        for (const source of sources) {
-          if (!owner.sources.some(existing => existing.page === source.page && JSON.stringify(existing.bbox) === JSON.stringify(source.bbox))) owner.sources.push(source);
-        }
-        return;
-      }
-    }
-    const text = blockText(item, type);
+    const codeBody = type === "code" ? nonemptyString(item.code_body) : undefined;
     let kind = blockKind(item, type);
+    const codeHtml = codeBody && kind === "paragraph" && /<(?:div|p)\b[^>]*>/i.test(codeBody) ? codeBody : undefined;
+    const text = codeHtml ? codeHtmlText(codeHtml) : blockText(item, type);
     const classificationText = htmlText(text.replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/gi, "")).trim();
     const compactHeading = classificationText.replace(/\s+/g, "").toLowerCase();
     const isReferenceTitle = REFERENCE_TITLE.test(classificationText);
@@ -85,7 +72,13 @@ export function normalizeContentList(
     // Exact ACS control-bar labels; the provider may list them after the abstract.
     const isFirstPageControl = sources[0]?.page === 1 && FIRST_PAGE_CONTROL.test(classificationText);
 
-    if (isFirstPageControl) kind = "metadata";
+    const source = sources[0];
+    const address = source?.page === 1 && (kind === "footnote" || type === "aside_text" || type === "page_aside_text") &&
+      isAffiliationFootnote(classificationText, adjacentAddress(previousAddress, source));
+    previousAddress = address ? source : undefined;
+    const pairedMetadataHeading = isPairedMetadataHeading(classificationText, item.page_idx, items[index + 1]);
+
+    if (isFirstPageControl || address || pairedMetadataHeading) kind = "metadata";
     else if (hasHeadingLevel || isReferenceTitle || isNextSection || isSpacedHeading) kind = "heading";
     if (kind === "heading") {
       if (isReferenceTitle) inReferences = true;
@@ -156,7 +149,7 @@ export function normalizeContentList(
       block.hiddenByDefault = true;
     }
     const html = nonemptyString(item.table_body) ?? nonemptyString(item.html) ??
-      (type === "code" && kind === "table" ? nonemptyString(item.code_body) : undefined);
+      (kind === "table" ? codeBody : codeHtml);
     if (html) block.html = html;
 
     if (!knownType(type)) {
@@ -186,6 +179,7 @@ export function normalizeContentList(
 
 /** Blocks that can sit between two halves of one paragraph without belonging to it. */
 const FLOATING = new Set<ReaderBlockKind>(["figure", "table", "footnote", "metadata", "header", "footer"]);
+const EQUATION_NUMBER = /^\(\s*\d+(?:[.-]\d+)*[a-z]?\s*\)$/i;
 const SENTENCE_END = /[.!?:;。！？：；]["'”’)\]]*$/;
 
 /**
@@ -195,16 +189,24 @@ const SENTENCE_END = /[.!?:;。！？：；]["'”’)\]]*$/;
  * after an equation ("where …") legitimately starts in lower case.
  */
 function joinSplitParagraphs(blocks: ReaderBlock[]): ReaderBlock[] {
+  const captions = new Set(blocks.filter((block, index) => {
+    if (block.kind !== "paragraph" || block.html) return false;
+    const label = parseCaptionLabel(block.text);
+    return label?.captionLike && label.kind !== "table" && hasAdjacentFigure(blocks, index);
+  }));
   const result: ReaderBlock[] = [];
   const consumed = new Set<ReaderBlock>();
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index]!;
     if (consumed.has(block)) continue;
     result.push(block);
-    if (block.kind !== "paragraph" || block.html || !block.text) continue;
+    if (block.kind !== "paragraph" || block.html || !block.text || captions.has(block)) continue;
+    const previous = blocks[index - 1];
+    if (previous?.kind === "equation" && block.sources[0] && previous.sources[0]?.page === block.sources[0].page &&
+      EQUATION_NUMBER.test(htmlText(block.text).trim())) continue;
     for (let cursor = index + 1; cursor < blocks.length; cursor++) {
       const next = blocks[cursor]!;
-      if (consumed.has(next) || FLOATING.has(next.kind)) continue;
+      if (consumed.has(next) || FLOATING.has(next.kind) || captions.has(next)) continue;
       if (next.kind !== "paragraph" || next.html || !next.text || !continuesSentence(block, next)) break;
       block.text = joinContinuation(block.text, next.text);
       block.sources.push(...next.sources.filter(source => !block.sources.some(existing => existing.page === source.page && JSON.stringify(existing.bbox) === JSON.stringify(source.bbox))));
@@ -212,6 +214,18 @@ function joinSplitParagraphs(blocks: ReaderBlock[]): ReaderBlock[] {
     }
   }
   return result;
+}
+
+function hasAdjacentFigure(blocks: ReaderBlock[], index: number): boolean {
+  const page = blocks[index]?.sources[0]?.page;
+  if (page === undefined) return false;
+  const after = blocks[index + 1];
+  if (after?.kind === "figure" && after.sources[0]?.page === page) return true;
+
+  // The provider can list panel equations between the figure and its caption.
+  let before = index - 1;
+  while (blocks[before]?.kind === "equation" && blocks[before]?.sources[0]?.page === page) before--;
+  return blocks[before]?.kind === "figure" && blocks[before]?.sources[0]?.page === page;
 }
 
 function continuesSentence(previous: ReaderBlock, next: ReaderBlock): boolean {
@@ -289,6 +303,12 @@ function blockText(item: Item, type: string): string {
   return knownType(type) ? "" : readText(item);
 }
 
+function codeHtmlText(html: string): string {
+  return html.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<\/?(?:div|p)\b[^>]*>|<br\b[^>]*>/gi, "\n")
+    .replace(/[ \t]*\n(?:[ \t]*\n)*[ \t]*/g, "\n").trim();
+}
+
 function readText(value: unknown): string {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number") return String(value);
@@ -327,15 +347,27 @@ function isRecord(value: unknown): value is Item {
 /** Publisher boilerplate that may close an article: access, reuse and supplementary-file notices. */
 const PUBLISHER_NOTICE = /^(?:(?:the\s+)?supporting information is available\b|supplementary (?:data|information|material)\b.{0,80}\b(?:online|available)\b|reprints and permissions\b|open access\b.{0,60}\blicen[cs]ed\b|complete contact information is available\b|how to cite this article\s*:|check for updates$)/i;
 
+const PUBLISHER_HEADING = /^publisher['’]s\s+note\s*[:.]?$/i;
+const PUBLISHER_STATEMENT = /^(?:publisher['’]s\s+note\s*[:.]?\s*)?[\p{L}][\p{L}\s&.-]{0,60}\sremains? neutral\b[\s\S]{0,200}\b(?:jurisdictional\s+claims|published\s+maps\s+and\s+institutional\s+affiliations)\b/iu;
+const ORCID_ENTRY = /\borcid\.org\/\d{4}-\d{4}-\d{4}-\d{3}[\dX]\b/i;
+
+function isPairedMetadataHeading(text: string, pageIndex: unknown, next: unknown): boolean {
+  const publisher = PUBLISHER_HEADING.test(text);
+  if ((!publisher && !/^ORCID\s*[:：]?$/i.test(text)) ||
+      typeof pageIndex !== "number" || !isRecord(next) || next.page_idx !== pageIndex) return false;
+  const following = htmlText(readText(next.text)).trim();
+  return publisher ? PUBLISHER_STATEMENT.test(following) : following.length < 200 && ORCID_ENTRY.test(following);
+}
+
 function isPublicationMetadata(text: string): boolean {
-  if (PUBLISHER_NOTICE.test(text)) return true;
+  if (PUBLISHER_NOTICE.test(text) || PUBLISHER_STATEMENT.test(text)) return true;
   if (text.length > 700) return false;
   return /^(?:©|copyright\b|all rights reserved\b|published by\b|https?:\/\/(?:dx\.)?doi\.org\/|doi\s*:\s*10\.)/i.test(text) ||
     /\ball rights reserved\b/i.test(text) ||
     /^(?:received|accepted|available online|revised|published(?: online)?)\s*:?[\s]*(?:in\s+revised\s+form\s+)?(?:\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}|\d{4}[-/]\d{1,2})/i.test(text) ||
     /^(?:[*⁎†‡✉]\s*)?(?:corresponding authors?\b|(?:these|those) authors contributed equally\b|authors? contributed equally\b|e[- ]?mail(?: address)?\s*:)/i.test(text) ||
     // An author's ORCID line.
-    (text.length < 200 && /\borcid\.org\/\d{4}-\d{4}-\d{4}-\d{3}[\dX]\b/i.test(text));
+    (text.length < 200 && ORCID_ENTRY.test(text));
 }
 
 function isFirstPagePublishingUi(text: string, beforeTitle: boolean): boolean {
@@ -351,10 +383,29 @@ function isAuthorLine(text: string): boolean {
   return names.length >= 2 && names.every(name => /^(?:[A-Z][A-Za-z'’.-]*\s+){1,3}[A-Z][A-Za-z'’.-]*$/.test(name));
 }
 
+const AFFILIATION_ORG = /\b(?:department|school|faculty|college|institute|laboratory|university|centre|center)\b/i;
+const RESEARCH_PROSE = /\b(?:we|our|results?|shows?|demonstrates?|measured|strain|modulus|voltage)\b/i;
+
 function isAffiliationLine(text: string): boolean {
-  if (text.length > 350 || /\b(?:we|our|results?|shows?|demonstrates?|measured|strain|modulus|voltage)\b/i.test(text)) return false;
+  if (text.length > 350 || RESEARCH_PROSE.test(text)) return false;
   return /^(?:[a-z0-9][.)]?\s+)?(?:the\s+)?(?:department|school|faculty|college|institute|laboratory|state key laboratory|university|centre|center)\b/i.test(text) ||
     (text.includes(",") && /\b(?:university|institute of technology)\b/i.test(text) && /\b(?:\d{5,6}|china|usa|germany|japan|uk|france)\b/i.test(text));
+}
+
+function isAffiliationFootnote(text: string, nearAddress: boolean): boolean {
+  if (text.length > 350 || RESEARCH_PROSE.test(text)) return false;
+  const parts = text.split(",").slice(1);
+  if (parts.filter(part => /^\s*[\p{Lu}\d]/u.test(part)).length < 2) return false;
+  const numbered = /^\d{1,2}(?=[.)\s\p{Lu}])/u.test(text);
+  const organization = AFFILIATION_ORG.test(text);
+  return /\b(?:present|current) address\b/i.test(text) ||
+    (organization && (numbered || /\b\d{5,6}\b/.test(text) || isAffiliationLine(text))) ||
+    (numbered && nearAddress);
+}
+
+function adjacentAddress(previous: SourceRef | undefined, current: SourceRef): boolean {
+  const a = previous?.bbox, b = current.bbox;
+  return Boolean(a && b && Math.abs(a[0] - b[0]) <= 0.05 && Math.abs(a[3] - b[1]) <= 0.025);
 }
 
 function joinContinuation(previous: string, next: string): string {

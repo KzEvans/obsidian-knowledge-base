@@ -9,6 +9,7 @@
  *  - keep the words of every block it merges away somewhere in the new document.
  */
 import { strict as assert } from 'node:assert';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -26,7 +27,7 @@ function duplicates(blocks: readonly ReaderBlock[]): string[] {
     .map(block => block.id);
 }
 
-test('re-derived real papers have no repeated paragraphs and lose no merged text', { skip: !vault && 'PAPER_WORKBENCH_VAULT not set' }, async () => {
+test('re-derived real papers have no repeated paragraphs and lose no merged text', { skip: !vault && 'PAPER_WORKBENCH_VAULT not set' }, async t => {
   const research = path.join(vault!, '.research');
   const index = JSON.parse(await fs.readFile(path.join(research, 'index.json'), 'utf8')) as { paths: Record<string, string> };
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -59,6 +60,8 @@ test('re-derived real papers have no repeated paragraphs and lose no merged text
         assert.ok(missing.length <= Math.floor(sample.length / 4), `${pdfPath} ${old.id} lost text: ${missing.join(', ')}`);
       }
       checked++;
+      const sample = createHash('sha256').update(sha).digest('hex').slice(0, 10);
+      t.diagnostic(`golden sample=${sample} pages=${pdf.numPages}`);
     } finally {
       await pdf.destroy();
     }
